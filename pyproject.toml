@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cindraleads"
+version = "0.1.0"
+description = "Autonomous, passive-only lead intelligence for Cindrasec. Runs on a Raspberry Pi 5."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Md. Azmol Haque Rony", email = "contact@cindrasec.com" }]
+classifiers = ["License :: Other/Proprietary License", "Private :: Do Not Upload"]
+
+# Core runtime. Everything here is pure-Python or has a prebuilt aarch64 wheel.
+# See PLAN.md 2.12 for the weight audit.
+dependencies = [
+    "pydantic[email]>=2.9",
+    "pydantic-settings>=2.4",
+    "structlog>=24.1",
+    "typer>=0.12",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# Phase-scoped extras, so a Phase 0 checkout does not pull Phase 3's 58 MB of wheels.
+net = ["httpx>=0.27"]                              # Phase 2 - harvest
+extract = ["selectolax>=0.3.21"]                   # Phase 3 - boilerplate stripping
+dedupe = ["rapidfuzz>=3.9", "sqlite-vec>=0.1.6"]   # Phase 3 - dedupe ladder
+osint = ["dnspython>=2.6", "tldextract>=5.1"]      # Phase 4 - passive lookups
+cloud = ["anthropic>=0.40"]                        # Phase 5 - escalation tier (NOT claude-agent-sdk)
+ops = ["prometheus-client>=0.20"]                  # Phase 7 - /metrics
+feedback = ["discord.py>=2.4"]                     # Phase 8 - reaction ingress
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "hypothesis>=6.100",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[project.scripts]
+cindra = "cindraleads.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+cindraleads = ["py.typed"]
+
+# ---------------------------------------------------------------- ruff
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "A", "C4", "PTH", "SIM", "RUF"]
+ignore = [
+    "A003",   # class attribute shadowing a builtin: `Job.id` etc. is fine
+    "B008",   # typer uses function calls in argument defaults by design
+    # Exceptions are named for what happened, not with a mandatory Error suffix.
+    # `PassiveOnlyViolation` is the name the compliance spec uses and the name that
+    # will appear in incident write-ups; `PassiveOnlyViolationError` reads worse and
+    # would diverge from the documented rule. Same for LeaseLost / BudgetExhausted.
+    "N818",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101"]
+
+# ---------------------------------------------------------------- mypy
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+mypy_path = "src"
+packages = ["cindraleads"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+# ---------------------------------------------------------------- pytest
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: spawns subprocesses or touches the filesystem beyond tmp_path",
+    "slow: takes more than a couple of seconds",
+]
+filterwarnings = ["error"]
