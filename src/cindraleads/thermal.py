@@ -5,12 +5,24 @@ point (~80-85 C) with a passive heatsink, and a throttled Pi does not fail loudl
 silently halves its clock, so the pipeline just gets mysteriously slow. This turns that
 into an explicit, observable state transition.
 
-Policy, from the hardware budget:
+Policy, revised against measurement (see docs/BENCHMARKS.md, 2026-08-15):
 
-    < 70 C          full concurrency (4 workers)
-    70-78 C         halve concurrency, pause local-LLM batch jobs
-    > 78 C          LLM inference paused, network-IO-only tasks continue
-    throttled flag  CRITICAL to the ops channel, drop to 1 worker
+    < 70 C            full concurrency (4 workers)
+    70-84 C           halve concurrency, pause local-LLM batch jobs
+    > 84 C            LLM inference paused, network-IO-only tasks continue
+    under-voltage     CRITICAL to the ops channel, drop to 1 worker
+
+The hardware budget originally paused inference above 78 C. A 24-page benchmark
+disproved that threshold: the Pi climbs for ~5 pages, plateaus at 80-82.3 C, and
+holds there with **100% success, zero timeouts, and no upward latency trend**
+(page 5: 69.5 s, page 20: 62.5 s). It is an equilibrium below the 85 C hard limit,
+not a runaway. Pausing at 78 C would have stopped a machine that was working, and
+stopping is far worse than the ~8% clock reduction the Pi applies itself.
+
+So temperature bands drive the policy and the SoC's own throttle bits mostly do
+not. The exception is **under-voltage**, which is a power-supply fault rather than
+a thermal one: it risks data corruption, it does not resolve by waiting, and it
+still drops the pipeline to one worker and pages the ops channel.
 
 Two design notes:
 
@@ -98,8 +110,21 @@ class ThermalReading:
 
     @property
     def throttled_now(self) -> bool:
-        """True if the SoC is actively being held back right now."""
+        """Factual: the SoC is being held back right now, for any reason.
+
+        Reported in benchmarks and /healthz. Deliberately NOT the policy trigger --
+        at this Pi's normal 82 C plateau this is true and everything is fine.
+        """
         return any(self.flags.get(_THROTTLE_BITS[bit], False) for bit in _ACTIVE_BITS)
+
+    @property
+    def undervoltage_now(self) -> bool:
+        """A power-supply fault, not a thermal one.
+
+        This is the one throttle bit that drives policy. It risks corruption, it
+        does not resolve by waiting for the Pi to cool, and the fix is a better PSU.
+        """
+        return bool(self.flags.get("under_voltage_now", False))
 
     @property
     def throttled_ever(self) -> bool:
@@ -160,14 +185,16 @@ _POLICIES: dict[ThermalState, ThermalPolicy] = {
         allow_llm=False,
         allow_llm_batch=False,
         alert_level="critical",
-        reason="SoC reports active throttling",
+        reason="SoC reports under-voltage: power supply fault, not heat",
     ),
 }
 
 # Upper edge of each band. Crossing upward happens at these values; crossing back down
 # requires HYSTERESIS_C below the boundary.
 _WARM_AT = 70.0
-_HOT_AT = 78.0
+# 84 C, not 78: measured plateau is 80-82.3 C with no failures, and the SoC's own
+# hard limit is 85 C. This is a backstop against runaway heat, not a speed limiter.
+_HOT_AT = 84.0
 
 
 class VcgencmdReader:
@@ -241,7 +268,9 @@ class ThermalGovernor:
         return self._last_reading
 
     def _classify(self, reading: ThermalReading) -> ThermalState:
-        if reading.throttled_now:
+        # Only under-voltage forces the critical state. Thermal capping is the Pi
+        # managing itself correctly and is handled by the temperature bands below.
+        if reading.undervoltage_now:
             return "throttled"
 
         if reading.temp_c is None:

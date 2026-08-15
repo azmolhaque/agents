@@ -66,8 +66,11 @@ def test_historic_flags_alone_do_not_mean_throttled_now():
         (69.9, "nominal", 4, True, True),
         (70.0, "warm", 2, True, False),
         (75.0, "warm", 2, True, False),
-        (78.0, "hot", 2, False, False),
-        (85.0, "hot", 2, False, False),
+        # 82.3 C is the measured plateau of a successful 24-page run. It must NOT
+        # pause inference: the old 78 C threshold would have stopped a working Pi.
+        (82.3, "warm", 2, True, False),
+        (84.0, "hot", 2, False, False),
+        (86.0, "hot", 2, False, False),
     ],
 )
 def test_policy_bands(temp, state, workers, allow_llm, allow_batch):
@@ -79,25 +82,41 @@ def test_policy_bands(temp, state, workers, allow_llm, allow_batch):
 
 
 def test_hot_still_permits_network_io():
-    """Above 78 C we stop inferring but keep fetching — network work is nearly free
+    """Above 84 C we stop inferring but keep fetching — network work is nearly free
     thermally, and stopping it would starve the queue for no benefit."""
-    policy = gov(80.0).poll()
+    policy = gov(85.0).poll()
     assert policy.allow_llm is False
     assert policy.network_only is True
     assert policy.max_workers >= 1
 
 
-def test_throttle_flag_overrides_a_cool_reading():
-    """If the SoC says it is being held back, believe it regardless of temperature —
-    under-voltage throttles at room temperature and would otherwise go unnoticed."""
+def test_undervoltage_is_critical_even_at_room_temperature():
+    """Under-voltage is a power-supply fault, not a thermal one. It risks
+    corruption, waiting does not fix it, and it can happen stone cold."""
     governor = ThermalGovernor(
-        lambda: ThermalReading(temp_c=42.0, flags=parse_throttled("throttled=0x4"))
+        lambda: ThermalReading(temp_c=42.0, flags=parse_throttled("throttled=0x1"))
     )
     policy = governor.poll()
     assert policy.state == "throttled"
     assert policy.max_workers == 1
     assert policy.alert_level == "critical"
     assert policy.allow_llm is False
+    assert "power supply" in policy.reason
+
+
+def test_thermal_capping_alone_does_not_trigger_the_critical_state():
+    """The measured plateau sets currently_throttled and arm_frequency_capped at
+    80-82 C, and the 24-page run was 100% successful there. Treating those as
+    critical would drop a healthy Pi to one worker for its whole working life."""
+    reading = ThermalReading(temp_c=82.3, flags=parse_throttled("throttled=0xe0006"))
+    assert reading.throttled_now is True, "still reported factually"
+    assert reading.undervoltage_now is False, "but it is not a power fault"
+
+    governor = ThermalGovernor(lambda: reading)
+    policy = governor.poll()
+    assert policy.state == "warm"
+    assert policy.allow_llm is True
+    assert policy.max_workers == 2
 
 
 # ---------------------------------------------------------------- hysteresis
@@ -120,7 +139,7 @@ def test_real_cooling_does_relax():
 def test_heating_is_immediate_not_hysteretic():
     """Cooling is cautious; heating is not. Waiting to react to a rising SoC is how
     you get a throttle event."""
-    governor = gov(50.0, 78.5)
+    governor = gov(50.0, 84.5)
     assert governor.poll().state == "nominal"
     assert governor.poll().state == "hot"
 
@@ -131,7 +150,7 @@ def test_heating_is_immediate_not_hysteretic():
 def test_missing_sensor_holds_state_rather_than_assuming_cool():
     """vcgencmd needs the `video` group. If it is missing, a governor that defaulted
     to 'nominal' would run 4 workers on a Pi it cannot see the temperature of."""
-    governor = gov(80.0)
+    governor = gov(85.0)
     assert governor.poll().state == "hot"
     blind = ThermalGovernor(lambda: ThermalReading(temp_c=None), initial_state="hot")
     assert blind.poll().state == "hot"
@@ -141,7 +160,7 @@ def test_missing_sensor_holds_state_rather_than_assuming_cool():
 def test_blind_governor_starting_nominal_stays_conservative_after_throttle():
     readings = iter(
         [
-            ThermalReading(temp_c=42.0, flags=parse_throttled("throttled=0x4")),
+            ThermalReading(temp_c=42.0, flags=parse_throttled("throttled=0x1")),
             ThermalReading(temp_c=None),
         ]
     )

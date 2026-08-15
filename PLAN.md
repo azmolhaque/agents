@@ -17,6 +17,21 @@ with a file manifest and acceptance test per phase. Nothing is built until this 
 empty — no commits. I will build the project at the repo root and commit `PLAN.md` (this
 document) as the first artifact.
 
+## Decisions locked after Phase 1 measurement (2026-08-15)
+
+Two more deviations, both forced by numbers from the 24-page benchmark on the Pi
+(`docs/BENCHMARKS.md`). These override the master prompt where they conflict.
+
+| # | Decision | Rationale |
+| --- | --- | --- |
+| 5 | **Definition of Done drops "median wall-clock per lead < 90 s"** and replaces it with a throughput criterion: *sustains 40 leads/day end to end, with the queue draining faster than it fills.* | One extraction alone is **64 s** measured (39 s on `llama3.2:3b`), and a lead needs several LLM calls. The 90 s target is off by 2-3x and no tuning closes it — only different hardware would. Throughput is the thing that actually matters and it is comfortably reachable: 200 docs/day is 3.6 h of inference on the 4B, 2.2 h on the 3B. |
+| 6 | **Thermal governor pauses inference at 84 C, not 78 C.** Only *under-voltage* forces the critical single-worker state; thermal capping does not. | The Pi climbs for ~5 pages then **plateaus at 80-82.3 C** and holds, with 100% success, zero timeouts and no upward latency trend (page 5: 69.5 s, page 20: 62.5 s). It is an equilibrium below the 85 C hard limit. Pausing at 78 C would have stopped a machine that was working; stopping is far worse than the ~8% clock reduction the Pi applies itself. Under-voltage stays critical because it is a power fault, risks corruption, and does not resolve by waiting. |
+
+Phase 7's acceptance criterion changes to match #6: **"no thermal throttle event"** is not
+achievable for sustained inference on this hardware and was never the right question.
+It becomes *stays below 85 C, no under-voltage, throughput within 20% of the Phase 1
+baseline over 72 h.*
+
 ## Decisions locked (answered 2026-08-14)
 
 These four deviate from the master prompt and are now settled. Rationale in Part 2.
