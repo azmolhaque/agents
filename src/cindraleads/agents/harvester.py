@@ -28,6 +28,7 @@ from typing import Any
 
 import httpx
 
+from cindraleads.dedupe import canonical_domain
 from cindraleads.errors import CindraError
 from cindraleads.logging import get_logger
 from cindraleads.models import Job, QueryPlan, StageResult, to_iso, utcnow
@@ -41,7 +42,13 @@ from cindraleads.sources.clients import (
 from cindraleads.sources.http import EgressClient, FetchDenied
 from cindraleads.store import Store
 
-__all__ = ["EXTRACT_KIND", "HARVEST_KIND", "HarvestOutcome", "Harvester"]
+__all__ = [
+    "EXTRACT_KIND",
+    "HARVEST_KIND",
+    "HarvestOutcome",
+    "Harvester",
+    "extraction_target",
+]
 
 log = get_logger("cindraleads.harvester")
 
@@ -176,8 +183,18 @@ class Harvester:
             return StageResult(ok=False, stage="harvester", job_id=job.job_id, error=outcome.error)
 
         payloads: list[dict[str, Any]] = []
+        dropped_platform = 0
         for hit in outcome.hits:
-            if self._seen(conn, hit.url):
+            target = extraction_target(hit)
+            if target is None:
+                # A platform URL with no company site behind it. The Resolver would
+                # drop it anyway — a GitHub repo has no canonical domain — so
+                # extracting it first would spend ~60 s of Pi inference to learn
+                # something already knowable here for free. Measured on the first real
+                # run: 13 of 51 resolutions were exactly this.
+                dropped_platform += 1
+                continue
+            if self._seen(conn, target):
                 continue
             candidate_id = uuid.uuid4().hex[:16]
             conn.execute(
@@ -186,7 +203,7 @@ class Harvester:
                 (
                     candidate_id,
                     "",  # filled by the Extractor once the page is fetched
-                    _payload_json(hit, outcome.plan),
+                    _payload_json(hit, outcome.plan, target),
                     "new",
                     to_iso(utcnow()),
                 ),
@@ -194,7 +211,7 @@ class Harvester:
             payloads.append(
                 {
                     "candidate_id": candidate_id,
-                    "url": hit.url,
+                    "url": target,
                     "title": hit.title,
                     "source_id": hit.source_id,
                     "targets": list(outcome.plan.targets),
@@ -209,6 +226,7 @@ class Harvester:
             engine=outcome.plan.engine,
             hits=len(outcome.hits),
             new_candidates=len(payloads),
+            dropped_platform=dropped_platform,
             duration_ms=outcome.duration_ms,
         )
         return StageResult(
@@ -283,10 +301,36 @@ class Harvester:
         return f"harvest:{plan.engine}:{digest}:{bucket}"
 
 
-def _payload_json(hit: SourceHit, plan: QueryPlan) -> str:
+def extraction_target(hit: SourceHit) -> str | None:
+    """The URL worth spending an extraction on, or None.
+
+    A discovery hit often points at a platform rather than at a company: a GitHub
+    repo, an HN thread, a LinkedIn page. Two cases:
+
+    * The source handed us the company's own site alongside it — GitHub's API returns
+      the repo's `homepage` field — so extract that instead. This is the difference
+      between reading a README and reading the company's landing page.
+    * It did not, and there is no company site to read. The Resolver refuses platform
+      hosts, so extracting one is ~60 s of Pi inference spent to reach a conclusion
+      available here for nothing.
+
+    A side effect that matters as much: github.com stops consuming the 6-per-domain
+    politeness budget, which is meant for a *prospect's* infrastructure. On the first
+    real run it was being spent on the platform instead, deferring genuine prospects.
+    """
+    if canonical_domain(hit.url) is not None:
+        return hit.url
+    homepage = str(hit.raw.get("homepage") or "").strip()
+    if homepage and canonical_domain(homepage) is not None:
+        return homepage if "//" in homepage else f"https://{homepage}"
+    return None
+
+
+def _payload_json(hit: SourceHit, plan: QueryPlan, target: str) -> str:
     return json.dumps(
         {
-            "url": hit.url,
+            "url": target,
+            "discovered_at": hit.url,
             "title": hit.title,
             "snippet": hit.snippet,
             "source_id": hit.source_id,

@@ -351,3 +351,70 @@ def _job(plan: QueryPlan):  # type: ignore[no-untyped-def]
     from cindraleads.models import Job
 
     return Job(job_id="job1", kind=HARVEST_KIND, payload=plan.model_dump(mode="json"))
+
+
+# ------------------------------------------------------- what is worth extracting
+
+
+def test_a_repo_with_a_homepage_is_extracted_at_the_company_site(rig):
+    """GitHub's API hands us the company's own site next to the repo. Reading the
+    landing page instead of a README is the difference between a company profile and
+    a project description."""
+    from cindraleads.agents.harvester import extraction_target
+    from cindraleads.sources.clients import SourceHit
+
+    hit = SourceHit(
+        url="https://github.com/acme/agent",
+        title="acme/agent",
+        snippet="",
+        source_id="github_api",
+        raw={"homepage": "https://acme.io"},
+    )
+    assert extraction_target(hit) == "https://acme.io"
+
+
+def test_a_bare_homepage_gets_a_scheme(rig):
+    from cindraleads.agents.harvester import extraction_target
+    from cindraleads.sources.clients import SourceHit
+
+    hit = SourceHit(
+        url="https://github.com/acme/agent",
+        title="",
+        snippet="",
+        source_id="github_api",
+        raw={"homepage": "acme.io"},
+    )
+    assert extraction_target(hit) == "https://acme.io"
+
+
+def test_a_platform_url_with_no_company_site_is_not_worth_extracting(rig):
+    """Measured on the first real Pi run: 13 of 51 resolutions were platform URLs the
+    Resolver dropped, each having cost ~60 s of inference first. The Harvester can
+    reach the same conclusion for free, and doing so also stops github.com consuming
+    the 6-per-domain budget meant for a prospect's own infrastructure."""
+    from cindraleads.agents.harvester import extraction_target
+    from cindraleads.sources.clients import SourceHit
+
+    for url in (
+        "https://github.com/someone/sideproject",
+        "https://news.ycombinator.com/item?id=1",
+        "https://www.linkedin.com/company/acme",
+    ):
+        hit = SourceHit(url=url, title="", snippet="", source_id="hn_algolia", raw={})
+        assert extraction_target(hit) is None, url
+
+
+async def test_a_platform_hit_produces_no_extract_job(rig):
+    harvester, store = rig(hn_payload("https://news.ycombinator.com/item?id=99"))
+    result = await harvester.run(_job(QueryPlan(query="x", engine="hn_algolia")))
+    assert result.ok
+    assert result.follow_on == []
+    assert store.conn.execute("SELECT COUNT(*) AS n FROM candidates").fetchone()["n"] == 0
+
+
+def test_an_ordinary_company_url_is_unaffected(rig):
+    from cindraleads.agents.harvester import extraction_target
+    from cindraleads.sources.clients import SourceHit
+
+    hit = SourceHit(url="https://acme.io/blog/x", title="", snippet="", source_id="x", raw={})
+    assert extraction_target(hit) == "https://acme.io/blog/x"

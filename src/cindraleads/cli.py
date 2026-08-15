@@ -377,6 +377,35 @@ def status() -> None:
     )
     typer.echo(f"\ncompanies with >=1 live trigger: {leadable}")
 
+    # Why work is not moving, which the counts above cannot show. A queue that looks
+    # idle has three very different causes and they need different responses: jobs
+    # held back until later, jobs that exhausted their retries, and jobs genuinely
+    # ready to run. Reporting only "pending" conflates the first with the third.
+    now = to_iso(utcnow())
+    waiting = count("SELECT COUNT(*) FROM jobs WHERE status='pending' AND available_at > ?", now)
+    ready = count("SELECT COUNT(*) FROM jobs WHERE status='pending' AND available_at <= ?", now)
+    dead = count("SELECT COUNT(*) FROM jobs WHERE status IN ('dead','dead_letter')")
+    failed = count("SELECT COUNT(*) FROM jobs WHERE status='failed'")
+    typer.echo("\nwork")
+    typer.echo(f"  {'ready now':>14}: {ready}")
+    typer.echo(f"  {'deferred':>14}: {waiting}")
+    typer.echo(f"  {'failed':>14}: {failed}")
+    typer.echo(f"  {'dead':>14}: {dead}")
+    if waiting:
+        row = conn.execute(
+            "SELECT MIN(available_at) AS soonest FROM jobs WHERE status='pending' "
+            "AND available_at > ?",
+            (now,),
+        ).fetchone()
+        typer.echo(f"  next deferred job runs at {row['soonest']}")
+    if dead or failed:
+        typer.echo("\nrecent errors")
+        for row in conn.execute(
+            "SELECT kind, last_error FROM jobs WHERE last_error IS NOT NULL "
+            "ORDER BY updated_at DESC LIMIT 5"
+        ):
+            typer.echo(f"  {row['kind']}: {str(row['last_error'])[:110]}")
+
 
 @app.command()
 def pipeline(
