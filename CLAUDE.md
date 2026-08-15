@@ -77,17 +77,30 @@ tests/golden/   regression fixtures for prompt changes docs/RUNBOOK.md what to d
 
 **Phase 0 complete.** Models, store, durable queue, structlog + redaction, CLI skeleton, CI.
 
-**Phase 1 code complete, not yet measured.** `llm.py` (schema-constrained ladder),
-`thermal.py` (governor with injected readings), `textextract.py`, `config/models.yaml`,
-`deploy/ollama-override.conf`, and the benchmark + fixture scripts all exist and are
-tested. Two things still need the real hardware:
+**Phase 1 measured on the Pi, gate passing on a 3-page sample.** See
+`docs/BENCHMARKS.md` (generated, never hand-edited). Measured 2026-08-15:
 
-1. `tests/fixtures/html/` is **empty** — this build container's network policy 403s
-   general web hosts, so the corpus could not be gathered here. Run `make fixtures`
-   on the Pi. See `tests/fixtures/README.md`.
-2. `docs/BENCHMARKS.md` is a **placeholder with no numbers in it**. Run `make bench`
-   on the Pi; it overwrites the file with measured values. Do not hand-write numbers
-   into it — the whole point is that the master prompt's estimates were untrustworthy.
+| | qwen3:4b-instruct on Pi 5 |
+| --- | --- |
+| Schema validity | **100%** (gate is >= 95%) |
+| Prefill | 42.2 tok/s |
+| **Decode** | **3.7 tok/s** ← the binding constraint |
+| p50 page | 64 s |
+| Peak temp | 79.6 C, no active throttle |
+| Cold model load | ~32 s off microSD |
 
-Until both are done, Phase 1's gate (schema validity >= 95%) is unverified. Phase 2
-(harvest) should not start before it passes.
+**Decode costs ~11x more per token than prefill.** Every tuning decision follows from
+that: output is bounded in the schema (`maxLength`/`maxItems` become grammar rules), and
+the prompt budget is 1500 chars because 4000 cost 150 s/page against 64 s.
+
+Two numbers that are latency-tuned against a *schema-validity* gate and must be re-tuned
+in Phase 3 against *field accuracy*: `textextract.extract_text(max_chars=1500)` and the
+`CompanyExtraction` field bounds. A short budget drops footers, which is where headcount
+and location live.
+
+**Still open before Phase 1 is formally closed:** the plan's gate is 20+ pages; only 3
+have been run. `make bench` on the Pi does the full 24-page corpus (~26 min) and also
+measures `llama3.2:3b` for comparison.
+
+**Known hardware gaps for Phase 7:** root is on microSD (no NVMe present), and sustained
+inference reaches ~80 C with the fan at ~6000 RPM. Neither blocks Phases 2-6.
