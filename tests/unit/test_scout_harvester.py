@@ -131,7 +131,7 @@ def test_rationed_plans_are_capped_per_run(scout: Scout):
 
 
 def test_an_exhausted_budget_produces_a_free_only_batch(scout: Scout):
-    plans = scout.plan(can_spend=lambda _units: False)
+    plans = scout.plan(can_spend=lambda _engine, _units: False)
     assert plans, "the run must still happen; free sources are unaffected"
     assert all(scout.registry.get(p.engine).cost_units == 0 for p in plans)
 

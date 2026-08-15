@@ -25,8 +25,8 @@ What the Scout actually decides, and why each matters:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
 
 from cindraleads.config import Settings, load_yaml, settings
 from cindraleads.errors import ConfigError
@@ -165,12 +165,20 @@ class Scout:
         ).fetchall()
         return {str(r["value"]).lower() for r in rows}
 
-    def plan(self, *, limit: int | None = None, can_spend: Any = None) -> list[QueryPlan]:
+    def plan(
+        self,
+        *,
+        limit: int | None = None,
+        can_spend: Callable[[str, int], bool] | None = None,
+    ) -> list[QueryPlan]:
         """Build this run's batch of discovery queries.
 
-        ``can_spend`` is an optional ``callable(units) -> bool``, normally
-        ``BudgetGuard.can_spend``. Absent, rationed templates are planned up to the
-        configured ceiling and the egress layer enforces the real limit.
+        ``can_spend(engine, units) -> bool`` is normally ``Runtime.can_spend``. It takes
+        the engine, not just a unit count, because the allowance is per *provider*: the
+        four ``serpapi_*`` sources draw on one account, and a units-only predicate could
+        not tell them apart from a future source with its own separate cap. Absent,
+        rationed templates are planned up to the configured ceiling and the egress layer
+        enforces the real limit.
         """
         ceiling = limit if limit is not None else self.config.max_plans_per_run
 
@@ -199,7 +207,7 @@ class Scout:
             if len(plans) >= ceiling or spent >= self.config.max_costed_plans_per_run:
                 break
             cost = self._cost_of(template)
-            if can_spend is not None and not can_spend(cost):
+            if can_spend is not None and not can_spend(template.engine, cost):
                 log.info("scout_skipped_costed", template=template.id, reason="budget")
                 continue
             plan = template.to_plan(

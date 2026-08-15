@@ -29,7 +29,8 @@ make bench       # Phase 1 benchmark -> docs/BENCHMARKS.md (RUN ON THE PI)
 
 cindra db migrate | db status | db backup <path>
 cindra queue status | queue reclaim | queue enqueue --kind K
-cindra work --kinds K [--drain-inflight]
+cindra harvest [--dry-run] [--limit N]   # Scout -> durable harvest jobs
+cindra work --kinds harvest.query [--drain-inflight]
 cindra feedback <lead_id> good|bad
 ```
 

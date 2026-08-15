@@ -1,13 +1,14 @@
 """The ``cindra`` CLI.
 
-Phase 0 ships the skeleton plus the durability drill. Later phases hang their
-subcommands off the same app: ``harvest``, ``replay``, ``lead show``, ``suppress``,
-``budget``, ``dispatch-test``, ``benchmark-models``, ``precision-report``,
-``erase-subject``.
+Phase 0 shipped the skeleton plus the durability drill; Phase 2 adds ``harvest`` and
+teaches ``work`` to run pipeline stages. Later phases hang their subcommands off the
+same app: ``replay``, ``lead show``, ``suppress``, ``budget``, ``dispatch-test``,
+``benchmark-models``, ``precision-report``, ``erase-subject``.
 """
 
 from __future__ import annotations
 
+import asyncio
 import atexit
 import json
 import os
@@ -18,16 +19,18 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
-from typing import Annotated, Any
+from typing import Annotated, Any, Protocol
 
 import typer
 
 from cindraleads import PIPELINE_VERSION, __version__
+from cindraleads.agents import HARVEST_KIND
 from cindraleads.config import settings
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
-from cindraleads.models import Job, to_iso, utcnow
+from cindraleads.models import Job, StageResult, to_iso, utcnow
 from cindraleads.queue import JobQueue
+from cindraleads.runtime import Runtime
 from cindraleads.store import Store
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="CindraLeads control CLI.")
@@ -45,6 +48,22 @@ SELFTEST_KIND = "selftest.sideeffect"
 # A stage handler receives the claimed job and the *open* transaction. It must do all
 # of its writing through that connection so the work and the completion commit as one.
 Handler = Callable[[Job, sqlite3.Connection], None]
+
+
+class Stage(Protocol):
+    """A two-phase stage. See `Harvester` for why the split exists.
+
+    `prepare` may do network I/O and must not write. `commit` writes, inside a
+    transaction the worker opens and also completes the job in.
+    """
+
+    async def prepare(self, job: Job) -> Any: ...
+
+    def commit(self, job: Job, outcome: Any, conn: sqlite3.Connection) -> StageResult: ...
+
+
+class _StageFailed(CindraError):
+    """Raised inside the transaction so an unsuccessful stage rolls its writes back."""
 
 
 def _open_store() -> Store:
@@ -261,6 +280,44 @@ def selftest_verify(
     typer.echo(f"OK: {expect} jobs completed exactly once")
 
 
+# ------------------------------------------------------------------- harvesting
+
+
+@app.command()
+def harvest(
+    limit: Annotated[int, typer.Option(help="Max plans. 0 = the configured ceiling.")] = 0,
+    dry_run: Annotated[bool, typer.Option(help="Print the batch, enqueue nothing.")] = False,
+) -> None:
+    """Plan a batch of discovery queries and enqueue them.
+
+    Planning and execution are deliberately separate commands. The Scout's output is a
+    durable job per query, so a power cut between planning and fetching costs the
+    planning, not the batch — and `--dry-run` lets you read what a credit would be
+    spent on before spending it.
+    """
+    cfg = settings()
+    cfg.ensure_dirs()
+    store = _open_store()
+
+    async def _run() -> None:
+        async with Runtime(store=store, config=cfg) as runtime:
+            plans = runtime.scout.plan(
+                limit=limit or None,
+                can_spend=runtime.can_spend,
+            )
+            for plan in plans:
+                cost = runtime.registry.get(plan.engine).cost_units
+                marker = f"{cost} credit(s)" if cost else "free"
+                typer.echo(f"  [{marker:>10}] {plan.engine:<22} {plan.query or '(no query)'}")
+            if dry_run:
+                typer.echo(f"dry run: {len(plans)} plan(s), nothing enqueued")
+                return
+            ids = runtime.harvester.enqueue_plans(plans)
+            typer.echo(f"enqueued {len(ids)} harvest job(s)")
+
+    asyncio.run(_run())
+
+
 # -------------------------------------------------------------------- the worker
 
 _shutdown = False
@@ -269,6 +326,46 @@ _shutdown = False
 def _request_shutdown(_signum: int, _frame: FrameType | None) -> None:
     global _shutdown
     _shutdown = True
+
+
+class _SyncStage:
+    """Adapts a plain `Handler` to the two-phase protocol.
+
+    A handler with no network work has nothing to prepare, so the whole thing runs in
+    `commit`. This exists so the worker loop has exactly one code path — the durability
+    drill must exercise the same loop the pipeline runs, or it proves nothing about it.
+    """
+
+    def __init__(self, kind: str, handler: Handler) -> None:
+        self.kind = kind
+        self.handler = handler
+
+    async def prepare(self, job: Job) -> Any:
+        return None
+
+    def commit(self, job: Job, outcome: Any, conn: sqlite3.Connection) -> StageResult:
+        self.handler(job, conn)
+        return StageResult(ok=True, stage=self.kind, job_id=job.job_id)
+
+
+def _stages_for(kinds: list[str], runtime: Runtime | None) -> dict[str, Stage]:
+    """Which stages this worker can run.
+
+    Built per-invocation rather than as a module-level table because the pipeline
+    stages need a live `Runtime` (and therefore a running event loop), while the
+    selftest handler needs nothing. A worker asked only for selftest work never
+    constructs an HTTP client.
+    """
+    stages: dict[str, Stage] = {
+        kind: _SyncStage(kind, handler) for kind, handler in HANDLERS.items() if kind in kinds
+    }
+    if runtime is not None and HARVEST_KIND in kinds:
+        stages[HARVEST_KIND] = runtime.harvester
+    return stages
+
+
+def _needs_runtime(kinds: list[str]) -> bool:
+    return HARVEST_KIND in kinds
 
 
 @app.command()
@@ -287,18 +384,52 @@ def work(
 ) -> None:
     """Run the worker loop.
 
-    Claims jobs, runs the handler and completes the job **inside a single
-    transaction**. SIGTERM sets a flag and the loop finishes its current job;
-    SIGKILL is uncatchable by design, which is exactly what the drill exercises.
+    Claims jobs, runs the stage and completes the job **inside a single transaction**.
+    SIGTERM sets a flag and the loop finishes its current job; SIGKILL is uncatchable
+    by design, which is exactly what the drill exercises.
     """
     cfg = settings()
     configure_logging(log_dir=cfg.resolve(cfg.log_dir), level=cfg.log_level, console=False)
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
 
-    wid = worker_id or f"{os.uname().nodename}:{os.getpid()}"
     wanted = [k.strip() for k in kinds.split(",") if k.strip()]
     store = _open_store()
+
+    async def _main() -> int:
+        if not _needs_runtime(wanted):
+            return await _work_loop(store, _stages_for(wanted, None), **_opts())
+        async with Runtime(store=store, config=cfg) as runtime:
+            return await _work_loop(store, _stages_for(wanted, runtime), **_opts())
+
+    def _opts() -> dict[str, Any]:
+        return {
+            "kinds": wanted,
+            "worker_id": worker_id or f"{os.uname().nodename}:{os.getpid()}",
+            "lease": lease,
+            "max_jobs": max_jobs,
+            "idle_exit": idle_exit,
+            "drain_inflight": drain_inflight,
+            "poll_ms": poll_ms,
+            "work_ms": work_ms,
+        }
+
+    typer.echo(f"processed {asyncio.run(_main())}")
+
+
+async def _work_loop(
+    store: Store,
+    stages: dict[str, Stage],
+    *,
+    kinds: list[str],
+    worker_id: str,
+    lease: int,
+    max_jobs: int,
+    idle_exit: bool,
+    drain_inflight: bool,
+    poll_ms: int,
+    work_ms: int,
+) -> int:
     queue = JobQueue(store)
     queue.reclaim_expired()
 
@@ -307,10 +438,10 @@ def work(
         if max_jobs and processed >= max_jobs:
             break
         try:
-            claimed = queue.claim(wid, kinds=wanted, lease_seconds=lease, limit=1)
+            claimed = queue.claim(worker_id, kinds=kinds, lease_seconds=lease, limit=1)
         except sqlite3.OperationalError as exc:  # database locked under contention
-            log.warning("claim_contended", error=str(exc), worker_id=wid)
-            time.sleep(poll_ms / 1000)
+            log.warning("claim_contended", error=str(exc), worker_id=worker_id)
+            await asyncio.sleep(poll_ms / 1000)
             continue
 
         if not claimed:
@@ -322,20 +453,36 @@ def work(
                 # durability drill and one-shot timers want.
                 if idle_exit and not (drain_inflight and queue.stats()["in_flight"]):
                     break
-                time.sleep(poll_ms / 1000)
+                await asyncio.sleep(poll_ms / 1000)
             continue
 
         job = claimed[0]
-        handler = HANDLERS.get(job.kind)
-        if handler is None:
+        stage = stages.get(job.kind)
+        if stage is None:
             queue.fail(job.job_id, f"no handler registered for kind {job.kind!r}")
             continue
 
         started = time.monotonic()
         try:
-            # THE critical section. Side effect and completion, one COMMIT.
+            # Phase 1, outside any transaction. A harvest fetch can take 30 s, and
+            # BEGIN IMMEDIATE holds the single write lock for its whole duration --
+            # doing the network work here keeps every other worker running.
+            outcome = await stage.prepare(job)
+        except (CindraError, OSError, ValueError) as exc:
+            queue.fail(job.job_id, f"{type(exc).__name__}: {exc}")
+            log.error("stage_prepare_failed", job_id=job.job_id, stage=job.kind, error=str(exc))
+            continue
+
+        try:
+            # Phase 2. THE critical section: side effect, follow-on jobs and
+            # completion, one COMMIT. A crash anywhere inside rolls back all three,
+            # and the job is retried whole once its lease expires.
             with store.tx() as conn:
-                handler(job, conn)
+                result = stage.commit(job, outcome, conn)
+                if not result.ok:
+                    raise _StageFailed(result.error or "stage reported failure")
+                for kind, payload in result.follow_on:
+                    queue.enqueue(kind, payload, conn=conn)
                 if work_ms:
                     time.sleep(work_ms / 1000)
                 queue.complete(job.job_id, conn=conn)
@@ -352,12 +499,13 @@ def work(
             "job_done",
             job_id=job.job_id,
             stage=job.kind,
-            worker_id=wid,
+            worker_id=worker_id,
+            follow_on=len(result.follow_on),
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
-    log.info("worker_exit", worker_id=wid, processed=processed)
-    typer.echo(f"processed {processed}")
+    log.info("worker_exit", worker_id=worker_id, processed=processed)
+    return processed
 
 
 def main() -> None:

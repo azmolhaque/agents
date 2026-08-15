@@ -94,6 +94,19 @@ class EgressClient:
                 failure_threshold=self.registry.defaults.circuit_failure_threshold,
                 open_seconds=self.registry.defaults.circuit_open_seconds,
             )
+        # Register every configured allowance up front. Building guards lazily at the
+        # first spend meant `budgets.get(provider)` returned None on the very first
+        # call of the day and the cap did not apply to it.
+        for provider, spec in self.registry.budget.items():
+            if provider in self.budgets or not isinstance(spec, dict):
+                continue
+            self.budgets[provider] = BudgetGuard(
+                self.store,
+                provider,
+                cap=float(spec.get("daily_cap", 0)),
+                window_hours=float(spec.get("refill_window_hours", 24.0)),
+                safety_fraction=float(spec.get("safety_fraction", 1.0)),
+            )
 
     # ------------------------------------------------------------- budgets
 
@@ -228,9 +241,13 @@ class EgressClient:
             raise FetchDenied(f"circuit open for {source_id}", url)
 
         if source.cost_units:  # (5)
-            provider = source.auth_env or source_id
+            provider = source.budget_provider
             guard = self.budgets.get(provider)
-            if guard is not None and not guard.try_spend(source.cost_units):
+            if guard is None:
+                # Unreachable through `from_dict`, which rejects this at load. Kept
+                # because a hand-built registry must not spend an uncapped credit.
+                raise FetchDenied(f"no budget configured for {provider}", url)
+            if not guard.try_spend(source.cost_units):
                 raise FetchDenied(f"{provider} budget exhausted", url)
 
         host = urlparse(url).netloc

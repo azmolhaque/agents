@@ -72,6 +72,14 @@ class Source:
     cost_units: int = 0
     requires_contact_ua: bool = False
     notes: str = ""
+    # Which allowance this source spends from. Four serpapi_* sources share one
+    # SerpAPI quota, so the budget is a property of the *provider*, not the source.
+    # Defaults to the source id, which is right for a source with a private cap.
+    budget_key: str | None = None
+
+    @property
+    def budget_provider(self) -> str:
+        return self.budget_key or self.id
 
     @property
     def is_public_web(self) -> bool:
@@ -136,6 +144,7 @@ class SourceRegistry:
                 cost_units=int(entry.get("cost_units", 0)),
                 requires_contact_ua=bool(entry.get("requires_contact_ua", False)),
                 notes=str(entry.get("notes", "")),
+                budget_key=(str(entry["budget_key"]) if entry.get("budget_key") else None),
             )
 
         defaults = FetchDefaults(**_subset(data.get("defaults") or {}, FetchDefaults))
@@ -144,12 +153,20 @@ class SourceRegistry:
             policy_raw["paths"] = tuple(policy_raw["paths"])
         policy = PublicWebPolicy(**_subset(policy_raw, PublicWebPolicy))
 
-        return cls(
-            sources=sources,
-            defaults=defaults,
-            public_web=policy,
-            budget=dict(data.get("budget") or {}),
-        )
+        budget = dict(data.get("budget") or {})
+        # Fail closed. A source that costs credits but names no allowance would be
+        # fetched without any cap at all -- the egress layer can only enforce a guard
+        # that exists. That failure is invisible until the monthly quota is gone, so
+        # it is caught here, at load, instead of at 2am on the Pi.
+        for source in sources.values():
+            if source.enabled and source.cost_units and source.budget_provider not in budget:
+                raise ConfigError(
+                    f"source {source.id!r} costs {source.cost_units} unit(s) but "
+                    f"budget {source.budget_provider!r} is not configured; "
+                    f"known budgets: {sorted(budget)}"
+                )
+
+        return cls(sources=sources, defaults=defaults, public_web=policy, budget=budget)
 
     # ----------------------------------------------------------------- query
 

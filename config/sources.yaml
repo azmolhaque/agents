@@ -58,6 +58,7 @@ sources:
     enabled: true
     base_url: https://serpapi.com/search
     auth_env: SERPAPI_KEY
+    budget_key: serpapi # all four share one quota
     cache_ttl_hours: 72 # cache hard: every credit is precious
     cost_units: 1
     notes: Rationed discovery only. Prefer a free source wherever one exists.
@@ -68,6 +69,7 @@ sources:
     enabled: true
     base_url: https://serpapi.com/search
     auth_env: SERPAPI_KEY
+    budget_key: serpapi # all four share one quota
     cache_ttl_hours: 12 # news moves; cache it for less
     cost_units: 1
     notes: T2_FUNDING, T6_INCIDENT.
@@ -78,6 +80,7 @@ sources:
     enabled: true
     base_url: https://serpapi.com/search
     auth_env: SERPAPI_KEY
+    budget_key: serpapi # all four share one quota
     cache_ttl_hours: 48
     cost_units: 1
     notes: T3, T4, T5, T11 via greenhouse/lever/ashby/workable/bdjobs.
@@ -90,6 +93,7 @@ sources:
     enabled: true
     base_url: https://serpapi.com/search
     auth_env: SERPAPI_KEY
+    budget_key: serpapi # all four share one quota
     cache_ttl_hours: 12
     cost_units: 1
     notes: T9_MARKETPLACE, the highest-intent trigger.

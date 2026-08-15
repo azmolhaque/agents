@@ -22,7 +22,17 @@ from cindraleads.sources import (
     SourceRegistry,
 )
 
-MIGRATIONS = Path(__file__).resolve().parents[2] / "db" / "migrations"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MIGRATIONS = REPO_ROOT / "db" / "migrations"
+
+
+def _shipped_settings():  # type: ignore[no-untyped-def]
+    from cindraleads.config import settings
+
+    cfg = settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    return cfg
+
 
 REGISTRY = SourceRegistry.from_dict(
     {
@@ -37,6 +47,9 @@ REGISTRY = SourceRegistry.from_dict(
             {"id": "site", "legality_class": "public_web", "cache_ttl_hours": 24},
             {"id": "off", "legality_class": "public_web", "enabled": False},
         ],
+        # A costed source must name a configured allowance or the registry refuses to
+        # load it -- otherwise the guard lookup misses and the credit is uncapped.
+        "budget": {"api": {"daily_cap": 100, "safety_fraction": 1.0}},
         "defaults": {"retries": 2, "backoff_base_seconds": 0.001, "backoff_max_seconds": 0.002},
         "public_web_policy": {
             "fetch_budget_per_domain_24h": 6,
@@ -261,8 +274,10 @@ async def test_an_open_circuit_still_serves_a_stale_cache_entry(store):
 async def test_an_exhausted_budget_prevents_the_request(store):
     recorder = Recorder()
     client = make_client(store, recorder)
-    guard = BudgetGuard(store, "SERPAPI_KEY", cap=2, safety_fraction=1.0)
-    client.budgets["SERPAPI_KEY"] = guard
+    # The provider key is the source's budget_provider. An earlier version of this
+    # test registered the guard under the source's `auth_env` instead, which is not
+    # what the fetch path looks up -- so it passed while the real cap did nothing.
+    client.budgets["api"] = BudgetGuard(store, "api", cap=2, safety_fraction=1.0)
 
     await client.fetch("api", "https://x.io/1")
     await client.fetch("api", "https://x.io/2")
@@ -270,6 +285,52 @@ async def test_an_exhausted_budget_prevents_the_request(store):
         await client.fetch("api", "https://x.io/3")
     assert recorder.content_calls == 2
     await client.aclose()
+
+
+async def test_the_configured_cap_applies_without_anyone_registering_a_guard(store):
+    """The regression that mattered.
+
+    Nothing in the system built a BudgetGuard from `sources.yaml: budget`, so
+    `budgets.get(provider)` was always None and the `if guard is not None` check
+    turned every costed fetch into a free one. On the Pi that is invisible until
+    the monthly SerpAPI quota is gone.
+    """
+    registry = SourceRegistry.from_dict(
+        {
+            "sources": [
+                {"id": "api", "legality_class": "licensed_api", "cost_units": 1},
+            ],
+            "budget": {"api": {"daily_cap": 1, "safety_fraction": 1.0}},
+            "defaults": {"retries": 1, "backoff_base_seconds": 0.001},
+        }
+    )
+    recorder = Recorder()
+    client = EgressClient(
+        store=store,
+        registry=registry,
+        client=httpx.AsyncClient(transport=httpx.MockTransport(recorder)),
+    )
+    await client.fetch("api", "https://x.io/1")
+    with pytest.raises(FetchDenied, match="budget exhausted"):
+        await client.fetch("api", "https://x.io/2")
+    await client.aclose()
+
+
+async def test_the_four_serpapi_sources_share_one_quota():
+    """They are one account. Four separate caps would be four times the spend."""
+    shipped = SourceRegistry.from_config(_shipped_settings())
+    serp = [s for s in shipped.sources.values() if s.id.startswith("serpapi_")]
+    assert len(serp) == 4
+    assert {s.budget_provider for s in serp} == {"serpapi"}
+
+
+async def test_a_costed_source_with_no_allowance_will_not_load():
+    from cindraleads.errors import ConfigError
+
+    with pytest.raises(ConfigError, match="budget 'api' is not configured"):
+        SourceRegistry.from_dict(
+            {"sources": [{"id": "api", "legality_class": "licensed_api", "cost_units": 1}]}
+        )
 
 
 async def test_a_transient_failure_is_retried_then_succeeds(store):
