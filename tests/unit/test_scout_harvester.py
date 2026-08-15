@@ -140,20 +140,26 @@ def test_the_limit_is_respected(scout: Scout):
     assert len(scout.plan(limit=3)) == 3
 
 
-def test_a_cached_query_is_not_replanned(scout: Scout, tmp_path: Path):
+def test_a_cached_query_is_not_replanned(scout: Scout, rig, tmp_path: Path):
     """Planning a guaranteed cache hit wastes a slot in the batch on documents we
-    already have."""
-    from cindraleads.sources.cache import cache_key_for
+    already have.
 
-    store = Store(tmp_path / "s.db", migrations_dir=MIGRATIONS)
-    store.migrate()
+    The key must be the one the *client* fetches under. This test previously wrote
+    the cache entry with the Scout's own `cache_key_for(engine, query, params)`, which
+    matched the Scout's own lookup and so passed — while production wrote under
+    `(source_id, url, api_params)` and skip_if_cached never once fired.
+    """
+    harvester, store = rig(hn_payload())
     cache = DocumentCache(store, cache_dir=tmp_path / "cache")
     scout.cache = cache
+    scout.key_for_plan = harvester.cache_key_for_plan
 
     before = scout.plan()
-    target = before[0]
+    target = next(p for p in before if p.engine in ("hn_algolia", "github_api"))
+    key = scout.key_for_plan(target)
+    assert key is not None
     cache.put(
-        cache_key_for(target.engine, target.query, target.params),
+        key,
         "cached body",
         url="https://x.io",
         source_id=target.engine,
@@ -163,7 +169,24 @@ def test_a_cached_query_is_not_replanned(scout: Scout, tmp_path: Path):
     after = scout.plan()
     assert len(after) == len(before) - 1
     assert not any(p.query == target.query and p.engine == target.engine for p in after)
-    store.close()
+
+
+def test_the_scout_key_matches_the_key_the_client_actually_fetches(rig):
+    """A direct pin on the mismatch, independent of the planning path."""
+    from cindraleads.sources.cache import cache_key_for
+    from cindraleads.sources.clients import HackerNewsClient
+
+    harvester, _ = rig(hn_payload())
+    plan = QueryPlan(query="ai", engine="hn_algolia", params={"since_days": "30"})
+
+    url, params = HackerNewsClient.request_for("ai", since_days=30, tags="story")
+
+    assert harvester.cache_key_for_plan(plan) == cache_key_for("hn_algolia", url, params)
+
+
+def test_an_engine_with_no_client_has_no_cache_key(rig):
+    harvester, _ = rig(hn_payload())
+    assert harvester.cache_key_for_plan(QueryPlan(query="x", engine="serpapi_jobs")) is None
 
 
 # ------------------------------------------------------------------ harvester
@@ -260,15 +283,55 @@ async def test_a_malformed_payload_fails_cleanly(rig):
     assert "bad QueryPlan" in (result.error or "")
 
 
-def test_enqueueing_the_same_plan_twice_is_one_job(rig):
+def test_enqueueing_the_same_plan_twice_inside_the_window_is_one_job(rig):
     harvester, store = rig(hn_payload())
     plan = QueryPlan(query="ai agents", engine="hn_algolia", params={"since_days": "30"})
 
-    first = harvester.enqueue_plans([plan])
-    second = harvester.enqueue_plans([plan])
+    first_ids, first_new = harvester.enqueue_plans([plan])
+    second_ids, second_new = harvester.enqueue_plans([plan])
 
-    assert first == second, "the dedupe key is the plan's identity"
+    assert first_ids == second_ids, "the dedupe key is the plan's identity"
+    assert (first_new, second_new) == (1, 0), "the second call queued nothing new"
     assert JobQueue(store).stats()["pending"] == 1
+
+
+def test_the_same_plan_runs_again_once_its_cache_window_lapses():
+    """The bug this exists to prevent.
+
+    `JobQueue.enqueue` matches a dedupe key across *every* job, completed ones
+    included. With a key of just (engine, query, params), a query that had run once
+    could never run again — the first harvest worked and every later one deduped onto
+    the finished jobs and did nothing. The hourly timer would have harvested once at
+    boot and idled forever, with a queue that looked perfectly healthy.
+    """
+    from datetime import timedelta
+
+    from cindraleads.models import utcnow
+
+    plan = QueryPlan(query="ai agents", engine="hn_algolia", cache_ttl_hours=6)
+    now = utcnow()
+
+    same_window = Harvester.dedupe_key_for(plan, now=now + timedelta(hours=1))
+    next_window = Harvester.dedupe_key_for(plan, now=now + timedelta(hours=7))
+
+    assert Harvester.dedupe_key_for(plan, now=now) == same_window
+    assert next_window != same_window, "a lapsed cache window is genuinely new work"
+
+
+def test_a_longer_ttl_holds_the_query_back_longer():
+    """The bucket is the plan's own TTL, not a fixed interval: news is cached for
+    12 h and marketplace listings for 12 h, but a repo search for 72 h."""
+    from datetime import timedelta
+
+    from cindraleads.models import utcnow
+
+    now = utcnow()
+    short = QueryPlan(query="q", engine="hn_algolia", cache_ttl_hours=1)
+    long = QueryPlan(query="q", engine="hn_algolia", cache_ttl_hours=72)
+    later = now + timedelta(hours=2)
+
+    assert Harvester.dedupe_key_for(short, now=now) != Harvester.dedupe_key_for(short, now=later)
+    assert Harvester.dedupe_key_for(long, now=now) == Harvester.dedupe_key_for(long, now=later)
 
 
 def _job(plan: QueryPlan):  # type: ignore[no-untyped-def]

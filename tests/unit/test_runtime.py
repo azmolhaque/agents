@@ -81,3 +81,37 @@ async def test_an_exhausted_quota_still_produces_a_free_batch(rt):
 
         assert plans
         assert all(runtime.registry.get(p.engine).cost_units == 0 for p in plans)
+
+
+async def test_the_scout_is_given_the_harvesters_key_function(rt):
+    """Without this wiring `skip_if_cached` is dead code: the Scout compares a key
+    that nothing ever writes, reports skipped_cached=0 forever, and re-plans queries
+    whose answers are already sitting in the cache."""
+    async with rt as runtime:
+        assert runtime.scout.key_for_plan == runtime.harvester.cache_key_for_plan
+
+        plan = next(p for p in runtime.scout.plan() if p.engine == "hn_algolia")
+        assert runtime.scout.key_for_plan(plan) is not None
+
+
+async def test_a_cached_answer_is_not_replanned_end_to_end(rt):
+    """The Phase 2 gate, at the planning layer: a second run must not re-plan work
+    whose answer is still fresh."""
+    async with rt as runtime:
+        before = runtime.scout.plan()
+        target = next(p for p in before if p.engine == "hn_algolia")
+        key = runtime.harvester.cache_key_for_plan(target)
+        assert key is not None
+        runtime.cache.put(
+            key,
+            "cached body",
+            url="https://hn.algolia.com/api/v1/search_by_date",
+            source_id="hn_algolia",
+            legality_class="licensed_api",
+            ttl_hours=6,
+        )
+
+        after = runtime.scout.plan()
+
+        assert len(after) == len(before) - 1
+        assert not any(p.query == target.query and p.engine == target.engine for p in after)

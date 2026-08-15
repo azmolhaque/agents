@@ -312,8 +312,15 @@ def harvest(
             if dry_run:
                 typer.echo(f"dry run: {len(plans)} plan(s), nothing enqueued")
                 return
-            ids = runtime.harvester.enqueue_plans(plans)
-            typer.echo(f"enqueued {len(ids)} harvest job(s)")
+            ids, new = runtime.harvester.enqueue_plans(plans)
+            # Report new vs deduped separately. Printing len(ids) called a run that
+            # queued nothing "enqueued 12 harvest job(s)", which made a second run
+            # look like it had worked when it had in fact been deduped away.
+            skipped = len(ids) - new
+            typer.echo(
+                f"enqueued {new} new harvest job(s)"
+                + (f", {skipped} already queued or run this cache window" if skipped else "")
+            )
 
     asyncio.run(_run())
 

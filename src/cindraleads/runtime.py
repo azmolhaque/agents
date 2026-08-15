@@ -63,6 +63,10 @@ class Runtime:
             self.registry, store=self.store, cache=self.cache, config=self.config
         )
         self.harvester = Harvester(store=self.store, egress=self.egress, queue=self.queue)
+        # The Harvester owns the clients, so it is the only thing that can say what
+        # key a plan will be fetched under. Without this the Scout's skip_if_cached
+        # compares a key nothing ever writes.
+        self.scout.key_for_plan = self.harvester.cache_key_for_plan
         return self
 
     async def __aexit__(

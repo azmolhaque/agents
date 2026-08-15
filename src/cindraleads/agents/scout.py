@@ -32,7 +32,7 @@ from cindraleads.config import Settings, load_yaml, settings
 from cindraleads.errors import ConfigError
 from cindraleads.logging import get_logger
 from cindraleads.models import QueryPlan, TriggerCode
-from cindraleads.sources.cache import DocumentCache, cache_key_for
+from cindraleads.sources.cache import DocumentCache
 from cindraleads.sources.registry import SourceRegistry
 from cindraleads.store import Store
 
@@ -80,6 +80,9 @@ class Scout:
     config: ScoutConfig = field(default_factory=ScoutConfig)
     cache: DocumentCache | None = None
     store: Store | None = None
+    # `callable(plan) -> cache key | None`. The Runtime wires this to the Harvester,
+    # which asks the source client for the key it will really fetch under.
+    key_for_plan: Callable[[QueryPlan], str | None] | None = None
 
     @classmethod
     def from_config(
@@ -147,9 +150,21 @@ class Scout:
             return False
 
     def _already_cached(self, plan: QueryPlan) -> bool:
+        """Whether this plan's answer is already in the cache.
+
+        The key comes from ``key_for_plan`` — in practice the Harvester's, which asks
+        the client that will make the request. The Scout used to build its own key
+        from ``(engine, query, params)``, but the client fetches under
+        ``(source_id, url, api_params)``, so the two never matched and this check
+        silently always returned False. Without a key source, it says False honestly
+        rather than guessing.
+        """
         if not (self.config.skip_if_cached and self.cache is not None):
             return False
-        return self.cache.has_fresh(cache_key_for(plan.engine, plan.query, plan.params))
+        if self.key_for_plan is None:
+            return False
+        key = self.key_for_plan(plan)
+        return False if key is None else self.cache.has_fresh(key)
 
     def suppressed_domains(self) -> set[str]:
         """Domains we must never spend a credit discovering.

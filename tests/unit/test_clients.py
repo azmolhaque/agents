@@ -306,3 +306,44 @@ def test_an_empty_board_produces_no_triggers():
     signal = analyze_postings([])
     assert signal.total == 0
     assert signal.triggers == ()
+
+
+# ------------------------------------------------------------------ cache keys
+
+
+def test_the_hn_cutoff_is_quantized_to_midnight_utc():
+    """The cache key must not move between two calls a second apart.
+
+    `numericFilters` carried `utcnow()` to the second, so every HN search produced a
+    unique cache key and the egress cache could never hit -- every harvest re-fetched
+    the same window forever. The Phase 2 gate ("an identical second run makes zero
+    network calls") could not have been met while this was true.
+    """
+    _url, params = HackerNewsClient.request_for("ai", since_days=30)
+    cutoff = int(params["numericFilters"].split(">")[1])
+    assert cutoff % 86_400 == 0, "cutoff is a midnight-UTC boundary, not 'now minus 30 days'"
+
+
+def test_the_hn_cache_key_is_the_key_the_fetch_uses():
+    from cindraleads.sources.cache import cache_key_for
+
+    url, params = HackerNewsClient.request_for("ai", since_days=45, tags="show_hn")
+    assert HackerNewsClient.cache_key("ai", since_days=45, tags="show_hn") == cache_key_for(
+        "hn_algolia", url, params
+    )
+
+
+def test_the_github_cache_key_is_the_key_the_fetch_uses():
+    from cindraleads.sources.cache import cache_key_for
+
+    url, params = GitHubClient.request_for("mcp-server language:python")
+    assert GitHubClient.cache_key("mcp-server language:python") == cache_key_for(
+        "github_api", url, params
+    )
+
+
+def test_different_lookbacks_are_different_keys():
+    """Quantizing must not collapse a 30-day and a 90-day search onto one entry."""
+    assert HackerNewsClient.cache_key("ai", since_days=30) != HackerNewsClient.cache_key(
+        "ai", since_days=90
+    )

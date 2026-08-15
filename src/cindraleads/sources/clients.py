@@ -24,6 +24,7 @@ from typing import Any
 
 from cindraleads.logging import get_logger
 from cindraleads.models import TriggerCode, from_iso, utcnow
+from cindraleads.sources.cache import cache_key_for
 from cindraleads.sources.http import EgressClient
 
 __all__ = [
@@ -91,20 +92,43 @@ class HackerNewsClient:
     def __init__(self, egress: EgressClient) -> None:
         self.egress = egress
 
-    async def search(
-        self, query: str, *, since_days: int = 30, tags: str = "story", limit: int = 50
-    ) -> list[SourceHit]:
-        cutoff = int((utcnow() - timedelta(days=since_days)).timestamp())
-        result = await self.egress.fetch(
-            self.SOURCE_ID,
+    @classmethod
+    def request_for(
+        cls, query: str, *, since_days: int = 30, tags: str = "story", limit: int = 50
+    ) -> tuple[str, dict[str, str]]:
+        """The exact URL and params `search` will fetch.
+
+        Separate from `search` so the cache key can be computed without making the
+        request — the Scout needs to know whether an answer is already cached before
+        it spends a slot in the batch planning one.
+
+        The cutoff is **quantized to midnight UTC**, not to the current second. As a
+        raw `utcnow()` timestamp it made every call a unique cache key, so the egress
+        cache could never hit and every harvest re-fetched the same window. Day
+        granularity costs nothing against a 30-120 day lookback.
+        """
+        midnight = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        cutoff = int((midnight - timedelta(days=since_days)).timestamp())
+        return (
             "https://hn.algolia.com/api/v1/search_by_date",
-            params={
+            {
                 "query": query,
                 "tags": tags,
                 "numericFilters": f"created_at_i>{cutoff}",
                 "hitsPerPage": str(min(limit, 100)),
             },
         )
+
+    @classmethod
+    def cache_key(cls, query: str, **kwargs: Any) -> str:
+        url, params = cls.request_for(query, **kwargs)
+        return cache_key_for(cls.SOURCE_ID, url, params)
+
+    async def search(
+        self, query: str, *, since_days: int = 30, tags: str = "story", limit: int = 50
+    ) -> list[SourceHit]:
+        url, params = self.request_for(query, since_days=since_days, tags=tags, limit=limit)
+        result = await self.egress.fetch(self.SOURCE_ID, url, params=params)
         data = _safe_json(result.body, source_id=self.SOURCE_ID, url=result.url)
         if not isinstance(data, dict):
             return []
@@ -140,14 +164,25 @@ class GitHubClient:
         self.egress = egress
         self.token = token
 
+    @classmethod
+    def request_for(
+        cls, query: str, *, sort: str = "updated", limit: int = 30
+    ) -> tuple[str, dict[str, str]]:
+        return (
+            "https://api.github.com/search/repositories",
+            {"q": query, "sort": sort, "order": "desc", "per_page": str(min(limit, 100))},
+        )
+
+    @classmethod
+    def cache_key(cls, query: str, **kwargs: Any) -> str:
+        url, params = cls.request_for(query, **kwargs)
+        return cache_key_for(cls.SOURCE_ID, url, params)
+
     async def search_repos(
         self, query: str, *, sort: str = "updated", limit: int = 30
     ) -> list[SourceHit]:
-        result = await self.egress.fetch(
-            self.SOURCE_ID,
-            "https://api.github.com/search/repositories",
-            params={"q": query, "sort": sort, "order": "desc", "per_page": str(min(limit, 100))},
-        )
+        url, params = self.request_for(query, sort=sort, limit=limit)
+        result = await self.egress.fetch(self.SOURCE_ID, url, params=params)
         data = _safe_json(result.body, source_id=self.SOURCE_ID, url=result.url)
         if not isinstance(data, dict):
             return []

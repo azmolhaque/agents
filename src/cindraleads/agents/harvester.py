@@ -23,6 +23,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -71,6 +72,24 @@ class Harvester:
 
     def supports(self, engine: str) -> bool:
         return engine in {"hn_algolia", "github_api"}
+
+    def cache_key_for_plan(self, plan: QueryPlan) -> str | None:
+        """The cache key this plan's fetch will actually use, without fetching.
+
+        Delegated to the client rather than recomputed here. The Scout used to build
+        its own key from ``(engine, plan.query, plan.params)`` while the client fetched
+        under ``(source_id, url, api_params)``; the two never matched, so
+        ``skip_if_cached`` silently never fired.
+        """
+        if plan.engine == "hn_algolia":
+            return HackerNewsClient.cache_key(
+                plan.query,
+                since_days=int(plan.params.get("since_days", 30)),
+                tags=plan.params.get("tags") or "story",
+            )
+        if plan.engine == "github_api":
+            return GitHubClient.cache_key(plan.query)
+        return None
 
     # ------------------------------------------------------------- execution
 
@@ -206,19 +225,29 @@ class Harvester:
 
     # ------------------------------------------------------------ scheduling
 
-    def enqueue_plans(self, plans: list[QueryPlan]) -> list[str]:
-        """Turn a Scout batch into durable jobs.
+    def enqueue_plans(self, plans: list[QueryPlan]) -> tuple[list[str], int]:
+        """Turn a Scout batch into durable jobs. Returns (job ids, how many are new).
 
-        The dedupe key is the plan's identity, so re-running the Scout inside a cache
-        window does not queue the same query twice.
+        **The dedupe key carries a time bucket, and it has to.** `JobQueue.enqueue`
+        matches a dedupe key across *every* job including completed ones, so a key of
+        just `(engine, query, params)` meant a query could never run a second time:
+        the first harvest ran, and every harvest after it deduped onto those finished
+        jobs and did nothing. Left alone, the Phase 7 hourly timer would have
+        harvested once at boot and then idled forever, looking healthy the whole time.
+
+        Bucketing by the plan's cache TTL gives the intended rule instead — one run
+        per query per cache window. Inside the window, re-planning is a no-op because
+        the answer would be served from cache anyway; once it lapses, the query is
+        genuinely new work and gets a new key.
         """
         ids: list[str] = []
+        new = 0
         with self.store.tx() as conn:
             for plan in plans:
-                shape = (plan.query, tuple(sorted(plan.params.items())))
-                key = (
-                    f"harvest:{plan.engine}:{hashlib.sha256(repr(shape).encode()).hexdigest()[:16]}"
-                )
+                key = self.dedupe_key_for(plan)
+                existed = conn.execute(
+                    "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (key,)
+                ).fetchone()
                 ids.append(
                     self.queue.enqueue(
                         HARVEST_KIND,
@@ -227,7 +256,17 @@ class Harvester:
                         conn=conn,
                     )
                 )
-        return ids
+                if existed is None:
+                    new += 1
+        return ids, new
+
+    @staticmethod
+    def dedupe_key_for(plan: QueryPlan, *, now: datetime | None = None) -> str:
+        shape = (plan.query, tuple(sorted(plan.params.items())))
+        digest = hashlib.sha256(repr(shape).encode()).hexdigest()[:16]
+        ttl = max(1, plan.cache_ttl_hours)
+        bucket = int((now or utcnow()).timestamp()) // (ttl * 3600)
+        return f"harvest:{plan.engine}:{digest}:{bucket}"
 
 
 def _payload_json(hit: SourceHit, plan: QueryPlan) -> str:
