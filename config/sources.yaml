@@ -9,6 +9,14 @@
 #   licensed_api   an API we are entitled to call, under its own rate limits
 #   first_party    our own data (inbound mail to contact@cindrasec.com)
 #
+# `role` splits the two jobs a source can do, and the split is what makes a 250-search
+# monthly quota workable (PLAN.md decision 7):
+#
+#   discovery   finds companies we do not know about yet. Genuinely hard, and the only
+#               thing SerpAPI is irreplaceable for.
+#   enrichment  deepens a company we already have. Almost entirely free: a company's
+#               Greenhouse board, its CT log, its DNS are all public JSON endpoints.
+#
 # There is deliberately no class for "scrape a site that forbids it". See PLAN.md.
 
 defaults:
@@ -41,17 +49,22 @@ public_web_policy:
     - "/.well-known/security.txt"
 
 sources:
+  # SerpAPI is NOT the spine. The free plan is 250 searches/month (~8/day) and the
+  # paid tier is ~$75/month against a $15/month budget. It is rationed like the cloud
+  # LLM tier: a handful of high-value discovery queries a day, nothing routine.
   - id: serpapi_search
     legality_class: licensed_api
+    role: discovery
     enabled: true
     base_url: https://serpapi.com/search
     auth_env: SERPAPI_KEY
-    cache_ttl_hours: 48
+    cache_ttl_hours: 72 # cache hard: every credit is precious
     cost_units: 1
-    notes: The spine. Trigger discovery across every vertical.
+    notes: Rationed discovery only. Prefer a free source wherever one exists.
 
   - id: serpapi_news
     legality_class: licensed_api
+    role: discovery
     enabled: true
     base_url: https://serpapi.com/search
     auth_env: SERPAPI_KEY
@@ -61,6 +74,7 @@ sources:
 
   - id: serpapi_jobs
     legality_class: licensed_api
+    role: discovery
     enabled: true
     base_url: https://serpapi.com/search
     auth_env: SERPAPI_KEY
@@ -72,6 +86,7 @@ sources:
   # directly -- that is a ToS violation and a brand risk, not a technical preference.
   - id: serpapi_marketplace
     legality_class: licensed_api
+    role: discovery
     enabled: true
     base_url: https://serpapi.com/search
     auth_env: SERPAPI_KEY
@@ -80,6 +95,7 @@ sources:
     notes: T9_MARKETPLACE, the highest-intent trigger.
 
   - id: company_site
+    role: enrichment
     legality_class: public_web
     enabled: true
     cache_ttl_hours: 168
@@ -87,6 +103,7 @@ sources:
     notes: Homepage and standard well-known paths. Subject to public_web_policy.
 
   - id: crtsh
+    role: enrichment
     legality_class: public_record
     enabled: true
     base_url: https://crt.sh
@@ -95,6 +112,7 @@ sources:
     notes: T7_SURFACE_SPRAWL. A public log, queried as a log.
 
   - id: github_api
+    role: discovery
     legality_class: licensed_api
     enabled: true
     base_url: https://api.github.com
@@ -104,6 +122,7 @@ sources:
     notes: T1_AI_SHIP, T11_STACK_RISK.
 
   - id: hn_algolia
+    role: discovery
     legality_class: licensed_api
     enabled: true
     base_url: https://hn.algolia.com/api/v1
@@ -112,6 +131,7 @@ sources:
     notes: T1_AI_SHIP, T10_VENDOR_PRESSURE. No auth, still rate-limited.
 
   - id: sec_edgar
+    role: discovery
     legality_class: public_record
     enabled: true
     base_url: https://www.sec.gov
@@ -122,6 +142,7 @@ sources:
     notes: T6_INCIDENT via 8-K Item 1.05.
 
   - id: rss_feeds
+    role: discovery
     legality_class: public_web
     enabled: true
     cache_ttl_hours: 6
@@ -130,19 +151,82 @@ sources:
 
   # Off until Phase 6. Listed so the class is decided before the code exists.
   - id: inbound_web3forms
+    role: discovery
     legality_class: first_party
     enabled: false
     cache_ttl_hours: 0
     cost_units: 0
     notes: T0_INBOUND. Our own inbox; highest intent of all.
 
+  # ---- free enrichment: a known company's own public endpoints -------------
+  # These are why a 250/month search quota is survivable. Given a company name or
+  # domain, each is public JSON with no key and no meaningful rate limit, and between
+  # them they cover the highest-weight hiring triggers that SerpAPI was meant to find.
+
+  - id: greenhouse_boards
+    role: enrichment
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://boards-api.greenhouse.io/v1/boards
+    cache_ttl_hours: 24
+    cost_units: 0
+    notes: T3/T4/T5/T11. Public board JSON, no auth. boards/{token}/jobs.
+
+  - id: lever_postings
+    role: enrichment
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://api.lever.co/v0/postings
+    cache_ttl_hours: 24
+    cost_units: 0
+    notes: T3/T4/T5/T11. Public postings JSON, no auth.
+
+  - id: ashby_postings
+    role: enrichment
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://api.ashbyhq.com/posting-api/job-board
+    cache_ttl_hours: 24
+    cost_units: 0
+    notes: T3/T4/T5/T11. Public job-board JSON, no auth.
+
+  - id: producthunt
+    role: discovery
+    legality_class: licensed_api
+    enabled: false # needs a (free) API token; turn on when PRODUCTHUNT_TOKEN is set
+    base_url: https://api.producthunt.com/v2/api/graphql
+    auth_env: PRODUCTHUNT_TOKEN
+    cache_ttl_hours: 12
+    cost_units: 0
+    notes: T1_AI_SHIP. Free GraphQL API.
+
+  - id: cisa_kev
+    role: enrichment
+    legality_class: public_record
+    enabled: true
+    base_url: https://www.cisa.gov/sites/default/files/feeds
+    cache_ttl_hours: 24
+    cost_units: 0
+    notes: Sector-level T6_INCIDENT context. Public JSON feed.
+
+  - id: rdap
+    role: enrichment
+    legality_class: public_record
+    enabled: true
+    base_url: https://rdap.org
+    cache_ttl_hours: 720 # domain age does not change
+    cost_units: 0
+    notes: Domain age, registrar, org.
+
 budget:
   serpapi:
-    # Read the real quota from the account endpoint at startup. Never hardcode it.
+    # Read the real quota from the account endpoint at startup. Never hardcode it --
+    # the measured free plan is 250/month, but the account is the authority.
     discover_quota_at_startup: true
     quota_endpoint: https://serpapi.com/account
-    # Stop at 85% and warn, leaving headroom for anything urgent.
+    # A DAILY cap derived from the monthly quota, not the monthly quota itself.
+    # 250/month is 8.3/day; spending against the month directly would let one morning
+    # burn the lot. 8/day at 85% is ~6.8 usable, ~204/month, with headroom to spare.
+    daily_cap: 8
     safety_fraction: 0.85
-    # A naive daily counter gets spent by mid-morning because harvest runs hourly.
-    # A token bucket refilling across 24 h spreads the same quota over the whole day.
     refill_window_hours: 24

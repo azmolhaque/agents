@@ -13,13 +13,13 @@ run", never "runs unclassified".
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 from cindraleads.config import Settings, load_yaml, settings
 from cindraleads.errors import ConfigError
 from cindraleads.models import LegalityClass
 
-__all__ = ["FetchDefaults", "PublicWebPolicy", "Source", "SourceRegistry"]
+__all__ = ["FetchDefaults", "PublicWebPolicy", "Source", "SourceRegistry", "SourceRole"]
 
 _VALID_CLASSES: frozenset[str] = frozenset(
     {"public_record", "public_web", "licensed_api", "first_party"}
@@ -54,10 +54,17 @@ class PublicWebPolicy:
     paths: tuple[str, ...] = ("/",)
 
 
+SourceRole = Literal["discovery", "enrichment"]
+
+
 @dataclass(frozen=True)
 class Source:
     id: str
     legality_class: LegalityClass
+    # PLAN.md decision 7: discovery finds companies we do not know; enrichment
+    # deepens ones we do. Enrichment is almost entirely free, which is what makes a
+    # 250-search monthly quota workable.
+    role: SourceRole = "enrichment"
     enabled: bool = True
     base_url: str | None = None
     auth_env: str | None = None
@@ -113,9 +120,15 @@ class SourceRegistry:
                 )
             if source_id in sources:
                 raise ConfigError(f"duplicate source id {source_id!r}")
+            role = entry.get("role", "enrichment")
+            if role not in ("discovery", "enrichment"):
+                raise ConfigError(
+                    f"source {source_id!r} has role={role!r}; must be discovery or enrichment"
+                )
             sources[str(source_id)] = Source(
                 id=str(source_id),
                 legality_class=klass,
+                role=role,
                 enabled=bool(entry.get("enabled", True)),
                 base_url=entry.get("base_url"),
                 auth_env=entry.get("auth_env"),
@@ -153,6 +166,15 @@ class SourceRegistry:
 
     def by_class(self, legality_class: LegalityClass) -> list[Source]:
         return [s for s in self.sources.values() if s.legality_class == legality_class]
+
+    def by_role(self, role: SourceRole, *, enabled_only: bool = True) -> list[Source]:
+        return [
+            s for s in self.sources.values() if s.role == role and (s.enabled or not enabled_only)
+        ]
+
+    def free_sources(self) -> list[Source]:
+        """Sources that cost no rationed credit. The Scout should exhaust these first."""
+        return [s for s in self.sources.values() if s.enabled and s.cost_units == 0]
 
     def require_enabled(self, source_id: str) -> Source:
         """Fetch-time check. A disabled source is a config decision, not an error to

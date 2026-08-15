@@ -19,13 +19,22 @@ document) as the first artifact.
 
 ## Decisions locked after Phase 1 measurement (2026-08-15)
 
-Two more deviations, both forced by numbers from the 24-page benchmark on the Pi
-(`docs/BENCHMARKS.md`). These override the master prompt where they conflict.
+Three more deviations, forced by measurement rather than taste: two from the 24-page
+benchmark on the Pi (`docs/BENCHMARKS.md`), one from the actual SerpAPI quota. These
+override the master prompt where they conflict.
 
 | # | Decision | Rationale |
 | --- | --- | --- |
 | 5 | **Definition of Done drops "median wall-clock per lead < 90 s"** and replaces it with a throughput criterion: *sustains 40 leads/day end to end, with the queue draining faster than it fills.* | One extraction alone is **64 s** measured (39 s on `llama3.2:3b`), and a lead needs several LLM calls. The 90 s target is off by 2-3x and no tuning closes it — only different hardware would. Throughput is the thing that actually matters and it is comfortably reachable: 200 docs/day is 3.6 h of inference on the 4B, 2.2 h on the 3B. |
 | 6 | **Thermal governor pauses inference at 84 C, not 78 C.** Only *under-voltage* forces the critical single-worker state; thermal capping does not. | The Pi climbs for ~5 pages then **plateaus at 80-82.3 C** and holds, with 100% success, zero timeouts and no upward latency trend (page 5: 69.5 s, page 20: 62.5 s). It is an equilibrium below the 85 C hard limit. Pausing at 78 C would have stopped a machine that was working; stopping is far worse than the ~8% clock reduction the Pi applies itself. Under-voltage stays critical because it is a power fault, risks corruption, and does not resolve by waiting. |
+| 7 | **SerpAPI is not the spine.** Free sources do discovery and enrichment; SerpAPI is rationed to ~7 queries/day under the budget guard, like the cloud LLM tier. | The account's free plan is **250 searches/month (~8/day)**. With hourly harvests that is 0.3 queries per harvest — SerpAPI cannot carry the pipeline. Upgrading does not resolve it either: the paid tier is ~**$75/month against a $15/month** Definition-of-Done budget, 5x over. The fix is the discovery/enrichment split: *discovery* (finding unknown companies) is genuinely hard and worth a credit; *enrichment* (deepening a known company) is almost entirely free. A company's Greenhouse, Lever or Ashby board is public JSON with no key, and those carry T3/T4/T5/T11 — the high-weight hiring triggers SerpAPI was meant to find. Add GitHub, HN Algolia, crt.sh, RDAP, RSS, EDGAR and CISA KEV and every trigger in the taxonomy is reachable for $0. |
+
+Phase 2's acceptance test changes to match #7. "50 real SerpAPI queries produce >= 200
+raw docs" would spend a fifth of the monthly quota on a test that could then only be run
+once, which makes it useless as a regression. It becomes: **50 queries across the free
+sources produce >= 200 raw docs; an identical second run makes 0 network calls; the
+budget guard halts at its cap** — plus a 2-3 query SerpAPI smoke test to prove that
+integration works.
 
 Phase 7's acceptance criterion changes to match #6: **"no thermal throttle event"** is not
 achievable for sustained inference on this hardware and was never the right question.

@@ -171,3 +171,48 @@ def test_defaults_carry_the_circuit_breaker_settings():
     registry = SourceRegistry.from_dict(minimal())
     assert registry.defaults.circuit_failure_threshold == 3
     assert registry.defaults.circuit_open_seconds == 900.0
+
+
+# ------------------------------------------- discovery / enrichment split
+
+
+def test_sources_declare_a_role(shipped: SourceRegistry):
+    """PLAN.md decision 7. Discovery finds companies we do not know; enrichment
+    deepens ones we do. The split is what makes a 250-search month workable."""
+    for source in shipped.sources.values():
+        assert source.role in ("discovery", "enrichment"), source.id
+
+
+def test_an_invented_role_is_fatal():
+    with pytest.raises(ConfigError, match="role"):
+        SourceRegistry.from_dict(
+            {"sources": [{"id": "x", "legality_class": "public_web", "role": "vibes"}]}
+        )
+
+
+def test_the_hiring_triggers_are_reachable_without_spending_a_credit(shipped: SourceRegistry):
+    """T3/T4/T5/T11 were assigned to SerpAPI in the master prompt. A known company's
+    ATS board is public JSON, so they cost nothing once the company is known."""
+    free_ids = {s.id for s in shipped.free_sources()}
+    assert {"greenhouse_boards", "lever_postings", "ashby_postings"} <= free_ids
+
+
+def test_most_enabled_sources_cost_nothing(shipped: SourceRegistry):
+    """If the pipeline depended on paid search for routine work, 250/month would run
+    out in a day. The free set has to dominate."""
+    free = shipped.free_sources()
+    costed = [s for s in shipped.enabled_sources() if s.cost_units]
+    assert len(free) > len(costed) * 2
+    # Everything that costs a credit is SerpAPI, and it is discovery-only.
+    for source in costed:
+        assert source.id.startswith("serpapi")
+        assert source.role == "discovery"
+
+
+def test_serpapi_is_capped_daily_not_monthly(shipped: SourceRegistry):
+    """Spending against the monthly quota directly would let one morning burn the
+    lot. 8/day at 85% is ~204/month with headroom."""
+    serp = shipped.budget["serpapi"]
+    assert serp["daily_cap"] == 8
+    assert serp["refill_window_hours"] == 24
+    assert serp["daily_cap"] * 30 * serp["safety_fraction"] < 250
