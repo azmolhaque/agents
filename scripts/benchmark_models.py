@@ -56,6 +56,7 @@ class ModelRun:
     prompt_tokens: list[int] = field(default_factory=list)
     prompt_eval_ms: list[int] = field(default_factory=list)
     eval_ms: list[int] = field(default_factory=list)
+    load_ms: list[int] = field(default_factory=list)
     decode_tps: list[float] = field(default_factory=list)
     prefill_tps: list[float] = field(default_factory=list)
     timeouts: int = 0
@@ -185,6 +186,7 @@ async def run_model(
             if result.eval_ms:
                 run.eval_ms.append(result.eval_ms)
                 run.decode_tps.append(result.decode_tokens_per_second)
+            run.load_ms.append(result.load_ms)
 
         policy = governor.poll()
         reading = governor.last_reading
@@ -196,7 +198,12 @@ async def run_model(
         # the first success, because a running total is always truthy.
         split = ""
         if page_ok and run.prompt_eval_ms and run.eval_ms:
-            split = f" [prefill {run.prompt_eval_ms[-1]:>6}ms + decode {run.eval_ms[-1]:>6}ms]"
+            split = f" [prefill {run.prompt_eval_ms[-1]:>6}ms + decode {run.eval_ms[-1]:>6}ms"
+            # Cold model load is a storage cost, not a model cost. On microSD a 3.2 GB
+            # load is ~30 s and lands entirely on the first page of a run.
+            if run.load_ms and run.load_ms[-1] > 500:
+                split += f" + load {run.load_ms[-1]:>6}ms"
+            split += "]"
         print(
             f"  {slug:<24} {'ok  ' if page_ok else 'FAIL'} "
             f"{run.latencies_ms[-1]:>7} ms  {policy.state:<9} "
@@ -259,13 +266,14 @@ def render(
             "fixes: shorten the input vs shrink the output. A single tok/s figure over",
             "total latency hides which one is binding.",
             "",
-            "| Model | Median prefill | Median decode | Prefill tok/s | Decode tok/s |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| Model | Median prefill | Median decode | Prefill tok/s | Decode tok/s | Cold load |",
+            "| --- | ---: | ---: | ---: | ---: | ---: |",
         ]
         for r in usable:
             lines.append(
                 f"| `{r.model}` | {r.median_prefill_ms} ms | {r.median_decode_ms} ms | "
-                f"{r.median_prefill_tps:.1f} | {r.median_decode_tps:.1f} |"
+                f"{r.median_prefill_tps:.1f} | {r.median_decode_tps:.1f} | "
+                f"{max(r.load_ms) if r.load_ms else 0} ms |"
             )
         lines.append("")
 
