@@ -37,9 +37,13 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from cindraleads.config import load_yaml, settings  # noqa: E402
 from cindraleads.errors import ConfigError, SchemaValidationError  # noqa: E402
 from cindraleads.llm import ModelRegistry, OllamaBackend, StructuredLLM  # noqa: E402
-from cindraleads.models import Candidate  # noqa: E402
+from cindraleads.models import Candidate, CompanyExtraction  # noqa: E402
 from cindraleads.textextract import extract_text, selectolax_available  # noqa: E402
 from cindraleads.thermal import ThermalGovernor  # noqa: E402
+
+# Filled in by main_async so render() can report exactly what was measured.
+SCHEMA_NAME = ["?"]
+RUN_PARAMS: dict[str, object] = {"max_chars": 0, "max_tokens": 0, "timeout": 0.0}
 
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "html"
 PROMPT_PATH = REPO_ROOT / "prompts" / "extract_company.md"
@@ -53,6 +57,8 @@ class ModelRun:
     valid: int = 0
     latencies_ms: list[int] = field(default_factory=list)
     completion_tokens: list[int] = field(default_factory=list)
+    prompt_tokens: list[int] = field(default_factory=list)
+    timeouts: int = 0
     tok_per_sec: list[float] = field(default_factory=list)
     peak_temp_c: float = 0.0
     throttled: bool = False
@@ -100,9 +106,18 @@ def candidates(explicit: str | None) -> list[str]:
     return [str(m) for m in listed] or list(ModelRegistry().roles.values())
 
 
-async def run_model(model: str, fixtures: list[tuple[str, str]], template: str) -> ModelRun:
+async def run_model(
+    model: str,
+    fixtures: list[tuple[str, str]],
+    template: str,
+    *,
+    schema_cls: type,
+    max_chars: int,
+    timeout: float,
+    max_tokens: int,
+) -> ModelRun:
     run = ModelRun(model=model)
-    backend = OllamaBackend()
+    backend = OllamaBackend(timeout=timeout)
     governor = ThermalGovernor()
 
     installed = await backend.list_models()
@@ -116,21 +131,36 @@ async def run_model(model: str, fixtures: list[tuple[str, str]], template: str) 
     llm = StructuredLLM(backend, registry=ModelRegistry({"workhorse": model}))
 
     for slug, html in fixtures:
-        text = extract_text(html)
+        text = extract_text(html, max_chars=max_chars)
         prompt = template.replace("{url}", f"https://{slug}").replace("{content}", text)
         run.pages += 1
         started = time.monotonic()
+        page_ok = False
         try:
             result = await llm.generate(
-                prompt, Candidate, role="workhorse", temperature=0.0, allow_escalation=False
+                prompt,
+                schema_cls,
+                role="workhorse",
+                temperature=0.0,
+                max_tokens=max_tokens,
+                allow_escalation=False,
             )
         except SchemaValidationError as exc:
-            run.errors.append(f"{slug}: {str(exc)[:160]}")
-            run.latencies_ms.append(int((time.monotonic() - started) * 1000))
+            elapsed = int((time.monotonic() - started) * 1000)
+            run.latencies_ms.append(elapsed)
+            # A timeout is a capacity problem; a parse failure is a prompt/model
+            # problem. Lumping them together hides which one you actually have.
+            if elapsed >= timeout * 1000 * 0.95 or "Timeout" in str(exc):
+                run.timeouts += 1
+                run.errors.append(f"{slug}: TIMEOUT after {elapsed} ms")
+            else:
+                run.errors.append(f"{slug}: {str(exc)[:160]}")
         else:
+            page_ok = True
             run.valid += 1
             run.latencies_ms.append(result.latency_ms)
             run.completion_tokens.append(result.completion_tokens)
+            run.prompt_tokens.append(result.prompt_tokens)
             if result.latency_ms > 0 and result.completion_tokens:
                 run.tok_per_sec.append(result.completion_tokens / (result.latency_ms / 1000))
 
@@ -140,9 +170,12 @@ async def run_model(model: str, fixtures: list[tuple[str, str]], template: str) 
             run.peak_temp_c = max(run.peak_temp_c, reading.temp_c)
         if reading and reading.throttled_now:
             run.throttled = True
+        # page_ok, not run.valid: the old version printed "ok" for every page after
+        # the first success, because a running total is always truthy.
         print(
-            f"  {slug:<24} {'ok ' if run.valid else '   '} "
-            f"{run.latencies_ms[-1]:>6} ms  state={policy.state}"
+            f"  {slug:<24} {'ok  ' if page_ok else 'FAIL'} "
+            f"{run.latencies_ms[-1]:>7} ms  {policy.state:<9} "
+            f"{'' if not reading or reading.temp_c is None else f'{reading.temp_c:.1f}C'}"
         )
 
     await backend.aclose()
@@ -160,7 +193,9 @@ def render(runs: list[ModelRun], fixture_count: int) -> str:
         f"- Measured: {stamp}",
         f"- Corpus: {fixture_count} real HTML pages (`tests/fixtures/html/`)",
         f"- Boilerplate stripper: {'selectolax' if selectolax_available() else 'stdlib fallback'}",
-        "- Schema: `Candidate`, enforced via Ollama `format`, temperature 0",
+        f"- Schema: `{SCHEMA_NAME[0]}`, enforced via Ollama `format`, temperature 0",
+        f"- Prompt budget: {RUN_PARAMS['max_chars']} chars/page, "
+        f"num_predict={RUN_PARAMS['max_tokens']}, timeout={RUN_PARAMS['timeout']}s",
         "",
         "## Phase 1 gate: schema validity >= 95%",
         "",
@@ -173,7 +208,9 @@ def render(runs: list[ModelRun], fixture_count: int) -> str:
             lines.append(f"| `{r.model}` | — | **NOT INSTALLED** | — | — | — | — | — |")
             continue
         lines.append(
-            f"| `{r.model}` | {r.pages} | {r.validity_pct:.1f}% | {r.pct(0.5)} ms | "
+            f"| `{r.model}` | {r.pages} | {r.validity_pct:.1f}%"
+            + (f" ({r.timeouts} timeout)" if r.timeouts else "")
+            + f" | {r.pct(0.5)} ms | "
             f"{r.pct(0.95)} ms | {r.median_tps:.1f} | "
             f"{r.peak_temp_c:.1f} C | {'YES' if r.throttled else 'no'} |"
         )
@@ -218,12 +255,28 @@ async def main_async(args: argparse.Namespace) -> int:
     settings().ensure_dirs()
     fixtures = load_fixtures(args.limit)
     template = PROMPT_PATH.read_text(encoding="utf-8")
-    print(f"corpus: {len(fixtures)} pages\n")
+    schema_cls = CompanyExtraction if args.schema == "lean" else Candidate
+    SCHEMA_NAME[0] = schema_cls.__name__
+    RUN_PARAMS.update(max_chars=args.max_chars, max_tokens=args.max_tokens, timeout=args.timeout)
+    print(
+        f"corpus: {len(fixtures)} pages | schema={args.schema} ({schema_cls.__name__}) "
+        f"| max_chars={args.max_chars} | timeout={args.timeout}s\n"
+    )
 
     runs: list[ModelRun] = []
     for model in candidates(args.model):
         print(f"--- {model} ---")
-        runs.append(await run_model(model, fixtures, template))
+        runs.append(
+            await run_model(
+                model,
+                fixtures,
+                template,
+                schema_cls=schema_cls,
+                max_chars=args.max_chars,
+                timeout=args.timeout,
+                max_tokens=args.max_tokens,
+            )
+        )
         print()
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -232,7 +285,10 @@ async def main_async(args: argparse.Namespace) -> int:
 
     for r in runs:
         if r.available:
-            print(f"  {r.model}: {r.validity_pct:.1f}% valid, {r.median_tps:.1f} tok/s")
+            print(
+                f"  {r.model}: {r.validity_pct:.1f}% valid, {r.median_tps:.1f} tok/s, "
+                f"{r.timeouts} timeout(s), peak {r.peak_temp_c:.1f}C"
+            )
     usable = [r for r in runs if r.available and r.pages]
     if not usable:
         print("\nNo candidate model was installed. Nothing measured.")
@@ -244,6 +300,20 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", help="benchmark a single tag instead of the configured list")
     ap.add_argument("--limit", type=int, help="use only the first N fixtures")
+    ap.add_argument(
+        "--schema",
+        choices=["lean", "full"],
+        default="lean",
+        help="lean=CompanyExtraction (flat, no nested $defs); full=Candidate",
+    )
+    ap.add_argument(
+        "--max-chars",
+        type=int,
+        default=4000,
+        help="prompt text budget per page; prompt eval dominates latency on a Pi",
+    )
+    ap.add_argument("--timeout", type=float, default=180.0, help="per-request timeout, seconds")
+    ap.add_argument("--max-tokens", type=int, default=768, help="num_predict cap")
     return asyncio.run(main_async(ap.parse_args()))
 
 

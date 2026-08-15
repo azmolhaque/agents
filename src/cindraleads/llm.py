@@ -44,6 +44,7 @@ __all__ = [
     "OllamaBackend",
     "StructuredLLM",
     "StructuredResult",
+    "strip_schema_annotations",
 ]
 
 T = TypeVar("T", bound=BaseModel)
@@ -221,6 +222,42 @@ class OllamaBackend:
 # ------------------------------------------------------------------ orchestrator
 
 
+_ANNOTATION_KEYWORDS = frozenset({"description", "title"})
+# Maps whose keys are field names rather than schema keywords.
+_NAME_KEYED_MAPS = frozenset({"properties", "$defs", "definitions", "patternProperties"})
+
+
+def strip_schema_annotations(node: Any) -> Any:
+    """Remove ``description`` and ``title`` from a JSON Schema, recursively.
+
+    Pydantic copies a model's docstring into ``description`` and its class name into
+    ``title``. That is useful for OpenAPI and pure overhead here: measured on
+    ``CompanyExtraction`` it was 59% of the schema payload, and the text was internal
+    engineering rationale ("hallucination surface", "measured on a Pi 5") that the
+    model has no business reading.
+
+    Field semantics belong in the prompt, which is versioned and reviewed, not
+    smuggled in through docstrings that nobody realises are being sent.
+    """
+    if isinstance(node, dict):
+        result: dict[str, Any] = {}
+        for key, value in node.items():
+            if key in _ANNOTATION_KEYWORDS:
+                continue
+            if key in _NAME_KEYED_MAPS and isinstance(value, dict):
+                # The keys inside `properties` / `$defs` are user-chosen FIELD NAMES,
+                # not schema keywords. CompanyExtraction has a field called
+                # `description`; filtering by key here would delete it from the
+                # schema and the model would silently stop being asked for it.
+                result[key] = {name: strip_schema_annotations(sub) for name, sub in value.items()}
+            else:
+                result[key] = strip_schema_annotations(value)
+        return result
+    if isinstance(node, list):
+        return [strip_schema_annotations(item) for item in node]
+    return node
+
+
 def _extract_json(text: str) -> str:
     """Recover the JSON object from a response with stray prose around it.
 
@@ -287,7 +324,7 @@ class StructuredLLM:
                 "LLM inference is paused by the thermal governor; retry when cool"
             )
 
-        schema = model_cls.model_json_schema()
+        schema = strip_schema_annotations(model_cls.model_json_schema())
         tag = self.registry.tag(role)
         attempts = 0
         total_ms = 0

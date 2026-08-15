@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_vali
 __all__ = [
     "Candidate",
     "Company",
+    "CompanyExtraction",
     "ComplianceVerdict",
     "Contact",
     "DnsHygiene",
@@ -282,6 +283,42 @@ class Candidate(_Model):
     contacts: list[Contact] = Field(default_factory=list)
     resolved_domain: str | None = None
     created_at: datetime = Field(default_factory=utcnow)
+
+
+class CompanyExtraction(_Model):
+    """What the local model is actually asked to emit. Flat, on purpose.
+
+    Measured on a Pi 5 (2026-08-15): asking a 4B for the full nested ``Candidate``
+    shape timed out at 180 s per page. Two separate problems, one fix:
+
+    1. **Grammar cost.** Ollama compiles the JSON Schema into a sampling grammar.
+       ``Candidate`` carries three nested ``$defs`` (Evidence, Trigger, Contact);
+       every sampled token is checked against that, and it is far more expensive
+       than a flat object with string lists.
+
+    2. **Hallucination surface.** The nested shape asked the model to emit
+       ``Evidence.url`` and ``Evidence.content_sha256``. Those are *facts already
+       known to the Harvester* — the URL we fetched and the hash of what came back.
+       Letting a 4B invent them puts fabricated values in the one field the entire
+       "no evidence, no lead" rule rests on.
+
+    So the model emits claims and verbatim snippets; the pipeline attaches
+    provenance from the ``RawDocument`` it already has. The model cannot invent a
+    URL because it is never asked for one.
+    """
+
+    display_name: str
+    canonical_domain: str | None = None
+    country: str | None = None
+    description: str | None = None
+    employee_band: EmployeeBand | None = None
+    industry: str | None = None
+    tech_signals: list[str] = Field(default_factory=list)
+    ai_surface: list[str] = Field(default_factory=list)
+    trigger_codes: list[TriggerCode] = Field(default_factory=list)
+    # Verbatim spans supporting the claims above. The Extractor pairs these with
+    # the fetched URL + content hash to build real Evidence objects.
+    evidence_snippets: list[str] = Field(default_factory=list)
 
 
 class Job(_Model):

@@ -225,3 +225,79 @@ async def test_latency_accumulates_across_the_ladder():
 def test_ollama_backend_defaults_to_localhost():
     """Nothing outside the Pi should reach the model server."""
     assert OllamaBackend().base_url == "http://localhost:11434"
+
+
+# ------------------------------------------------------- schema payload size
+
+
+def test_docstrings_are_not_shipped_to_the_model():
+    """Pydantic copies the class docstring into schema['description'].
+
+    On CompanyExtraction that was 59% of the payload, and the text was internal
+    rationale the model has no business reading. Field semantics belong in the
+    versioned prompt, not smuggled through a docstring.
+    """
+    from cindraleads.llm import strip_schema_annotations
+    from cindraleads.models import CompanyExtraction
+
+    raw = CompanyExtraction.model_json_schema()
+    assert "description" in raw, "precondition: pydantic emits the docstring"
+
+    stripped = strip_schema_annotations(raw)
+    assert "description" not in stripped
+    assert "title" not in stripped
+    # Properties keep their structure; only annotations go.
+    assert set(stripped["properties"]) == set(raw["properties"])
+    assert stripped["properties"]["display_name"]["type"] == "string"
+
+
+async def test_the_schema_sent_to_the_backend_is_stripped():
+    backend = FakeBackend('{"name":"a","count":1}')
+    llm = StructuredLLM(backend, registry=ModelRegistry({"workhorse": "m"}))
+    await llm.generate("go", Answer)
+    sent = backend.requests[0].schema
+    assert sent is not None
+    assert "title" not in sent
+    assert set(sent["properties"]) == {"name", "count"}
+
+
+def test_lean_extraction_schema_has_no_nested_defs():
+    """Ollama compiles the schema to a sampling grammar; nested $defs make it
+    large and slow constrained decoding on a Pi."""
+    from cindraleads.models import Candidate, CompanyExtraction
+
+    assert CompanyExtraction.model_json_schema().get("$defs", {}) == {}
+    assert Candidate.model_json_schema().get("$defs", {}), "Candidate is the nested one"
+
+
+def test_extraction_model_cannot_carry_an_evidence_url():
+    """The model must never emit a URL or content hash: those are facts the
+    Harvester already holds, and a fabricated one poisons the evidence rule."""
+    from cindraleads.models import CompanyExtraction
+
+    fields = set(CompanyExtraction.model_fields)
+    assert not {"url", "content_sha256", "evidence", "source"} & fields
+    assert "evidence_snippets" in fields
+
+
+def test_stripper_keeps_a_field_that_is_literally_named_description():
+    """Regression: CompanyExtraction has a `description` FIELD. A naive filter that
+    drops every dict key named "description" deletes it from `properties`, and the
+    model silently stops being asked for it."""
+    from cindraleads.llm import strip_schema_annotations
+
+    schema = {
+        "title": "Thing",
+        "description": "the docstring, must go",
+        "properties": {
+            "description": {"type": "string", "description": "annotation, must go"},
+            "title": {"type": "string"},
+            "name": {"type": "string"},
+        },
+        "required": ["description"],
+    }
+    out = strip_schema_annotations(schema)
+    assert "description" not in out
+    assert set(out["properties"]) == {"description", "title", "name"}
+    assert out["properties"]["description"] == {"type": "string"}
+    assert out["required"] == ["description"]
