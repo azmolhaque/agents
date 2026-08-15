@@ -1,0 +1,184 @@
+# Who we are looking for, and the queries that find them.
+#
+# Edit this file, not scout.py. Adding a way to find prospects is a template row here.
+#
+# Query templates are ordered by `weight`, highest first, and the Scout spends free
+# sources before it spends a SerpAPI credit (PLAN.md decision 7). A template that costs
+# nothing and finds one good company beats a paid one that finds three.
+
+profile:
+  primary:
+    - Seed/Series-A SaaS, fintech, healthtech: 5-150 employees, no dedicated security hire
+    - Any team that shipped an LLM chatbot, AI agent, or MCP server in the last 180 days
+    - Companies with visible surface sprawl: many subdomains, admin panels, staging hosts
+  secondary:
+    - Bangladesh + South Asia SMEs with public web apps (local-trust wedge, BDT pricing)
+    - Agencies and dev shops who could white-label Snapshot for their own clients
+    - Marketplace buyers actively posting pentest/AppSec briefs
+
+  # HARD EXCLUDE. The ComplianceGate turns these into vetoes in Phase 5; the Scout
+  # uses them earlier, to avoid spending a credit discovering someone we must reject.
+  anti_icp:
+    max_employees: 1000
+    exclude_sectors:
+      - government
+      - defence
+      - critical national infrastructure
+      - security vendor
+      - penetration testing firm
+    exclude_domains: [] # seeded from the suppression list at runtime
+    notes: >
+      Enterprises with a named CISO and an in-house red team are not prospects, they
+      are competitors' customers. Individuals with no business affiliation are out:
+      this is B2B only.
+
+geography:
+  # 60/40 global vs BD+South Asia. Weights, not filters -- a strong global lead still
+  # beats a weak local one.
+  weights:
+    global: 0.6
+    bd_south_asia: 0.4
+  local_tlds: [".bd", ".com.bd", ".lk", ".np", ".pk", ".in"]
+
+# ---------------------------------------------------------------------------
+# Discovery query templates.
+#
+# `engine` is a source id from sources.yaml. `cost` is informational -- the Scout
+# reads the real cost from the source registry -- but keeping it visible here makes
+# the free-first ordering obvious when editing.
+# ---------------------------------------------------------------------------
+
+query_templates:
+  # ---- free: Show HN is where a small team announces what it just shipped -----
+  - id: hn_show_ai
+    engine: hn_algolia
+    tags: show_hn
+    query: ""
+    since_days: 30
+    targets: [T1_AI_SHIP]
+    weight: 95
+    rationale: Show HN launches, unfiltered. The single best free T1 source.
+
+  - id: hn_ai_agent
+    engine: hn_algolia
+    query: AI agent OR LLM chatbot OR MCP server
+    since_days: 45
+    targets: [T1_AI_SHIP, T11_STACK_RISK]
+    weight: 85
+    rationale: Teams describing an agent they shipped.
+
+  - id: hn_pentest_pressure
+    engine: hn_algolia
+    query: SOC 2 OR penetration test OR security questionnaire
+    since_days: 60
+    targets: [T10_VENDOR_PRESSURE, T5_COMPLIANCE]
+    weight: 80
+    rationale: >
+      People complaining publicly about being asked for a pentest report. High intent
+      and there is no paid equivalent worth buying.
+
+  # ---- free: public code that imports an agent framework ---------------------
+  - id: gh_mcp_servers
+    engine: github_api
+    query: mcp-server language:python
+    since_days: 120
+    targets: [T1_AI_SHIP, T11_STACK_RISK]
+    weight: 88
+    rationale: An MCP server in public code is a concrete, dated AI surface.
+
+  - id: gh_agent_frameworks
+    engine: github_api
+    query: langchain OR llamaindex OR autogen OR crewai
+    since_days: 180
+    targets: [T11_STACK_RISK]
+    weight: 70
+    rationale: Agent frameworks in org-owned repos.
+
+  - id: gh_ai_startups
+    engine: github_api
+    query: chatbot OR "ai assistant" stars:>10
+    since_days: 90
+    targets: [T1_AI_SHIP]
+    weight: 65
+    rationale: Smaller AI products with some traction.
+
+  # ---- free: HN carries hiring, funding and incidents too --------------------
+  # Added after a coverage audit showed T2/T3/T4/T6/T12 were reachable ONLY through
+  # a rationed source, which quietly undercut decision 7. These are weaker signals
+  # than a targeted paid search, but they are free and they run every hour.
+
+  - id: hn_who_is_hiring
+    engine: hn_algolia
+    query: Ask HN Who is hiring
+    since_days: 45
+    targets: [T3_HIRING_SEC, T4_HIRING_AI_ONLY]
+    weight: 72
+    rationale: >
+      HN's monthly hiring thread. Once a company surfaces here its own ATS board is
+      free, so this converts a paid discovery into a free one.
+
+  - id: hn_funding
+    engine: hn_algolia
+    query: raises seed OR "Series A" OR "we raised"
+    since_days: 90
+    targets: [T2_FUNDING]
+    weight: 62
+    rationale: Funding announcements posted by founders themselves.
+
+  - id: hn_incident
+    engine: hn_algolia
+    query: data breach OR security incident OR exposed database
+    since_days: 45
+    targets: [T6_INCIDENT]
+    weight: 68
+    rationale: >
+      Disclosed incidents. The company itself is rarely the prospect; its sector peers
+      are, and they are reading the same thread.
+
+  - id: hn_south_asia
+    engine: hn_algolia
+    query: Bangladesh OR Dhaka OR Pakistan OR "Sri Lanka" startup
+    since_days: 120
+    targets: [T12_LOCAL]
+    weight: 50
+    rationale: The BD/South Asia local-trust wedge, without spending a credit.
+
+  # ---- rationed: only SerpAPI can do these ----------------------------------
+  # T9 is the highest-weight trigger in the taxonomy (28) and has no free source at
+  # all, so it is the best possible use of a scarce credit.
+  - id: serp_marketplace_pentest
+    engine: serpapi_marketplace
+    query: site:upwork.com "penetration test" posted
+    targets: [T9_MARKETPLACE]
+    weight: 98
+    cost: 1
+    rationale: Someone actively shopping for exactly what we sell.
+
+  - id: serp_jobs_ai_no_sec
+    engine: serpapi_jobs
+    query: site:boards.greenhouse.io ("AI engineer" OR "ML engineer")
+    targets: [T4_HIRING_AI_ONLY, T3_HIRING_SEC]
+    weight: 60
+    cost: 1
+    rationale: >
+      Discovery only. Once the company is known its Greenhouse board is free, so this
+      is worth a credit solely for companies we have never seen.
+
+  - id: serp_funding_bd
+    engine: serpapi_news
+    query: Bangladesh OR Dhaka startup raises seed funding
+    targets: [T2_FUNDING, T12_LOCAL]
+    weight: 55
+    cost: 1
+    rationale: BD/South Asia funding is poorly covered by the English-language RSS feeds.
+
+scout:
+  # How many plans one harvest run emits. Free templates are cheap, so the ceiling is
+  # about how much extraction the Pi can chew through, not about the queries.
+  max_plans_per_run: 12
+  # At most this many rationed plans per run, on top of whatever the budget guard
+  # allows. Belt and braces: the guard is the hard limit, this is the intent.
+  max_costed_plans_per_run: 2
+  # Do not re-run a query whose answer is still cached. The cache TTL per source is
+  # the authority; this is just the Scout refusing to plan a guaranteed cache hit.
+  skip_if_cached: true
