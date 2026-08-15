@@ -378,8 +378,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--max-chars",
         type=int,
-        default=4000,
-        help="prompt text budget per page; prompt eval dominates latency on a Pi",
+        default=1500,
+        help="prompt text budget per page; measured 2.3x faster than 4000 on a Pi 5",
     )
     ap.add_argument("--timeout", type=float, default=240.0, help="per-request timeout, seconds")
     # 768 tokens at the ~3.3 tok/s measured on a Pi 5 is 233 s, which is longer than

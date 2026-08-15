@@ -116,11 +116,19 @@ def html_to_text(html: str) -> tuple[str, str]:
     return _with_stdlib(html)
 
 
-def extract_text(html: str, *, max_chars: int = 12000) -> str:
+def extract_text(html: str, *, max_chars: int = 1500) -> str:
     """Prose only, truncated at a word boundary.
 
-    The cap matters on a Pi: a 4B model's context is finite and its throughput is
-    ~10-30 tok/s, so an unbounded prompt turns one page into a minute of inference.
+    The cap is the single biggest latency lever measured on the Pi 5. Prompt eval
+    runs at roughly 10-35 tok/s there, so page text is expensive to read:
+
+        max_chars=4000 -> median page 150 s, peak 81.2 C
+        max_chars=1500 -> median page  64 s, peak 79.6 C, still 100% schema-valid
+
+    1500 is chosen from that measurement, not from taste. It is a *latency* choice
+    made against a *schema-validity* gate, so Phase 3 should re-tune it against the
+    hand-labelled golden set, where the metric is field accuracy: information that
+    lives in a page footer or below the fold is exactly what a short budget drops.
     """
     text, _ = html_to_text(html)
     if len(text) <= max_chars:
