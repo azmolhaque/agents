@@ -27,9 +27,21 @@ fluent-sounding hallucinated lead is worse than no lead.
 
 | Phase | State |
 | --- | --- |
-| 0 · Foundation | **Complete** — schema, models, durable queue, logging, CLI, CI |
-| 1 · Pi baseline | Not started |
-| 2–8 | Planned — see [`PLAN.md`](PLAN.md) |
+| 0 · Foundation | **Complete** — gate passed on real hardware: 100 jobs, `kill -9`, exactly once |
+| 1 · Pi baseline | **Complete** — gate passed: 24 real pages, 100% schema-valid, 0 timeouts |
+| 2 · Harvest | In progress — source registry done; egress, cache, budget, breakers next |
+| 3–8 | Planned — see [`PLAN.md`](PLAN.md) |
+
+Measured on the Pi 5 ([`docs/BENCHMARKS.md`](docs/BENCHMARKS.md), generated not hand-written):
+
+| | Schema valid | p50 | p95 | Decode |
+| --- | ---: | ---: | ---: | ---: |
+| `qwen3:4b-instruct` | 100% | 64.6 s | 76.7 s | 3.6 tok/s |
+| `llama3.2:3b` | 100% | 39.8 s | 60.0 s | 4.6 tok/s |
+
+Decode costs ~11× a prefill token, which is why extraction output is bounded by the JSON
+Schema itself rather than by asking the model nicely. Schema validity cannot separate
+these two models — that is Phase 3's accuracy gate, not this one.
 
 ## Quickstart
 
