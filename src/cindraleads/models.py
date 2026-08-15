@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator
 
@@ -305,20 +305,35 @@ class CompanyExtraction(_Model):
     So the model emits claims and verbatim snippets; the pipeline attaches
     provenance from the ``RawDocument`` it already has. The model cannot invent a
     URL because it is never asked for one.
+
+    Every bound below is deliberate. Measured on the Pi (2026-08-15), decode is
+    99% of the cost on a short page and 68% on a long one, at roughly 2.8 tok/s.
+    Prefill is nearly free by comparison. So the lever is output length, and the
+    cheapest way to bound output is the grammar itself: ``maxLength`` and
+    ``maxItems`` reach Ollama through the JSON Schema, so the model *cannot* run
+    long. That is worth far more than asking it politely in the prompt.
     """
 
-    display_name: str
-    canonical_domain: str | None = None
-    country: str | None = None
-    description: str | None = None
+    display_name: str = Field(max_length=80)
+    canonical_domain: str | None = Field(default=None, max_length=80)
+    country: str | None = Field(default=None, max_length=2)
+    # A one-line summary, not an essay. Unbounded, a 4B will happily write 300
+    # tokens of marketing copy here and blow the whole latency budget.
+    description: str | None = Field(default=None, max_length=160)
     employee_band: EmployeeBand | None = None
-    industry: str | None = None
-    tech_signals: list[str] = Field(default_factory=list)
-    ai_surface: list[str] = Field(default_factory=list)
-    trigger_codes: list[TriggerCode] = Field(default_factory=list)
+    industry: str | None = Field(default=None, max_length=40)
+    tech_signals: list[Annotated[str, Field(max_length=24)]] = Field(
+        default_factory=list, max_length=6
+    )
+    ai_surface: list[Annotated[str, Field(max_length=24)]] = Field(
+        default_factory=list, max_length=4
+    )
+    trigger_codes: list[TriggerCode] = Field(default_factory=list, max_length=4)
     # Verbatim spans supporting the claims above. The Extractor pairs these with
     # the fetched URL + content hash to build real Evidence objects.
-    evidence_snippets: list[str] = Field(default_factory=list)
+    evidence_snippets: list[Annotated[str, Field(max_length=120)]] = Field(
+        default_factory=list, max_length=2
+    )
 
 
 class Job(_Model):

@@ -310,7 +310,8 @@ async def main_async(args: argparse.Namespace) -> int:
     schema_cls = CompanyExtraction if args.schema == "lean" else Candidate
     print(
         f"corpus: {len(fixtures)} pages | schema={args.schema} ({schema_cls.__name__}) "
-        f"| max_chars={args.max_chars} | timeout={args.timeout}s\n"
+        f"| max_chars={args.max_chars} | max_tokens={args.max_tokens} "
+        f"| timeout={args.timeout}s\n"
     )
 
     runs: list[ModelRun] = []
@@ -372,11 +373,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=4000,
         help="prompt text budget per page; prompt eval dominates latency on a Pi",
     )
-    ap.add_argument("--timeout", type=float, default=180.0, help="per-request timeout, seconds")
+    ap.add_argument("--timeout", type=float, default=240.0, help="per-request timeout, seconds")
     # 768 tokens at the ~3.3 tok/s measured on a Pi 5 is 233 s, which is longer than
     # the request timeout: a full-length answer literally cannot finish. 320 bounds
     # the worst case to ~97 s and is ample for a CompanyExtraction object.
-    ap.add_argument("--max-tokens", type=int, default=320, help="num_predict cap")
+    # Must exceed the worst case the schema itself permits, or a maximally-detailed
+    # page gets truncated mid-JSON and fails validation. See the invariant test in
+    # tests/unit/test_models.py.
+    ap.add_argument("--max-tokens", type=int, default=400, help="num_predict cap")
     return ap
 
 

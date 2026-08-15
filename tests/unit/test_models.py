@@ -202,3 +202,105 @@ def test_contact_pii_basis_cannot_be_anything_else():
 def test_lead_serializes_and_reparses_cleanly():
     original = _lead()
     assert Lead.model_validate_json(original.model_dump_json()) == original
+
+
+# ------------------------------------------------- extraction output bounds
+
+
+def test_extraction_output_is_bounded_by_the_schema_itself():
+    """Measured on a Pi 5: decode is 68-99% of extraction latency at ~2.8 tok/s.
+    The cheapest way to bound output is the grammar, because maxLength/maxItems
+    reach Ollama through the JSON Schema and the model then *cannot* run long.
+    Asking politely in the prompt is not enforcement."""
+    from cindraleads.models import CompanyExtraction
+
+    props = CompanyExtraction.model_json_schema()["properties"]
+
+    def bound(name: str, key: str) -> int | None:
+        node = props[name]
+        if key in node:
+            return int(node[key])
+        for branch in node.get("anyOf", []):
+            if key in branch:
+                return int(branch[key])
+        return None
+
+    assert bound("description", "maxLength") == 160
+    assert bound("display_name", "maxLength") == 80
+    assert bound("tech_signals", "maxItems") == 6
+    assert bound("ai_surface", "maxItems") == 4
+    assert bound("trigger_codes", "maxItems") == 4
+    assert bound("evidence_snippets", "maxItems") == 2
+
+
+def test_extraction_rejects_an_over_long_description():
+    from cindraleads.models import CompanyExtraction
+
+    with pytest.raises(ValidationError):
+        CompanyExtraction(display_name="Acme", description="x" * 161)
+
+
+def test_extraction_rejects_too_many_snippets():
+    from cindraleads.models import CompanyExtraction
+
+    with pytest.raises(ValidationError):
+        CompanyExtraction(display_name="Acme", evidence_snippets=["a", "b", "c"])
+
+
+def test_worst_case_output_fits_the_token_cap_and_the_timeout():
+    """Three numbers have to agree, or a maximally-detailed page fails:
+
+    * what the schema permits (maxLength / maxItems)
+    * the num_predict cap  -- too low truncates mid-JSON into invalid output
+    * the request timeout  -- too low cuts the connection before it finishes
+
+    Measured Pi 5 decode is ~2.8 tok/s, and prefill costs up to ~30 s on a long
+    page. Pinning the relationship here stops one of the three drifting alone.
+    """
+    import importlib.util
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    from cindraleads.models import CompanyExtraction
+
+    props = CompanyExtraction.model_json_schema()["properties"]
+
+    def maxlen(node):
+        if "maxLength" in node:
+            return int(node["maxLength"])
+        for branch in node.get("anyOf", []):
+            if "maxLength" in branch:
+                return int(branch["maxLength"])
+        return 24
+
+    worst_chars = 0
+    for name, node in props.items():
+        items = node.get("maxItems") or next(
+            (b.get("maxItems") for b in node.get("anyOf", []) if b.get("maxItems")), None
+        )
+        if items:
+            worst_chars += int(items) * maxlen(node.get("items") or {})
+        else:
+            worst_chars += maxlen(node)
+        worst_chars += len(name) + 6
+
+    worst_tokens = worst_chars / 3.2
+
+    spec = importlib.util.spec_from_file_location(
+        "bm_defaults", _Path(__file__).resolve().parents[2] / "scripts" / "benchmark_models.py"
+    )
+    bm = importlib.util.module_from_spec(spec)
+    _sys.modules["bm_defaults"] = bm
+    spec.loader.exec_module(bm)
+    defaults = {a.dest: a.default for a in bm.build_parser()._actions}
+
+    assert worst_tokens <= defaults["max_tokens"], (
+        f"schema allows ~{worst_tokens:.0f} tokens but num_predict is "
+        f"{defaults['max_tokens']}: a full answer would be truncated into invalid JSON"
+    )
+
+    pi_decode_tps, worst_prefill_s = 2.8, 30
+    worst_seconds = worst_tokens / pi_decode_tps + worst_prefill_s
+    assert worst_seconds < defaults["timeout"], (
+        f"worst case is ~{worst_seconds:.0f}s but the timeout is {defaults['timeout']}s"
+    )
