@@ -298,7 +298,12 @@ async def test_two_sightings_of_one_company_are_one_row(rig):
 
 async def test_a_platform_url_never_becomes_a_company(rig):
     """A GitHub repo is not a company. Resolving it to `github.com` would merge every
-    open-source project into one row, irreversibly."""
+    open-source project into one row, irreversibly.
+
+    The Extractor now refuses it before fetching, so the candidate ends `skipped`
+    rather than `unresolvable` — same guarantee, reached without spending a request
+    or ~60 s of inference first.
+    """
     payload = dict(EXTRACTION, canonical_domain=None)
     extractor, resolver, _backend, store = rig(payload=payload)
     url = "https://github.com/acme/agent"
@@ -310,6 +315,41 @@ async def test_a_platform_url_never_becomes_a_company(rig):
     await drive(store, {EXTRACT_KIND: extractor}, [EXTRACT_KIND])
     await drive(store, {RESOLVE_KIND: resolver}, [RESOLVE_KIND])
 
+    assert rows(store, "SELECT * FROM companies") == []
+    assert rows(store, "SELECT status FROM candidates")[0]["status"] == "skipped"
+
+
+async def test_the_resolver_also_refuses_a_platform_domain(rig):
+    """The second layer, tested directly.
+
+    The Extractor's pre-check is an optimisation; this is the invariant. A candidate
+    that reaches resolution with only a platform URL — hand-written, restored from a
+    backup, queued by an older build — must still not become a company.
+    """
+    _extractor, resolver, _backend, store = rig()
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO candidates (candidate_id, content_sha256, raw_payload, status, "
+            "created_at) VALUES (?,?,?,?,?)",
+            (
+                "c1",
+                "abc",
+                json.dumps(
+                    {
+                        "extraction": dict(EXTRACTION, canonical_domain=None),
+                        "url": "https://github.com/acme/agent",
+                        "evidence_ids": [],
+                        "trigger_codes": [],
+                    }
+                ),
+                "extracted",
+                "2026-08-15T00:00:00Z",
+            ),
+        )
+
+    result = await resolver.run(Job(job_id="j", kind=RESOLVE_KIND, payload={"candidate_id": "c1"}))
+
+    assert result.ok, "not a failure — a candidate that cannot become a company"
     assert rows(store, "SELECT * FROM companies") == []
     assert rows(store, "SELECT status FROM candidates")[0]["status"] == "unresolvable"
 
@@ -474,3 +514,26 @@ async def test_deferral_gives_up_eventually(rig):
     outcome = await extractor.prepare(job)
     assert outcome.defer_seconds == 0
     assert outcome.skipped is not None
+
+
+async def test_a_platform_url_is_refused_before_the_fetch(rig):
+    """Defence in depth, and the thing that drains a backlog.
+
+    The Harvester now filters these at discovery, but 114 jobs were queued before it
+    did. Refusing here means they resolve on their next wake having spent no request,
+    no domain-budget slot and no inference — rather than deferring four times over
+    24 h and then being skipped anyway.
+    """
+    extractor, _resolver, backend, store = rig()
+    url = "https://github.com/someone/sideproject"
+    seed_candidate(store, "c1", url)
+    queue = JobQueue(store)
+    with store.tx() as conn:
+        queue.enqueue(EXTRACT_KIND, {"candidate_id": "c1", "url": url}, conn=conn)
+
+    await drive(store, {EXTRACT_KIND: extractor}, [EXTRACT_KIND])
+
+    assert backend.calls == [], "no inference was spent"
+    assert rows(store, "SELECT status FROM candidates")[0]["status"] == "skipped"
+    assert rows(store, "SELECT * FROM domain_fetch_log") == [], "no request was made"
+    assert rows(store, f"SELECT 1 FROM jobs WHERE kind='{EXTRACT_KIND}' AND status='pending'") == []

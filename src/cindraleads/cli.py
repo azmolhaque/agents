@@ -213,6 +213,32 @@ def queue_reclaim() -> None:
     typer.echo(f"reclaimed {JobQueue(store).reclaim_expired()}")
 
 
+@queue_app.command("release")
+def queue_release(
+    kind: Annotated[str, typer.Option(help="Only this kind. Empty = all kinds.")] = "",
+) -> None:
+    """Make deferred jobs runnable now.
+
+    A job held back by a stage — the Extractor defers a candidate that hit the
+    per-domain budget — waits out its delay. That is right in normal running and
+    wrong after a fix has landed that changes what the job will do, since otherwise
+    you wait out a delay for an answer that is already known to have changed.
+    """
+    store = _open_store()
+    now = to_iso(utcnow())
+    sql = (
+        "UPDATE jobs SET available_at = ?, updated_at = ? "
+        "WHERE status='pending' AND available_at > ?"
+    )
+    params: list[Any] = [now, now, now]
+    if kind:
+        sql += " AND kind = ?"
+        params.append(kind)
+    with store.tx() as conn:
+        released = conn.execute(sql, params).rowcount
+    typer.echo(f"released {released} deferred job(s)")
+
+
 @queue_app.command("enqueue")
 def queue_enqueue(
     kind: Annotated[str, typer.Option(help="Job kind.")],

@@ -36,6 +36,7 @@ import httpx
 
 from cindraleads import injection
 from cindraleads.config import Settings, load_prompt, prompt_version, settings
+from cindraleads.dedupe import canonical_domain
 from cindraleads.errors import CindraError, SchemaValidationError
 from cindraleads.llm import StructuredLLM
 from cindraleads.logging import get_logger
@@ -127,6 +128,19 @@ class Extractor:
                 url=url,
                 source_id=self.source_id,
                 error="extract job needs candidate_id and url",
+            )
+
+        # Refuse before fetching, not after extracting. The Resolver drops a URL with
+        # no canonical domain, so fetching one costs a request, a slot in the domain's
+        # politeness budget, and ~60 s of inference to reach a conclusion available
+        # here for free. The Harvester now filters these at discovery; this is the
+        # second line, and it is what drains a backlog queued before that existed.
+        if canonical_domain(url) is None:
+            return ExtractOutcome(
+                candidate_id=candidate_id,
+                url=url,
+                source_id=self.source_id,
+                skipped="not a company URL (platform host or unusable domain)",
             )
 
         try:
