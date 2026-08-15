@@ -128,11 +128,29 @@ class StructuredResult(Generic[T]):
     latency_ms: int
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Carried through from the winning LLMResponse. Without these the caller can only
+    # compute tokens/total-time, which blends reading the prompt with writing the
+    # answer -- two costs with opposite fixes.
+    prompt_eval_ms: int = 0
+    eval_ms: int = 0
+    load_ms: int = 0
 
     @property
     def cost_units(self) -> float:
         """Cloud calls cost money; local calls cost heat. Only the former is billed."""
         return 1.0 if self.escalated else 0.0
+
+    @property
+    def decode_tokens_per_second(self) -> float:
+        if self.eval_ms <= 0 or not self.completion_tokens:
+            return 0.0
+        return self.completion_tokens / (self.eval_ms / 1000)
+
+    @property
+    def prefill_tokens_per_second(self) -> float:
+        if self.prompt_eval_ms <= 0 or not self.prompt_tokens:
+            return 0.0
+        return self.prompt_tokens / (self.prompt_eval_ms / 1000)
 
 
 # --------------------------------------------------------------------- registry
@@ -389,6 +407,9 @@ class StructuredLLM:
                 latency_ms=total_ms,
                 prompt_tokens=response.prompt_tokens,
                 completion_tokens=response.completion_tokens,
+                prompt_eval_ms=response.prompt_eval_ms,
+                eval_ms=response.eval_ms,
+                load_ms=response.load_ms,
             )
             # Only a schema failure reaches the next iteration.
 
@@ -428,6 +449,9 @@ class StructuredLLM:
                     latency_ms=total_ms,
                     prompt_tokens=response.prompt_tokens,
                     completion_tokens=response.completion_tokens,
+                    prompt_eval_ms=response.prompt_eval_ms,
+                    eval_ms=response.eval_ms,
+                    load_ms=response.load_ms,
                 )
             reason = "escalation attempt failed"
 

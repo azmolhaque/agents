@@ -41,10 +41,6 @@ from cindraleads.models import Candidate, CompanyExtraction  # noqa: E402
 from cindraleads.textextract import extract_text, selectolax_available  # noqa: E402
 from cindraleads.thermal import ThermalGovernor  # noqa: E402
 
-# Filled in by main_async so render() can report exactly what was measured.
-SCHEMA_NAME = ["?"]
-RUN_PARAMS: dict[str, object] = {"max_chars": 0, "max_tokens": 0, "timeout": 0.0}
-
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "html"
 PROMPT_PATH = REPO_ROOT / "prompts" / "extract_company.md"
 OUT_PATH = REPO_ROOT / "docs" / "BENCHMARKS.md"
@@ -212,7 +208,15 @@ async def run_model(
     return run
 
 
-def render(runs: list[ModelRun], fixture_count: int) -> str:
+def render(
+    runs: list[ModelRun],
+    fixture_count: int,
+    *,
+    schema_name: str = "CompanyExtraction",
+    max_chars: int = 0,
+    max_tokens: int = 0,
+    timeout: float = 0.0,
+) -> str:
     stamp = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime())
     gate = all(r.validity_pct >= 95 for r in runs if r.available and r.pages)
     lines = [
@@ -223,9 +227,8 @@ def render(runs: list[ModelRun], fixture_count: int) -> str:
         f"- Measured: {stamp}",
         f"- Corpus: {fixture_count} real HTML pages (`tests/fixtures/html/`)",
         f"- Boilerplate stripper: {'selectolax' if selectolax_available() else 'stdlib fallback'}",
-        f"- Schema: `{SCHEMA_NAME[0]}`, enforced via Ollama `format`, temperature 0",
-        f"- Prompt budget: {RUN_PARAMS['max_chars']} chars/page, "
-        f"num_predict={RUN_PARAMS['max_tokens']}, timeout={RUN_PARAMS['timeout']}s",
+        f"- Schema: `{schema_name}`, enforced via Ollama `format`, temperature 0",
+        f"- Prompt budget: {max_chars} chars/page, num_predict={max_tokens}, timeout={timeout}s",
         "",
         "## Phase 1 gate: schema validity >= 95%",
         "",
@@ -305,8 +308,6 @@ async def main_async(args: argparse.Namespace) -> int:
     fixtures = load_fixtures(args.limit)
     template = PROMPT_PATH.read_text(encoding="utf-8")
     schema_cls = CompanyExtraction if args.schema == "lean" else Candidate
-    SCHEMA_NAME[0] = schema_cls.__name__
-    RUN_PARAMS.update(max_chars=args.max_chars, max_tokens=args.max_tokens, timeout=args.timeout)
     print(
         f"corpus: {len(fixtures)} pages | schema={args.schema} ({schema_cls.__name__}) "
         f"| max_chars={args.max_chars} | timeout={args.timeout}s\n"
@@ -329,7 +330,17 @@ async def main_async(args: argparse.Namespace) -> int:
         print()
 
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
-    OUT_PATH.write_text(render(runs, len(fixtures)), encoding="utf-8")
+    OUT_PATH.write_text(
+        render(
+            runs,
+            len(fixtures),
+            schema_name=schema_cls.__name__,
+            max_chars=args.max_chars,
+            max_tokens=args.max_tokens,
+            timeout=args.timeout,
+        ),
+        encoding="utf-8",
+    )
     print(f"wrote {OUT_PATH}")
 
     for r in runs:
@@ -345,7 +356,7 @@ async def main_async(args: argparse.Namespace) -> int:
     return 0 if all(r.validity_pct >= 95 for r in usable) else 1
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--model", help="benchmark a single tag instead of the configured list")
     ap.add_argument("--limit", type=int, help="use only the first N fixtures")
@@ -366,7 +377,11 @@ def main() -> int:
     # the request timeout: a full-length answer literally cannot finish. 320 bounds
     # the worst case to ~97 s and is ample for a CompanyExtraction object.
     ap.add_argument("--max-tokens", type=int, default=320, help="num_predict cap")
-    return asyncio.run(main_async(ap.parse_args()))
+    return ap
+
+
+def main() -> int:
+    return asyncio.run(main_async(build_parser().parse_args()))
 
 
 if __name__ == "__main__":
