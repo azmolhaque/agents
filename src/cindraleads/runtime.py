@@ -19,9 +19,11 @@ from types import TracebackType
 import httpx
 from pydantic import SecretStr
 
-from cindraleads.agents import Extractor, Harvester, Resolver, Scout
+from cindraleads.agents import Dispatcher, Extractor, Harvester, Resolver, Scorer, Scout
 from cindraleads.budget import BudgetGuard
+from cindraleads.compliance import ComplianceGate
 from cindraleads.config import Settings, settings
+from cindraleads.discord import DiscordWebhook
 from cindraleads.llm import ModelRegistry, OllamaBackend, StructuredLLM
 from cindraleads.logging import get_logger
 from cindraleads.queue import JobQueue
@@ -47,6 +49,8 @@ class Runtime:
     llm: StructuredLLM = field(init=False)
     extractor: Extractor = field(init=False)
     resolver: Resolver = field(init=False)
+    scorer: Scorer = field(init=False)
+    dispatcher: Dispatcher = field(init=False)
     cloud_budget: BudgetGuard = field(init=False)
     governor: ThermalGovernor = field(init=False)
     _http: httpx.AsyncClient | None = field(default=None, init=False)
@@ -104,6 +108,19 @@ class Runtime:
             store=self.store, egress=self.egress, llm=self.llm, config=self.config
         )
         self.resolver = Resolver(store=self.store)
+        self.scorer = Scorer(
+            store=self.store,
+            llm=self.llm,
+            config=self.config,
+            gate=ComplianceGate.from_config(self.config),
+        )
+        self.dispatcher = Dispatcher(
+            store=self.store,
+            # Its own client: a Discord 429 must not stall prospect fetches, and a
+            # slow prospect must not hold a connection Discord is waiting on.
+            webhook=DiscordWebhook(client=httpx.AsyncClient(timeout=20.0)),
+            config=self.config,
+        )
         # The Harvester owns the clients, so it is the only thing that can say what
         # key a plan will be fetched under. Without this the Scout's skip_if_cached
         # compares a key nothing ever writes.
@@ -119,6 +136,7 @@ class Runtime:
         if self._http is not None:
             await self._http.aclose()
             self._http = None
+        await self.dispatcher.webhook.client.aclose()
 
     # ------------------------------------------------------------------ budget
 

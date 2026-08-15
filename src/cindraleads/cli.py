@@ -24,7 +24,13 @@ from typing import Annotated, Any, Protocol
 import typer
 
 from cindraleads import PIPELINE_VERSION, __version__
-from cindraleads.agents import EXTRACT_KIND, HARVEST_KIND, RESOLVE_KIND
+from cindraleads.agents import (
+    DISPATCH_KIND,
+    EXTRACT_KIND,
+    HARVEST_KIND,
+    RESOLVE_KIND,
+    SCORE_KIND,
+)
 from cindraleads.config import settings
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
@@ -475,6 +481,73 @@ def pipeline(
     asyncio.run(_run())
 
 
+@app.command("dispatch-test")
+def dispatch_test(
+    lead_id: Annotated[str, typer.Option(help="A specific lead. Empty = highest scoring.")] = "",
+    dry_run: Annotated[bool, typer.Option(help="Print the embed, post nothing.")] = False,
+) -> None:
+    """Send one real card to Discord, to prove the wiring.
+
+    Separate from the pipeline on purpose: when no card arrives, the question is
+    whether the webhook is wrong or whether no lead qualified, and those need different
+    fixes. This answers the first without waiting for the second.
+    """
+    cfg = settings()
+    cfg.ensure_dirs()
+    store = _open_store()
+
+    async def _run() -> None:
+        async with Runtime(store=store, config=cfg) as runtime:
+            target = lead_id
+            if not target:
+                # Any tier, including REJECT. This proves the *wiring*, and it has to
+                # answer "is the webhook right?" on a database where nothing yet
+                # qualifies — which is exactly the state that prompts the question.
+                row = store.conn.execute(
+                    "SELECT lead_id, tier, score FROM leads ORDER BY score DESC LIMIT 1"
+                ).fetchone()
+                if row is None:
+                    typer.echo("no lead exists yet — run `cindra pipeline` first", err=True)
+                    raise typer.Exit(code=1)
+                target = str(row["lead_id"])
+                typer.echo(f"using {target} (tier {row['tier']}, score {row['score']})")
+
+            configured = sorted(runtime.dispatcher.webhooks)
+            typer.echo(f"webhooks configured: {', '.join(configured) or '(none)'}")
+            if not configured and not dry_run:
+                typer.echo(
+                    "No DISCORD_WEBHOOK_* is set in .env, so there is nowhere to post.",
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+
+            from cindraleads.agents.dispatcher import build_card
+
+            lead = runtime.dispatcher.read_lead(target)
+            if lead is None:
+                typer.echo(f"lead {target} not found", err=True)
+                raise typer.Exit(code=1)
+            embed = build_card(lead)
+
+            if dry_run:
+                typer.echo(json.dumps(embed, indent=2, ensure_ascii=False))
+                return
+
+            # Posted directly rather than through the stage: this is a wiring check, so
+            # it must not write a dispatch_log row. Otherwise testing the webhook would
+            # mark the lead as already sent and suppress the real card later.
+            url = runtime.dispatcher.webhook_for("ops")
+            assert url is not None
+            result = await runtime.dispatcher.webhook.post(
+                url, {"embeds": [embed], "username": "CindraLeads (test)"}
+            )
+            typer.echo("sent" if result.ok else f"failed: {result.error}")
+            if not result.ok:
+                raise typer.Exit(code=1)
+
+    asyncio.run(_run())
+
+
 # -------------------------------------------------------------------- the worker
 
 _shutdown = False
@@ -522,12 +595,17 @@ def _stages_for(kinds: list[str], runtime: Runtime | None) -> dict[str, Stage]:
         HARVEST_KIND: runtime.harvester,
         EXTRACT_KIND: runtime.extractor,
         RESOLVE_KIND: runtime.resolver,
+        SCORE_KIND: runtime.scorer,
+        DISPATCH_KIND: runtime.dispatcher,
     }
     stages.update({kind: stage for kind, stage in available.items() if kind in kinds})
     return stages
 
 
-PIPELINE_KINDS = (HARVEST_KIND, EXTRACT_KIND, RESOLVE_KIND)
+# Order matters: `cindra pipeline` drains each fully before starting the next, so a
+# batch of ~64 s extractions never interleaves with harvest fetches or Discord posts
+# competing for the same worker.
+PIPELINE_KINDS = (HARVEST_KIND, EXTRACT_KIND, RESOLVE_KIND, SCORE_KIND, DISPATCH_KIND)
 
 
 def _needs_runtime(kinds: list[str]) -> bool:

@@ -1,0 +1,104 @@
+# CindraScore: the arithmetic, as data.
+#
+# Edit this file, not scoring.py. Every number below is a judgement call about what
+# makes a prospect worth contacting, and judgement calls belong in config where they
+# can be tuned against measured precision (Phase 8) rather than argued about in code.
+#
+# The Critic PROPOSES changes to this file and applies none of them. A test asserts it
+# has no write access (PLAN.md Phase 8).
+
+# ---------------------------------------------------------------------------
+# Trigger weights and half-lives (master prompt section 2).
+#
+# `weight` is the contribution at age zero. `half_life_days` is how long until it is
+# worth half that -- decay is exponential, so a trigger fades rather than falling off
+# a cliff. A funding round matters for a quarter; a marketplace brief for a fortnight.
+# ---------------------------------------------------------------------------
+
+triggers:
+  T1_AI_SHIP: { weight: 30, half_life_days: 180 }
+  T2_FUNDING: { weight: 22, half_life_days: 120 }
+  T3_HIRING_SEC: { weight: 20, half_life_days: 90 }
+  T4_HIRING_AI_ONLY: { weight: 18, half_life_days: 90 }
+  T5_COMPLIANCE: { weight: 18, half_life_days: 180 }
+  T6_INCIDENT: { weight: 26, half_life_days: 60 }
+  T7_SURFACE_SPRAWL: { weight: 15, half_life_days: 90 }
+  T8_HYGIENE_GAP: { weight: 12, half_life_days: 30 }
+  T9_MARKETPLACE: { weight: 28, half_life_days: 30 }
+  T10_VENDOR_PRESSURE: { weight: 24, half_life_days: 90 }
+  T11_STACK_RISK: { weight: 14, half_life_days: 180 }
+  # T12 is a standing fact about where a company is, not news. `half_life_days: 0`
+  # means no decay -- being in Dhaka does not become less true.
+  T12_LOCAL: { weight: 10, half_life_days: 0 }
+  # PLAN.md 2.8: inbound mail is the highest-intent signal there is, and it had no
+  # row in the master prompt's taxonomy at all.
+  T0_INBOUND: { weight: 35, half_life_days: 30 }
+
+# ---------------------------------------------------------------------------
+# Component weights. These sum to 1.0 and a test asserts it -- a set that sums to
+# 0.9 would silently cap every score at 90 and nothing would look wrong.
+# ---------------------------------------------------------------------------
+
+components:
+  trigger: 0.45 # the dated reason to call. The product.
+  icp_fit: 0.25 # size, sector, geography, no security hire
+  reachability: 0.15 # is there a named human with a verified address
+  surface: 0.10 # AI surface, subdomain sprawl, hygiene gaps
+  freshness: 0.05 # how recent the newest trigger is
+
+# ---------------------------------------------------------------------------
+# Penalties. Applied after the weighted sum, before clamping.
+#
+# The two -100s are hard rejects expressed as arithmetic so that one code path
+# produces the score and nothing has to remember to check a flag separately.
+# ---------------------------------------------------------------------------
+
+penalties:
+  anti_icp: -100 # enterprise, competitor, government/CNI
+  suppressed: -100 # on the suppression list, or told us no
+  no_contact: -25 # no named contact and no role address
+  stale_evidence: -20 # every evidence URL older than 180 days
+  single_source: -15 # the top trigger rests on one URL from one source
+  sanctioned_country: -10
+
+sanctioned_countries: [] # ISO-3166-1 alpha-2; seeded empty, reviewed by a human
+
+# ---------------------------------------------------------------------------
+# Tiers and routing.
+# ---------------------------------------------------------------------------
+
+tiers:
+  A: 72
+  B: 55
+  C: 40
+  # Below C is REJECT: scored, logged, never dispatched.
+
+# ICP fit inputs. Each is worth `points` out of 100 for the icp_fit component.
+icp_fit:
+  employee_band_points:
+    "1-10": 70
+    "11-50": 100 # the sweet spot: real product, no security hire
+    "51-200": 90
+    "201-1000": 45
+    "1000+": 0 # anti-ICP territory; the veto handles the rest
+  unknown_band_points: 55 # most pages never state a headcount. Do not punish silence.
+  sector_bonus: 15 # a sector named in icp.yaml profile.primary
+  local_bonus: 10 # BD / South Asia, the local-trust wedge
+  no_security_hire_bonus: 15 # T4 present without T3
+
+surface:
+  ai_surface_points: 60
+  subdomain_sprawl_points: 25
+  hygiene_gap_points: 15
+
+reachability:
+  verified_email: 100
+  role_account: 70
+  catch_all: 40
+  risky: 25
+  unverified: 15
+  none: 0
+
+freshness:
+  # Full marks for a trigger observed today, zero at this age.
+  zero_at_days: 120

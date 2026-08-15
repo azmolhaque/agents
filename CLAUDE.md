@@ -30,8 +30,10 @@ make bench       # Phase 1 benchmark -> docs/BENCHMARKS.md (RUN ON THE PI)
 cindra db migrate | db status | db backup <path>
 cindra queue status | queue reclaim | queue enqueue --kind K
 cindra harvest [--dry-run] [--limit N]   # Scout -> durable harvest jobs
-cindra pipeline                          # harvest -> extract -> resolve, one pass
-cindra work --kinds harvest.query,extract.candidate,resolve.company [--drain-inflight]
+cindra pipeline                          # harvest -> extract -> resolve -> score -> dispatch
+cindra work --kinds harvest.query,extract.candidate,... [--drain-inflight]
+cindra dispatch-test [--dry-run]         # prove the Discord wiring, any tier
+cindra queue release [--kind K]          # pull deferred jobs forward
 cindra status                            # candidates, companies, live triggers
 cindra feedback <lead_id> good|bad
 ```
@@ -78,10 +80,11 @@ tests/golden/   regression fixtures for prompt changes docs/RUNBOOK.md what to d
 
 ## Current state
 
-**Phases 0-3 code complete; Phase 3's accuracy gate still needs the Pi.**
+**Phases 0-3, 5 and 6 code complete. Phase 4 (enrichment) is the gap, and it is
+load-bearing: see below.**
 
-The pipeline runs end to end: `Scout -> Harvester -> Extractor -> Resolver`, three
-durable job kinds driven by one async worker loop. Every stage is two-phase --
+The pipeline runs end to end: `Scout -> Harvester -> Extractor -> Resolver -> Scorer
+-> Dispatcher`, five durable job kinds driven by one async worker loop. Every stage is two-phase --
 `prepare()` does network I/O outside any transaction, `commit()` writes inside the one
 that also enqueues follow-on jobs and completes the current job. A stage that fails,
 by returning `ok=False` or by raising, rolls its own writes back.
@@ -131,6 +134,15 @@ one; the tests named after them are the reason they cannot come back.
   accuracy rather than latency.
 - Duplicate rate < 2% on real data using rungs 1/2/4.
 - Phase 1's full 24-page benchmark (`make bench`, ~26 min).
+
+**Phase 4 is why nothing reaches Discord yet.** Measured 2026-08-15, not predicted:
+`reachability` is 15% of CindraScore and `surface` another 10%, and both are structurally
+zero without enrichment. A company with three live triggers, full ICP fit and a shipped
+AI surface scores **52 (Tier C)**; a realistic single-trigger lead scores 17-38 (REJECT).
+Tier A needs contacts plus multi-source evidence. The tiers are not miscalibrated -- the
+system is correctly saying it does not know enough to recommend contacting anyone.
+
+Do not "fix" this by lowering the thresholds. Build the Enricher.
 
 **Known hardware gaps for Phase 7:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Neither blocks Phases 2-6.

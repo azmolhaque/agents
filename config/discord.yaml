@@ -1,0 +1,27 @@
+# Discord routing. Webhook URLs live in .env, never here.
+#
+# The Dispatcher writes to these channels and reads from none of them. Reading a
+# reaction needs a gateway bot (PLAN.md decision 1) and arrives in Phase 8.
+
+channels:
+  hot:
+    tier: A
+    description: Immediate. Someone with a dated reason to talk to us today.
+  warm:
+    tier: B
+    description: Immediate, lower urgency.
+  digest:
+    tier: C
+    description: Daily roll-up at 09:00 Asia/Dhaka. Compact rows, 8 per message.
+  ops:
+    description: Errors, budget warnings, thermal alerts. Never leads.
+
+digest:
+  # Both limits apply at once: Discord allows 10 embeds per message, but also 6000
+  # characters across them, and a full lead card is ~1,200. Paginating at 8 compact
+  # rows leaves headroom for the summary line (PLAN.md 2.6).
+  page_size: 8
+  send_at: "09:00"
+  timezone: Asia/Dhaka
+
+username: CindraLeads

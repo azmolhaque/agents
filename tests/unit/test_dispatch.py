@@ -1,0 +1,414 @@
+"""Discord embeds, limits, and the Dispatcher's idempotency.
+
+The property that matters most is boring: an embed must never exceed a Discord limit
+for *any* input. A 400 at dispatch time throws away a card that cost ~64 s of Pi
+inference to produce, and it happens on exactly the leads with the most to say.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import httpx
+import pytest
+from hypothesis import given
+from hypothesis import settings as hyp_settings
+from hypothesis import strategies as st
+
+from cindraleads.agents.dispatcher import (
+    DISPATCH_KIND,
+    Dispatcher,
+    build_card,
+    digest_pages,
+    idempotency_key,
+)
+from cindraleads.discord import CardData, DiscordWebhook, digest_row, lead_card, limits
+from cindraleads.models import Job, utcnow
+from cindraleads.store import Store
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+MIGRATIONS = REPO_ROOT / "db" / "migrations"
+
+
+def card(**kwargs) -> CardData:  # type: ignore[no-untyped-def]
+    base = {
+        "lead_id": "abc123",
+        "canonical_domain": "acme.io",
+        "display_name": "Acme Health",
+        "tier": "A",
+        "score": 84,
+        "offer": "ai_llm_assessment",
+        "triggers": (("T1_AI_SHIP", 0.91, "11d ago"),),
+        "evidence": (("hn_algolia", "https://news.ycombinator.com/item?id=1"),),
+        "description": "Seed-stage healthtech in Dhaka.",
+        "outreach_angle": "You published an AI assistant last month.",
+        "observed_at": utcnow(),
+    }
+    return CardData(**{**base, **kwargs})
+
+
+# ------------------------------------------------------------------- the limits
+
+
+def test_a_full_card_is_within_every_limit():
+    embed = lead_card(card())
+    assert len(embed["title"]) <= limits.TITLE
+    assert len(embed["description"]) <= limits.DESCRIPTION
+    assert len(embed["fields"]) <= limits.FIELDS_PER_EMBED
+    assert limits.total_characters(embed) <= limits.TOTAL_CHARACTERS
+    for field in embed["fields"]:
+        assert len(field["name"]) <= limits.FIELD_NAME
+        assert len(field["value"]) <= limits.FIELD_VALUE
+
+
+@hyp_settings(max_examples=150, deadline=None)
+@given(
+    name=st.text(min_size=0, max_size=3000),
+    description=st.text(min_size=0, max_size=9000),
+    angle=st.text(min_size=0, max_size=3000),
+    bengali=st.text(min_size=0, max_size=3000),
+    n_triggers=st.integers(min_value=0, max_value=40),
+    n_evidence=st.integers(min_value=0, max_value=60),
+)
+def test_no_input_can_produce_an_oversized_embed(
+    name, description, angle, bengali, n_triggers, n_evidence
+):
+    """PLAN.md 2.6: property-tested against arbitrary input, per-embed AND the total."""
+    data = card(
+        display_name=name,
+        description=description,
+        outreach_angle=angle,
+        bengali_angle=bengali,
+        triggers=tuple((f"T{i}_CODE", 0.5, f"{i}d ago") for i in range(n_triggers)),
+        evidence=tuple((f"src{i}", f"https://example.com/{i}") for i in range(n_evidence)),
+    )
+    for embed in (lead_card(data), digest_row(data)):
+        assert len(embed.get("title", "")) <= limits.TITLE
+        assert len(embed.get("description", "")) <= limits.DESCRIPTION
+        assert len(embed.get("fields", [])) <= limits.FIELDS_PER_EMBED
+        assert limits.total_characters(embed) <= limits.TOTAL_CHARACTERS
+        for field in embed.get("fields", []):
+            assert len(field["name"]) <= limits.FIELD_NAME
+            assert len(field["value"]) <= limits.FIELD_VALUE
+
+
+def test_truncation_keeps_the_evidence_links():
+    """A card whose links were trimmed to make room for prose is unverifiable, which
+    is the same as having no evidence at all."""
+    data = card(
+        description="x" * 8000,
+        evidence=(("crtsh", "https://crt.sh/?q=acme.io"), ("hn", "https://news.example/1")),
+    )
+    embed = lead_card(data)
+    evidence_field = next(f for f in embed["fields"] if f["name"].startswith("📎"))
+    assert "crt.sh" in evidence_field["value"]
+
+
+def test_a_digest_page_never_exceeds_the_total():
+    """Ten full cards is ~12,000 characters against a 6,000 limit — a guaranteed 400.
+    This is why the digest has its own builder and pages at eight."""
+    cards = [card(tier="C", display_name=f"Company {i}", description="y" * 380) for i in range(50)]
+    pages = digest_pages(cards)
+    assert pages
+    for page in pages:
+        assert len(page) <= limits.DIGEST_PAGE_SIZE
+        assert sum(limits.total_characters(e) for e in page) <= limits.TOTAL_CHARACTERS
+    assert sum(len(p) for p in pages) == 50, "no card is silently dropped"
+
+
+def realistic_card() -> CardData:
+    """A card with every field the master prompt's section 10 layout draws.
+
+    The minimal fixture above is ~375 characters, which would make the digest look
+    fine. The claim in PLAN.md 2.6 is about a *populated* card, so the measurement has
+    to use one.
+    """
+    return card(
+        description=(
+            "Seed-stage healthtech, ~35 staff, Dhaka and Singapore. Shipped a "
+            "patient-facing AI assistant 11 days ago and is hiring two AI engineers "
+            "with no security role open."
+        ),
+        triggers=(
+            ("T1_AI_SHIP", 0.91, "11d ago"),
+            ("T4_HIRING_AI_ONLY", 0.78, "6d ago"),
+            ("T2_FUNDING", 0.85, "41d ago"),
+        ),
+        outreach_angle=(
+            "You published an AI assistant handling patient data last month. I would "
+            "like to run a free prompt-injection and data-leak review of it under a "
+            "signed RoE — two days, no cost, and you keep the report either way."
+        ),
+        bengali_angle=(
+            "আপনারা গত মাসে রোগীর তথ্য নিয়ে কাজ করে এমন একটি এআই অ্যাসিস্ট্যান্ট "
+            "প্রকাশ করেছেন। একটি স্বাক্ষরিত RoE-এর অধীনে বিনামূল্যে পর্যালোচনা করতে চাই।"
+        ),
+        contacts=("Nabila R. — CTO · nabila@acmehealth.io [verified]",),
+        surface_notes=("public_chatbot", "47 CT subdomains (+12 in 30d)", "DMARC p=none"),
+        evidence=(
+            ("ProductHunt", "https://producthunt.example/acme"),
+            ("Greenhouse", "https://boards.greenhouse.example/acme"),
+            ("TechCrunch", "https://techcrunch.example/acme-seed"),
+            ("crt.sh", "https://crt.sh/?q=acmehealth.io"),
+        ),
+    )
+
+
+def test_a_realistic_card_is_the_size_plan_2_6_claimed():
+    size = limits.total_characters(lead_card(realistic_card()))
+    assert 900 <= size <= 1600, f"card is {size} chars; PLAN.md 2.6 assumed ~1,100-1,400"
+
+
+def test_ten_full_cards_would_not_have_fit():
+    """The measurement behind PLAN.md 2.6, kept as a test so the claim stays true."""
+    full = sum(limits.total_characters(lead_card(realistic_card())) for _ in range(10))
+    assert full > limits.TOTAL_CHARACTERS, (
+        f"ten full cards is {full} chars; if this ever fits, the digest could use "
+        "the full builder and the two-builder split is no longer needed"
+    )
+
+
+# --------------------------------------------------------------- what it says
+
+
+def test_the_card_never_claims_anything_was_scanned():
+    """A legal boundary, not a style preference. The card may be pasted into an email."""
+    embed = lead_card(card(surface_notes=("public_chatbot", "47 CT subdomains")))
+    text = json.dumps(embed).lower()
+    for phrase in ("we scanned", "we found", "vulnerability", "exploit", "we tested", "detected"):
+        assert phrase not in text
+    assert "no scan performed" in text
+
+
+def test_the_compliance_field_is_always_present():
+    embed = lead_card(card())
+    assert any(f["name"].startswith("⚖️") for f in embed["fields"])
+
+
+def test_tier_selects_the_colour():
+    from cindraleads.discord.embeds import TIER_COLORS
+
+    for tier in ("A", "B", "C"):
+        assert lead_card(card(tier=tier))["color"] == TIER_COLORS[tier]
+
+
+# ------------------------------------------------------------- idempotency
+
+
+def test_the_same_lead_is_not_sent_twice():
+    key = idempotency_key("lead1", ["T1_AI_SHIP"], 84)
+    assert key == idempotency_key("lead1", ["T1_AI_SHIP"], 84)
+
+
+def test_trigger_order_does_not_change_the_key():
+    a = idempotency_key("lead1", ["T1_AI_SHIP", "T2_FUNDING"], 84)
+    b = idempotency_key("lead1", ["T2_FUNDING", "T1_AI_SHIP"], 84)
+    assert a == b
+
+
+def test_a_small_score_drift_does_not_resend():
+    """Decay moves scores every night. Keying on the exact number would re-send a
+    card daily for a lead where nothing happened."""
+    assert idempotency_key("lead1", ["T1_AI_SHIP"], 84) == idempotency_key(
+        "lead1", ["T1_AI_SHIP"], 89
+    )
+
+
+def test_a_ten_point_move_is_new_news():
+    assert idempotency_key("lead1", ["T1_AI_SHIP"], 84) != idempotency_key(
+        "lead1", ["T1_AI_SHIP"], 94
+    )
+
+
+def test_a_new_trigger_is_new_news_even_at_the_same_score():
+    """The case the master prompt's "re-send if score moved >= 10" rule misses: a
+    company that picks up a new reason to call is worth mentioning again."""
+    assert idempotency_key("lead1", ["T1_AI_SHIP"], 84) != idempotency_key(
+        "lead1", ["T1_AI_SHIP", "T9_MARKETPLACE"], 84
+    )
+
+
+# ------------------------------------------------------------- the dispatcher
+
+
+@pytest.fixture
+def rig(tmp_path: Path):  # type: ignore[no-untyped-def]
+    store = Store(tmp_path / "d.db", migrations_dir=MIGRATIONS)
+    store.migrate()
+    posts: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        posts.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "msg-123"})
+
+    def build(tier: str = "A", score: int = 84, **webhooks: str) -> Dispatcher:
+        with store.tx() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO companies (canonical_domain, display_name, country, "
+                "ai_surface, tech_signals, first_seen_at, last_updated_at) "
+                "VALUES ('acme.io','Acme Health','BD','[\"agent_with_tools\"]','[]',?,?)",
+                ("2026-08-15T00:00:00Z", "2026-08-15T00:00:00Z"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO leads (lead_id, canonical_domain, score, tier, "
+                "recommended_offer, outreach_angle, compliance, first_seen_at, "
+                "last_updated_at, pipeline_version) VALUES "
+                "('lead1','acme.io',?,?,'snapshot_free','angle','{\"passed\":true}',?,?,'v1')",
+                (score, tier, "2026-08-15T00:00:00Z", "2026-08-15T00:00:00Z"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO evidence (evidence_id, url, source_id, snippet, "
+                "observed_at, content_sha256) VALUES "
+                "('e1','https://acme.io/','company_site','snip','2026-08-15T00:00:00Z','h')"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO triggers (trigger_id, canonical_domain, code, "
+                "confidence, observed_at, decays_at) VALUES "
+                "('t1','acme.io','T1_AI_SHIP',0.9,'2026-08-15T00:00:00Z','2099-01-01T00:00:00Z')"
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO trigger_evidence (trigger_id, evidence_id) "
+                "VALUES ('t1','e1')"
+            )
+        return Dispatcher(
+            store=store,
+            webhook=DiscordWebhook(
+                client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+            ),
+            webhooks=dict(webhooks) or {"hot": "https://discord.test/hot"},
+        )
+
+    yield build, posts, store
+    store.close()
+
+
+def job() -> Job:
+    return Job(job_id="j1", kind=DISPATCH_KIND, payload={"lead_id": "lead1"})
+
+
+async def test_a_tier_a_lead_is_sent_and_logged(rig):
+    build, posts, store = rig
+    dispatcher = build(tier="A")
+
+    result = await dispatcher.run(job())
+
+    assert result.ok
+    assert len(posts) == 1
+    assert posts[0]["embeds"][0]["title"].startswith("Acme Health")
+    row = store.conn.execute("SELECT * FROM dispatch_log").fetchone()
+    assert row["channel"] == "hot"
+    assert row["discord_message_id"] == "msg-123", "needed to join Phase 8 reactions"
+    await dispatcher.webhook.client.aclose()
+
+
+async def test_a_rerun_sends_nothing(rig):
+    build, posts, store = rig
+    dispatcher = build(tier="A")
+
+    await dispatcher.run(job())
+    await dispatcher.run(job())
+
+    assert len(posts) == 1, "the second run is deduplicated by idempotency key"
+    assert len(store.conn.execute("SELECT * FROM dispatch_log").fetchall()) == 1
+    await dispatcher.webhook.client.aclose()
+
+
+async def test_a_reject_is_never_dispatched(rig):
+    build, posts, store = rig
+    dispatcher = build(tier="REJECT", score=12)
+
+    result = await dispatcher.run(job())
+
+    assert result.ok, "not a failure — a lead that does not qualify"
+    assert posts == []
+    assert store.conn.execute("SELECT * FROM dispatch_log").fetchall() == []
+    await dispatcher.webhook.client.aclose()
+
+
+async def test_tier_routes_to_its_channel(rig):
+    build, _posts, _store = rig
+    dispatcher = build(
+        tier="B",
+        hot="https://discord.test/hot",
+        warm="https://discord.test/warm",
+    )
+    await dispatcher.run(job())
+    assert dispatcher.webhook_for("warm") == "https://discord.test/warm"
+    await dispatcher.webhook.client.aclose()
+
+
+async def test_one_configured_webhook_still_delivers_everything(rig):
+    """Losing a Tier B lead because a second webhook was not configured is a worse
+    failure than putting it in the wrong channel."""
+    build, posts, _store = rig
+    dispatcher = build(tier="B", hot="https://discord.test/hot")
+
+    await dispatcher.run(job())
+
+    assert len(posts) == 1
+    await dispatcher.webhook.client.aclose()
+
+
+async def test_no_webhook_configured_is_not_an_error(rig):
+    """A system being set up scores and stores leads perfectly well; it just has
+    nowhere to put the card yet."""
+    build, posts, store = rig
+    dispatcher = build(tier="A")
+    dispatcher.webhooks = {}
+
+    result = await dispatcher.run(job())
+
+    assert result.ok
+    assert posts == []
+    assert store.conn.execute("SELECT * FROM dispatch_log").fetchall() == []
+    await dispatcher.webhook.client.aclose()
+
+
+async def test_a_429_is_obeyed_not_guessed(tmp_path: Path):
+    """Discord says exactly how long to wait. Guessing gets you limited harder."""
+    waits: list[float] = []
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, json={"retry_after": 0.01})
+        return httpx.Response(200, json={"id": "msg-9"})
+
+    webhook = DiscordWebhook(client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    result = await webhook.post("https://discord.test/hot", {"embeds": []})
+
+    assert result.ok
+    assert result.message_id == "msg-9"
+    assert calls["n"] == 2, "retried once, after the server's own delay"
+    assert waits == []
+    await webhook.client.aclose()
+
+
+async def test_a_malformed_embed_is_not_retried():
+    """A 400 means the payload is wrong. Retrying sends the same bytes."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(400, text='{"embeds": ["invalid"]}')
+
+    webhook = DiscordWebhook(client=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    result = await webhook.post("https://discord.test/hot", {"embeds": []})
+
+    assert not result.ok
+    assert calls["n"] == 1
+    await webhook.client.aclose()
+
+
+async def test_build_card_works_for_any_tier(rig):
+    """`cindra dispatch-test` has to answer "is the webhook right?" on a database
+    where nothing yet qualifies — which is the state that prompts the question."""
+    build, _posts, _store = rig
+    dispatcher = build(tier="REJECT", score=9)
+    lead = dispatcher.read_lead("lead1")
+    assert lead is not None
+    embed = build_card(lead)
+    assert embed["title"]
+    await dispatcher.webhook.client.aclose()

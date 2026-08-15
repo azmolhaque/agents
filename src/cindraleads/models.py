@@ -336,6 +336,25 @@ class CompanyExtraction(_Model):
     )
 
 
+class LeadProse(_Model):
+    """The only three fields a model is allowed to write on a Lead.
+
+    Separate from `Lead` on purpose. The Scorer computes the number first and hands it
+    to the model as a fact; this schema has no numeric field at all, so there is no
+    shape in which the model's output could become the score. The bounds are grammar
+    rules through Ollama's `format`, which is also what keeps a 4B from writing 300
+    tokens of marketing copy at 3.7 tok/s.
+    """
+
+    rationale: str = Field(default="", max_length=280)
+    # Section 7: name the observed trigger, name what we would look at, make a
+    # low-friction ask. Never imply anything has already been scanned.
+    outreach_angle: str = Field(default="", max_length=400)
+    # A real rewrite for BD prospects, not a machine gloss. Reviewed by a human
+    # before Phase 5 closes.
+    bengali_angle: str | None = Field(default=None, max_length=400)
+
+
 class Job(_Model):
     """A row of the durable queue."""
 

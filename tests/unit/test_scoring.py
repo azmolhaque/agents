@@ -1,0 +1,278 @@
+"""CindraScore arithmetic.
+
+Pure functions, no database, no model. If any test here needs one, the separation the
+module exists to enforce has been broken.
+"""
+
+from __future__ import annotations
+
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+
+from cindraleads.config import settings
+from cindraleads.models import TriggerCode, utcnow
+from cindraleads.scoring import (
+    ScoreInput,
+    ScoringConfig,
+    TriggerObservation,
+    decayed_weight,
+    recommended_offer,
+    score,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture(scope="module")
+def cfg() -> ScoringConfig:
+    s = settings()
+    object.__setattr__(s, "config_dir", REPO_ROOT / "config")
+    return ScoringConfig.load(s)
+
+
+def observation(code: str, *, days_ago: float = 0, urls: int = 2) -> TriggerObservation:
+    return TriggerObservation(
+        code=code,
+        observed_at=utcnow() - timedelta(days=days_ago),
+        evidence_urls=tuple(f"https://x.io/{i}" for i in range(urls)),
+        evidence_sources=tuple(f"src{i}" for i in range(urls)),
+    )
+
+
+def make(**kwargs) -> ScoreInput:  # type: ignore[no-untyped-def]
+    base = {"canonical_domain": "acme.io", "triggers": (observation("T1_AI_SHIP"),)}
+    return ScoreInput(**{**base, **kwargs})
+
+
+# ------------------------------------------------------------------ config sanity
+
+
+def test_every_taxonomy_trigger_has_a_weight(cfg: ScoringConfig):
+    """A code with no row scores zero, which looks exactly like a trigger that never
+    fires. Adding a trigger to the taxonomy without a weight is a silent no-op."""
+    import typing
+
+    missing = [c for c in typing.get_args(TriggerCode) if c not in cfg.triggers]
+    assert not missing, f"scoring.yaml has no weight for {missing}"
+
+
+def test_component_weights_sum_to_one(cfg: ScoringConfig):
+    assert abs(sum(cfg.components.values()) - 1.0) < 1e-9
+
+
+def test_a_config_that_does_not_sum_to_one_is_fatal(tmp_path: Path):
+    """A set summing to 0.9 caps every score at 90 and nothing looks broken."""
+    from cindraleads.errors import ConfigError
+
+    (tmp_path / "scoring.yaml").write_text(
+        "triggers:\n  T1_AI_SHIP: {weight: 30, half_life_days: 180}\n"
+        "components:\n  trigger: 0.5\n  icp_fit: 0.2\n"
+    )
+    s = settings()
+    object.__setattr__(s, "config_dir", tmp_path)
+    with pytest.raises(ConfigError, match=r"must sum to 1\.0"):
+        ScoringConfig.load(s)
+
+
+# ------------------------------------------------------------------------ decay
+
+
+def test_a_trigger_is_worth_half_at_its_half_life():
+    assert decayed_weight(30, 180, 180) == pytest.approx(15.0, abs=0.01)
+    assert decayed_weight(30, 180, 360) == pytest.approx(7.5, abs=0.01)
+
+
+def test_a_trigger_with_no_half_life_does_not_decay():
+    """T12_LOCAL is a standing fact. Being in Dhaka does not become less true."""
+    assert decayed_weight(10, 0, 5000) == 10.0
+
+
+def test_a_future_dated_trigger_is_not_amplified():
+    """A bad page will produce a date in the future. Without the clamp the exponent
+    goes positive and a garbage date becomes the highest-scoring signal there is."""
+    assert decayed_weight(30, 180, -5000) == 30.0
+
+
+def test_decay_is_monotonic_in_age(cfg: ScoringConfig):
+    ages = [0, 10, 30, 90, 180, 365]
+    values = [decayed_weight(30, 180, a) for a in ages]
+    assert values == sorted(values, reverse=True)
+
+
+# ---------------------------------------------------------------- the properties
+
+
+def test_score_is_monotonic_in_trigger_weight(cfg: ScoringConfig):
+    """PLAN.md Phase 5 property, stated correctly.
+
+    "Monotonic in trigger weight" is about the *weight*, holding the trigger set
+    fixed — raising a trigger's configured weight must never lower the score. It is
+    NOT "a heavier code always outscores a lighter one": different codes carry
+    different side effects, and T4_HIRING_AI_ONLY legitimately outscores heavier
+    triggers because hiring AI with no security role is itself an ICP signal.
+    """
+    from dataclasses import replace
+
+    from cindraleads.scoring import TriggerWeight
+
+    previous = -1.0
+    for weight in (1, 5, 10, 20, 30, 50, 90):
+        tuned = replace(cfg, triggers={**cfg.triggers, "T1_AI_SHIP": TriggerWeight(weight, 180)})
+        current = score(make(triggers=(observation("T1_AI_SHIP"),)), tuned).score
+        assert current >= previous, f"raising the weight to {weight} lowered the score"
+        previous = current
+
+
+def test_the_trigger_component_is_monotonic_across_codes(cfg: ScoringConfig):
+    """The component itself, unlike the total, IS ordered by weight — the other
+    components are what break the ordering, and they do so for good reasons."""
+    ordered = sorted(cfg.triggers, key=lambda c: cfg.triggers[c].weight)
+    values = [
+        score(make(triggers=(observation(code),)), cfg).breakdown["trigger"] for code in ordered
+    ]
+    assert values == sorted(values)
+
+
+def test_more_triggers_never_lower_the_score(cfg: ScoringConfig):
+    one = score(make(triggers=(observation("T1_AI_SHIP"),)), cfg).score
+    two = score(make(triggers=(observation("T1_AI_SHIP"), observation("T2_FUNDING"))), cfg).score
+    assert two >= one
+
+
+def test_an_older_trigger_scores_lower(cfg: ScoringConfig):
+    fresh = score(make(triggers=(observation("T2_FUNDING", days_ago=1),)), cfg).score
+    stale = score(make(triggers=(observation("T2_FUNDING", days_ago=150),)), cfg).score
+    assert stale < fresh
+
+
+def test_the_score_is_always_in_range(cfg: ScoringConfig):
+    extremes = [
+        make(triggers=()),
+        make(triggers=tuple(observation(c) for c in cfg.triggers)),
+        make(is_anti_icp=True),
+        make(is_suppressed=True, is_anti_icp=True),
+    ]
+    for candidate in extremes:
+        assert 0 <= score(candidate, cfg).score <= 100
+
+
+# ------------------------------------------------------------------- the vetoes
+
+
+def test_anti_icp_is_a_hard_reject(cfg: ScoringConfig):
+    """-100 expressed as arithmetic, so one code path produces the score and nothing
+    has to remember to check a separate flag."""
+    strong = make(triggers=tuple(observation(c) for c in ("T9_MARKETPLACE", "T1_AI_SHIP")))
+    baseline = score(strong, cfg).score
+    assert baseline > 0
+
+    vetoed = make(
+        triggers=tuple(observation(c) for c in ("T9_MARKETPLACE", "T1_AI_SHIP")),
+        is_anti_icp=True,
+    )
+    assert score(vetoed, cfg).score == 0
+    assert score(vetoed, cfg).tier == "REJECT"
+
+
+def test_suppression_is_a_hard_reject(cfg: ScoringConfig):
+    assert score(make(is_suppressed=True), cfg).tier == "REJECT"
+
+
+def test_a_single_sourced_top_trigger_is_penalised(cfg: ScoringConfig):
+    """One page's word for it is weaker than two independent sightings."""
+    multi = make(triggers=(observation("T1_AI_SHIP", urls=3),))
+    single = make(triggers=(observation("T1_AI_SHIP", urls=1),))
+    assert "single_source" in score(single, cfg).penalties
+    assert "single_source" not in score(multi, cfg).penalties
+    assert score(single, cfg).score < score(multi, cfg).score
+
+
+def test_evidence_older_than_180_days_is_penalised(cfg: ScoringConfig):
+    stale = make(triggers=(observation("T1_AI_SHIP", days_ago=200),))
+    assert "stale_evidence" in score(stale, cfg).penalties
+
+
+# ----------------------------------------------------------------------- tiers
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (100, "A"),
+        (72, "A"),
+        (71, "B"),
+        (55, "B"),
+        (54, "C"),
+        (40, "C"),
+        (39, "REJECT"),
+        (0, "REJECT"),
+    ],
+)
+def test_tier_boundaries(value, expected, cfg: ScoringConfig):
+    from cindraleads.scoring import tier_for
+
+    assert tier_for(value, cfg) == expected
+
+
+# ----------------------------------------------------------------------- offers
+
+
+def test_a_marketplace_brief_outranks_everything():
+    """Somebody has written down that they want to buy this."""
+    inp = make(
+        triggers=(observation("T9_MARKETPLACE"), observation("T1_AI_SHIP")),
+        ai_surface=("public_chatbot",),
+    )
+    assert recommended_offer(inp) == "gig"
+
+
+def test_a_shipped_ai_surface_gets_the_ai_assessment():
+    inp = make(triggers=(observation("T1_AI_SHIP"),), ai_surface=("agent_with_tools",))
+    assert recommended_offer(inp) == "ai_llm_assessment"
+
+
+def test_ai_talk_without_a_surface_is_not_an_ai_assessment():
+    """ "AI-powered" in marketing copy is not a shipped AI surface."""
+    inp = make(triggers=(observation("T1_AI_SHIP"),), ai_surface=())
+    assert recommended_offer(inp) == "snapshot_free"
+
+
+def test_compliance_pressure_without_ai_gets_watch():
+    inp = make(triggers=(observation("T5_COMPLIANCE"),), ai_surface=())
+    assert recommended_offer(inp) == "watch"
+
+
+def test_the_default_is_the_free_snapshot():
+    """The founding-cohort wedge. Costs us two days; use it liberally."""
+    assert recommended_offer(make(triggers=(observation("T12_LOCAL"),))) == "snapshot_free"
+
+
+# -------------------------------------------------------------------- ICP fit
+
+
+def test_an_unknown_headcount_is_not_punished(cfg: ScoringConfig):
+    """Most pages never state one. Scoring silence as zero would reject every company
+    with a terse landing page, which is most good prospects."""
+    unknown = score(make(employee_band=None), cfg)
+    tiny = score(make(employee_band="1-10"), cfg)
+    assert unknown.breakdown["icp_fit"] > 0
+    assert abs(unknown.breakdown["icp_fit"] - tiny.breakdown["icp_fit"]) < 40
+
+
+def test_hiring_ai_without_security_scores_higher(cfg: ScoringConfig):
+    both = make(triggers=(observation("T4_HIRING_AI_ONLY"), observation("T3_HIRING_SEC")))
+    ai_only = make(triggers=(observation("T4_HIRING_AI_ONLY"),))
+    assert ai_only.triggers
+    assert score(ai_only, cfg).breakdown["icp_fit"] > score(both, cfg).breakdown["icp_fit"]
+
+
+def test_no_llm_is_reachable_from_this_module():
+    """The structural half of "a model must never invent the number"."""
+    import cindraleads.scoring as scoring_module
+
+    source = Path(scoring_module.__file__).read_text()
+    for forbidden in ("StructuredLLM", "OllamaBackend", "llm", "anthropic"):
+        assert f"import {forbidden}" not in source
+    assert "llm" not in {f.name for f in ScoreInput.__dataclass_fields__.values()}
