@@ -35,12 +35,22 @@ from cindraleads.sources.clients import GitHubClient, HackerNewsClient, SourceHi
 from cindraleads.sources.http import EgressClient, FetchDenied
 from cindraleads.store import Store
 
-__all__ = ["EXTRACT_KIND", "HARVEST_KIND", "Harvester"]
+__all__ = ["EXTRACT_KIND", "HARVEST_KIND", "HarvestOutcome", "Harvester"]
 
 log = get_logger("cindraleads.harvester")
 
 HARVEST_KIND = "harvest.query"
 EXTRACT_KIND = "extract.candidate"
+
+
+@dataclass(frozen=True)
+class HarvestOutcome:
+    """What `prepare` learned, before anything is written."""
+
+    plan: QueryPlan | None
+    hits: list[SourceHit]
+    duration_ms: int = 0
+    error: str | None = None
 
 
 @dataclass
@@ -97,75 +107,94 @@ class Harvester:
             return []
 
     # ----------------------------------------------------------------- stage
+    #
+    # Split in two on purpose.
+    #
+    # `prepare` does the network work and writes nothing. `commit` writes, inside the
+    # caller's transaction, alongside the queue completion. Two properties fall out
+    # that a single combined method cannot have at once:
+    #
+    #   * No network I/O inside a write transaction. A fetch can take 30 s and
+    #     BEGIN IMMEDIATE holds the write lock, so a combined method would block
+    #     every other worker for the duration of an HTTP call.
+    #   * Side effect and completion still commit together. An earlier version
+    #     persisted candidates in their own transaction before the job was marked
+    #     done; a crash in that window left the candidates written but the extract
+    #     jobs unqueued, and on retry the URL dedupe suppressed them -- losing the
+    #     work permanently while looking like success.
 
-    async def run(self, job: Job) -> StageResult:
-        """Stage entrypoint: one job carrying one QueryPlan."""
+    async def prepare(self, job: Job) -> HarvestOutcome:
+        """Phase 1: fetch. No database writes."""
         started = utcnow()
         try:
             plan = QueryPlan.model_validate(job.payload)
         except ValueError as exc:
-            return StageResult(
-                ok=False, stage="harvester", job_id=job.job_id, error=f"bad QueryPlan: {exc}"
+            return HarvestOutcome(plan=None, hits=[], error=f"bad QueryPlan: {exc}")
+        hits = await self.execute(plan)
+        return HarvestOutcome(
+            plan=plan,
+            hits=hits,
+            duration_ms=int((utcnow() - started).total_seconds() * 1000),
+        )
+
+    def commit(self, job: Job, outcome: HarvestOutcome, conn: sqlite3.Connection) -> StageResult:
+        """Phase 2: write, inside the caller's transaction."""
+        if outcome.plan is None:
+            return StageResult(ok=False, stage="harvester", job_id=job.job_id, error=outcome.error)
+
+        payloads: list[dict[str, Any]] = []
+        for hit in outcome.hits:
+            if self._seen(conn, hit.url):
+                continue
+            candidate_id = uuid.uuid4().hex[:16]
+            conn.execute(
+                "INSERT INTO candidates (candidate_id, content_sha256, raw_payload, "
+                "status, created_at) VALUES (?,?,?,?,?)",
+                (
+                    candidate_id,
+                    "",  # filled by the Extractor once the page is fetched
+                    _payload_json(hit, outcome.plan),
+                    "new",
+                    to_iso(utcnow()),
+                ),
+            )
+            payloads.append(
+                {
+                    "candidate_id": candidate_id,
+                    "url": hit.url,
+                    "title": hit.title,
+                    "source_id": hit.source_id,
+                    "targets": list(outcome.plan.targets),
+                    "origin_job_id": job.job_id,
+                }
             )
 
-        hits = await self.execute(plan)
-        stored = self._persist(plan, hits, job_id=job.job_id)
-
-        duration = int((utcnow() - started).total_seconds() * 1000)
         log.info(
             "harvest_complete",
             job_id=job.job_id,
             stage="harvester",
-            engine=plan.engine,
-            hits=len(hits),
-            new_candidates=len(stored),
-            duration_ms=duration,
+            engine=outcome.plan.engine,
+            hits=len(outcome.hits),
+            new_candidates=len(payloads),
+            duration_ms=outcome.duration_ms,
         )
         return StageResult(
             ok=True,
             stage="harvester",
             job_id=job.job_id,
-            follow_on=[(EXTRACT_KIND, payload) for payload in stored],
-            duration_ms=duration,
+            follow_on=[(EXTRACT_KIND, payload) for payload in payloads],
+            duration_ms=outcome.duration_ms,
         )
 
-    def _persist(
-        self, plan: QueryPlan, hits: list[SourceHit], *, job_id: str
-    ) -> list[dict[str, Any]]:
-        """Record candidates, skipping URLs already seen.
+    async def run(self, job: Job) -> StageResult:
+        """Convenience for callers outside the worker loop (tests, `cindra harvest`).
 
-        Deduplicating on URL here rather than after extraction is worth ~64 s of Pi
-        inference per duplicate. Two templates legitimately surface the same Show HN
-        post, and there is no reason to extract it twice.
+        The worker itself calls prepare/commit separately so the completion lands in
+        the same transaction as the writes.
         """
-        payloads: list[dict[str, Any]] = []
+        outcome = await self.prepare(job)
         with self.store.tx() as conn:
-            for hit in hits:
-                if self._seen(conn, hit.url):
-                    continue
-                candidate_id = uuid.uuid4().hex[:16]
-                conn.execute(
-                    "INSERT INTO candidates (candidate_id, content_sha256, raw_payload, "
-                    "status, created_at) VALUES (?,?,?,?,?)",
-                    (
-                        candidate_id,
-                        "",  # filled by the Extractor once the page is fetched
-                        _payload_json(hit, plan),
-                        "new",
-                        to_iso(utcnow()),
-                    ),
-                )
-                payloads.append(
-                    {
-                        "candidate_id": candidate_id,
-                        "url": hit.url,
-                        "title": hit.title,
-                        "source_id": hit.source_id,
-                        "targets": list(plan.targets),
-                        "origin_job_id": job_id,
-                    }
-                )
-        return payloads
+            return self.commit(job, outcome, conn)
 
     @staticmethod
     def _seen(conn: sqlite3.Connection, url: str) -> bool:
