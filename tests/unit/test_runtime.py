@@ -115,3 +115,32 @@ async def test_a_cached_answer_is_not_replanned_end_to_end(rt):
 
         assert len(after) == len(before) - 1
         assert not any(p.query == target.query and p.engine == target.engine for p in after)
+
+
+async def test_every_pipeline_kind_has_a_registered_stage(rt):
+    """A stage that exists but is not registered fails at runtime as "no handler
+    registered for kind ..." — after the job has already been claimed."""
+    from cindraleads.cli import PIPELINE_KINDS, _stages_for
+
+    async with rt as runtime:
+        stages = _stages_for(list(PIPELINE_KINDS), runtime)
+        assert set(stages) == set(PIPELINE_KINDS)
+
+
+async def test_the_pipeline_stages_share_one_store_and_one_egress(rt):
+    """Two EgressClients would each carry their own in-flight map and budget guards:
+    duplicate requests, and a cap applied twice independently."""
+    async with rt as runtime:
+        assert runtime.extractor.egress is runtime.egress
+        assert runtime.harvester.egress is runtime.egress
+        assert runtime.extractor.store is runtime.store
+        assert runtime.resolver.store is runtime.store
+
+
+async def test_the_extractor_is_the_only_stage_holding_a_model(rt):
+    """PLAN.md 2.9: the deterministic stages are given no way to call one."""
+    async with rt as runtime:
+        assert hasattr(runtime.extractor, "llm")
+        assert not hasattr(runtime.resolver, "llm")
+        assert not hasattr(runtime.harvester, "llm")
+        assert not hasattr(runtime.scout, "llm")

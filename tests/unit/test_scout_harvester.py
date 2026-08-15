@@ -186,7 +186,19 @@ def test_the_scout_key_matches_the_key_the_client_actually_fetches(rig):
 
 def test_an_engine_with_no_client_has_no_cache_key(rig):
     harvester, _ = rig(hn_payload())
-    assert harvester.cache_key_for_plan(QueryPlan(query="x", engine="serpapi_jobs")) is None
+    assert harvester.cache_key_for_plan(QueryPlan(query="x", engine="not_wired_yet")) is None
+
+
+def test_every_planned_engine_has_a_client(scout: Scout, rig):
+    """A plan the Harvester cannot execute becomes a no-op job.
+
+    That is how T9_MARKETPLACE sat dead for a phase: `icp.yaml` planned two SerpAPI
+    queries every run, the Harvester had no client for them, and each one completed
+    successfully having done nothing at all. Silence, not an error.
+    """
+    harvester, _ = rig(hn_payload())
+    unsupported = sorted({t.engine for t in scout.templates if not harvester.supports(t.engine)})
+    assert not unsupported, f"icp.yaml plans engines the Harvester cannot run: {unsupported}"
 
 
 # ------------------------------------------------------------------ harvester
@@ -304,17 +316,18 @@ def test_the_same_plan_runs_again_once_its_cache_window_lapses():
     the finished jobs and did nothing. The hourly timer would have harvested once at
     boot and idled forever, with a queue that looked perfectly healthy.
     """
-    from datetime import timedelta
-
-    from cindraleads.models import utcnow
+    from datetime import UTC, datetime, timedelta
 
     plan = QueryPlan(query="ai agents", engine="hn_algolia", cache_ttl_hours=6)
-    now = utcnow()
+    # A fixed instant on a 6 h boundary. Using utcnow() made this flaky: "now" and
+    # "now + 1 h" land in different buckets whenever the clock is inside an hour of
+    # one, so the test failed roughly one run in six.
+    start = datetime(2026, 8, 15, 12, 0, 0, tzinfo=UTC)
 
-    same_window = Harvester.dedupe_key_for(plan, now=now + timedelta(hours=1))
-    next_window = Harvester.dedupe_key_for(plan, now=now + timedelta(hours=7))
+    same_window = Harvester.dedupe_key_for(plan, now=start + timedelta(hours=1))
+    next_window = Harvester.dedupe_key_for(plan, now=start + timedelta(hours=7))
 
-    assert Harvester.dedupe_key_for(plan, now=now) == same_window
+    assert Harvester.dedupe_key_for(plan, now=start) == same_window
     assert next_window != same_window, "a lapsed cache window is genuinely new work"
 
 

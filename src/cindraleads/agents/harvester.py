@@ -32,7 +32,12 @@ from cindraleads.errors import CindraError
 from cindraleads.logging import get_logger
 from cindraleads.models import Job, QueryPlan, StageResult, to_iso, utcnow
 from cindraleads.queue import JobQueue
-from cindraleads.sources.clients import GitHubClient, HackerNewsClient, SourceHit
+from cindraleads.sources.clients import (
+    GitHubClient,
+    HackerNewsClient,
+    SerpApiClient,
+    SourceHit,
+)
 from cindraleads.sources.http import EgressClient, FetchDenied
 from cindraleads.store import Store
 
@@ -63,15 +68,19 @@ class Harvester:
     # every call site return Any, which silently disables checking on the results.
     hn: HackerNewsClient | None = None
     github: GitHubClient | None = None
+    serpapi: SerpApiClient | None = None
+    serpapi_key: str | None = None
 
     def __post_init__(self) -> None:
         if self.hn is None:
             self.hn = HackerNewsClient(self.egress)
         if self.github is None:
             self.github = GitHubClient(self.egress)
+        if self.serpapi is None:
+            self.serpapi = SerpApiClient(self.egress, api_key=self.serpapi_key)
 
     def supports(self, engine: str) -> bool:
-        return engine in {"hn_algolia", "github_api"}
+        return engine in {"hn_algolia", "github_api"} or SerpApiClient.supports(engine)
 
     def cache_key_for_plan(self, plan: QueryPlan) -> str | None:
         """The cache key this plan's fetch will actually use, without fetching.
@@ -89,6 +98,8 @@ class Harvester:
             )
         if plan.engine == "github_api":
             return GitHubClient.cache_key(plan.query)
+        if SerpApiClient.supports(plan.engine):
+            return SerpApiClient.cache_key(plan.engine, plan.query)
         return None
 
     # ------------------------------------------------------------- execution
@@ -110,6 +121,9 @@ class Harvester:
                     since_days=since_days,
                     tags=plan.params.get("tags") or "story",
                 )
+            if SerpApiClient.supports(plan.engine):
+                assert self.serpapi is not None
+                return await self.serpapi.search(plan.engine, plan.query)
             assert self.github is not None
             return await self.github.search_repos(plan.query)
         except FetchDenied as exc:

@@ -8,6 +8,8 @@ the first is the redaction processor in ``logging.py``, which is the one under t
 from __future__ import annotations
 
 import functools
+import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +19,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from cindraleads.errors import ConfigError
 
-__all__ = ["Settings", "find_repo_root", "load_yaml", "settings"]
+__all__ = [
+    "Settings",
+    "find_repo_root",
+    "load_prompt",
+    "load_yaml",
+    "prompt_version",
+    "settings",
+]
+
+# The rationale header every prompt file carries. Stripped before the model sees it.
+_COMMENT_BLOCK = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 def find_repo_root(start: Path | None = None) -> Path:
@@ -50,6 +62,7 @@ class Settings(BaseSettings):
     log_dir: Path = Path("var/log")
     cache_dir: Path = Path("var/cache")
     config_dir: Path = Path("config")
+    prompt_dir: Path = Path("prompts")
     migrations_dir: Path = Path("db/migrations")
 
     # SQLite page cache in KiB, negative means KiB rather than pages.
@@ -63,6 +76,10 @@ class Settings(BaseSettings):
     # PLAN.md 2.5, approved: 6 requests per domain per rolling 24h, >= 3s apart.
     fetch_budget_per_domain_24h: int = 6
     fetch_min_interval_seconds: float = 3.0
+    # Decode runs at ~3.7 tok/s on the Pi, so a bounded extraction takes ~64 s at
+    # p50 and ~77 s at p95 (docs/BENCHMARKS.md). 180 s leaves room for a cold
+    # model load (~32 s off microSD) on top of a p95 page.
+    ollama_timeout_seconds: float = 180.0
 
     # --- secrets -----------------------------------------------------------
     serpapi_key: SecretStr | None = None
@@ -119,3 +136,39 @@ def load_yaml(name: str, *, base: Path | None = None) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise ConfigError(f"{path} must contain a mapping at the top level")
     return loaded
+
+
+def load_prompt(name: str, *, base: Path | None = None) -> str:
+    """Load ``prompts/<name>.md``, stripped of its HTML rationale comment.
+
+    Prompts live in files rather than in code so that changing one is a reviewable
+    diff with golden fixtures attached, not a string edit buried in a stage.
+
+    The leading ``<!-- ... -->`` block is documentation for whoever edits the prompt
+    and would otherwise be tokens the model pays for on every single page. At 3.7
+    tok/s of decode and ~64 s per page, prompt bloat is not free.
+    """
+    cfg = settings()
+    directory = base or cfg.resolve(cfg.prompt_dir)
+    path = directory / (name if name.endswith(".md") else f"{name}.md")
+    if not path.is_file():
+        raise ConfigError(f"prompt not found: {path}")
+    text = path.read_text(encoding="utf-8")
+    return _COMMENT_BLOCK.sub("", text).strip()
+
+
+def prompt_version(base: Path | None = None) -> str:
+    """A hash over every prompt file.
+
+    PLAN.md 2.10: ``Lead.pipeline_version`` does not change when a prompt is edited,
+    so a prompt tweak would silently invalidate the golden fixtures with nothing in
+    the data to show it. This hash is stored alongside extractions instead, which
+    makes fixture invalidation automatic and a regression traceable to the edit.
+    """
+    cfg = settings()
+    directory = base or cfg.resolve(cfg.prompt_dir)
+    digest = hashlib.sha256()
+    for path in sorted(directory.glob("*.md")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:16]

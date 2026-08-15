@@ -84,6 +84,12 @@ packages = ["cindraleads"]
 module = ["tests.*"]
 disallow_untyped_defs = false
 
+# Optional extras. Each has a documented runtime fallback, so the import is guarded
+# and the module must typecheck on a machine that skipped the extra.
+[[tool.mypy.overrides]]
+module = ["rapidfuzz.*", "selectolax.*"]
+ignore_missing_imports = true
+
 # ---------------------------------------------------------------- pytest
 
 [tool.pytest.ini_options]

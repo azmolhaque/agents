@@ -12,8 +12,11 @@ $(VENV)/bin/activate:
 	python3 -m venv $(VENV)
 	$(PIP) install --quiet --upgrade pip
 
-install: $(VENV)/bin/activate ## Create the venv and install with dev extras
-	$(PIP) install --quiet -e ".[dev]"
+install: $(VENV)/bin/activate ## Create the venv and install with dev + pipeline extras
+	# extract/dedupe are Phase 3 runtime deps, not optional in practice: without them
+	# textextract falls back to the stdlib parser and the dedupe ladder to difflib.
+	# Both work, both are worse. Install them so the Pi runs the measured path.
+	$(PIP) install --quiet -e ".[dev,extract,dedupe]"
 
 lint: ## ruff check + format check
 	$(PY) -m ruff check src tests scripts

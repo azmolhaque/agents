@@ -17,13 +17,17 @@ from dataclasses import dataclass, field
 from types import TracebackType
 
 import httpx
+from pydantic import SecretStr
 
-from cindraleads.agents import Harvester, Scout
+from cindraleads.agents import Extractor, Harvester, Resolver, Scout
+from cindraleads.budget import BudgetGuard
 from cindraleads.config import Settings, settings
+from cindraleads.llm import ModelRegistry, OllamaBackend, StructuredLLM
 from cindraleads.logging import get_logger
 from cindraleads.queue import JobQueue
 from cindraleads.sources import DocumentCache, EgressClient, SourceRegistry
 from cindraleads.store import Store
+from cindraleads.thermal import ThermalGovernor
 
 __all__ = ["Runtime"]
 
@@ -40,12 +44,31 @@ class Runtime:
     queue: JobQueue = field(init=False)
     scout: Scout = field(init=False)
     harvester: Harvester = field(init=False)
+    llm: StructuredLLM = field(init=False)
+    extractor: Extractor = field(init=False)
+    resolver: Resolver = field(init=False)
+    cloud_budget: BudgetGuard = field(init=False)
+    governor: ThermalGovernor = field(init=False)
     _http: httpx.AsyncClient | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.registry = SourceRegistry.from_config(self.config)
         self.cache = DocumentCache(self.store, cache_dir=self.config.resolve(self.config.cache_dir))
         self.queue = JobQueue(self.store)
+        self.cloud_budget = BudgetGuard.for_cloud(
+            self.store, daily_usd_cap=self.config.daily_cloud_usd_cap
+        )
+        self.governor = ThermalGovernor()
+
+    def thermal_gate(self) -> bool:
+        """Whether inference is allowed right now.
+
+        Polled per call rather than cached: a batch of 150 pages runs for hours, and a
+        governor sampled once at startup would happily keep inferring into an 85 C
+        shutdown. A reader that is unavailable (no `vcgencmd`, wrong group) reports
+        nominal, so a dev box is never gated.
+        """
+        return bool(self.governor.poll().allow_llm)
 
     async def __aenter__(self) -> Runtime:
         self._http = httpx.AsyncClient(
@@ -62,7 +85,25 @@ class Runtime:
         self.scout = Scout.from_config(
             self.registry, store=self.store, cache=self.cache, config=self.config
         )
-        self.harvester = Harvester(store=self.store, egress=self.egress, queue=self.queue)
+        self.harvester = Harvester(
+            store=self.store,
+            egress=self.egress,
+            queue=self.queue,
+            serpapi_key=_secret(self.config.serpapi_key),
+        )
+        self.llm = StructuredLLM(
+            OllamaBackend(timeout=self.config.ollama_timeout_seconds),
+            registry=ModelRegistry.from_config(self.config),
+            # The cloud tier is a rationed escalation, not a fallback: the guard is
+            # consulted per call so an exhausted day degrades to local-only instead of
+            # quietly spending past the cap.
+            can_escalate=lambda: self.cloud_budget.can_spend(0.01),
+            gate=self.thermal_gate,
+        )
+        self.extractor = Extractor(
+            store=self.store, egress=self.egress, llm=self.llm, config=self.config
+        )
+        self.resolver = Resolver(store=self.store)
         # The Harvester owns the clients, so it is the only thing that can say what
         # key a plan will be fetched under. Without this the Scout's skip_if_cached
         # compares a key nothing ever writes.
@@ -91,3 +132,13 @@ class Runtime:
         source = self.registry.get(engine)
         guard = self.egress.budgets.get(source.budget_provider)
         return True if guard is None else guard.can_spend(units)
+
+
+def _secret(value: SecretStr | None) -> str | None:
+    """Unwrap a SecretStr exactly at the point of use.
+
+    Kept wrapped everywhere else so an accidental repr or f-string prints asterisks
+    rather than the key. This is the second line of defence; the redaction processor
+    in `logging.py` is the first.
+    """
+    return value.get_secret_value() if value is not None else None

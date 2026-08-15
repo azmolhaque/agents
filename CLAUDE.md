@@ -30,7 +30,9 @@ make bench       # Phase 1 benchmark -> docs/BENCHMARKS.md (RUN ON THE PI)
 cindra db migrate | db status | db backup <path>
 cindra queue status | queue reclaim | queue enqueue --kind K
 cindra harvest [--dry-run] [--limit N]   # Scout -> durable harvest jobs
-cindra work --kinds harvest.query [--drain-inflight]
+cindra pipeline                          # harvest -> extract -> resolve, one pass
+cindra work --kinds harvest.query,extract.candidate,resolve.company [--drain-inflight]
+cindra status                            # candidates, companies, live triggers
 cindra feedback <lead_id> good|bad
 ```
 
@@ -76,6 +78,21 @@ tests/golden/   regression fixtures for prompt changes docs/RUNBOOK.md what to d
 
 ## Current state
 
+**Phases 0-3 code complete; Phase 3's accuracy gate still needs the Pi.**
+
+The pipeline runs end to end: `Scout -> Harvester -> Extractor -> Resolver`, three
+durable job kinds driven by one async worker loop. Every stage is two-phase --
+`prepare()` does network I/O outside any transaction, `commit()` writes inside the one
+that also enqueues follow-on jobs and completes the current job. A stage that fails,
+by returning `ok=False` or by raising, rolls its own writes back.
+
+Two rules are enforced mechanically rather than trusted:
+- A snippet that does not literally appear in the fetched page is dropped, and a
+  candidate with no surviving snippet keeps no trigger claims.
+- The Extractor holds an LLM and a fetcher and nothing else, so a successful prompt
+  injection can only produce a wrong extraction. The regex tripwire in `injection.py`
+  is a detection signal, not the defence.
+
 **Phase 0 complete.** Models, store, durable queue, structlog + redaction, CLI skeleton, CI.
 
 **Phase 1 measured on the Pi, gate passing on a 3-page sample.** See
@@ -99,9 +116,21 @@ in Phase 3 against *field accuracy*: `textextract.extract_text(max_chars=1500)` 
 `CompanyExtraction` field bounds. A short budget drops footers, which is where headcount
 and location live.
 
-**Still open before Phase 1 is formally closed:** the plan's gate is 20+ pages; only 3
-have been run. `make bench` on the Pi does the full 24-page corpus (~26 min) and also
-measures `llama3.2:3b` for comparison.
+**Phase 2 gate passed on the Pi (2026-08-15).** 21 discovery queries, 151 extract jobs,
+and a repeat run at zero network calls (`skipped_cached=10`, free plans dropped to 0).
+Three defects were found doing it, all of which made a broken run *look* like a passing
+one; the tests named after them are the reason they cannot come back.
+
+**Still open before Phase 3 is formally closed — all of it needs the Pi:**
+
+- The three-way accuracy gate (PLAN.md 2.11): schema validity >= 98%, critical fields
+  >= 90%, soft fields >= 70%. Nothing has been measured against a real model yet;
+  every extract test here uses a stub backend and asserts pipeline judgement, not
+  extraction quality.
+- Re-tune `PROMPT_CHAR_BUDGET` and the `CompanyExtraction` bounds against field
+  accuracy rather than latency.
+- Duplicate rate < 2% on real data using rungs 1/2/4.
+- Phase 1's full 24-page benchmark (`make bench`, ~26 min).
 
 **Known hardware gaps for Phase 7:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Neither blocks Phases 2-6.

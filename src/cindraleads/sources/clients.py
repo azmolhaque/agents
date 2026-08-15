@@ -20,7 +20,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, ClassVar
 
 from cindraleads.logging import get_logger
 from cindraleads.models import TriggerCode, from_iso, utcnow
@@ -37,6 +37,7 @@ __all__ = [
     "JobPosting",
     "LeverClient",
     "RdapClient",
+    "SerpApiClient",
     "SourceHit",
     "analyze_postings",
     "classify_role",
@@ -218,6 +219,98 @@ class GitHubClient:
         return await self.search_repos(
             f"langchain OR mcp-server OR llamaindex OR autogen pushed:>{cutoff}"
         )
+
+
+class SerpApiClient:
+    """SerpAPI, the one rationed discovery source. PLAN.md decision 7.
+
+    Four source ids (`serpapi_search`/`_news`/`_jobs`/`_marketplace`) map onto one
+    account and one budget. They exist separately so each can carry its own cache TTL
+    — news goes stale in hours, a jobs board does not — and so the registry can price
+    and disable them independently.
+
+    The API key travels as `secret_params`, so it reaches the wire but never the cache
+    key, the provenance row, or a log line. Putting it in `params` would mean rotating
+    the key silently invalidated every cached document, and would write the secret into
+    the database.
+    """
+
+    ENGINES: ClassVar[dict[str, str]] = {
+        "serpapi_search": "google",
+        "serpapi_news": "google_news",
+        "serpapi_jobs": "google",
+        "serpapi_marketplace": "google",
+    }
+    URL = "https://serpapi.com/search"
+
+    def __init__(self, egress: EgressClient, api_key: str | None = None) -> None:
+        self.egress = egress
+        self.api_key = api_key
+
+    @classmethod
+    def supports(cls, source_id: str) -> bool:
+        return source_id in cls.ENGINES
+
+    @classmethod
+    def request_for(
+        cls, source_id: str, query: str, *, limit: int = 20
+    ) -> tuple[str, dict[str, str]]:
+        return (
+            cls.URL,
+            {
+                "engine": cls.ENGINES[source_id],
+                "q": query,
+                "num": str(min(limit, 100)),
+                # Deterministic locale. Without it SerpAPI geolocates from the caller's
+                # IP, so the same query cached on the Pi and replayed elsewhere returns
+                # different results under one cache key.
+                "hl": "en",
+                "gl": "us",
+            },
+        )
+
+    @classmethod
+    def cache_key(cls, source_id: str, query: str, **kwargs: Any) -> str:
+        url, params = cls.request_for(source_id, query, **kwargs)
+        return cache_key_for(source_id, url, params)
+
+    async def search(self, source_id: str, query: str, *, limit: int = 20) -> list[SourceHit]:
+        if not self.api_key:
+            # A missing key is a configuration state, not a crash. The free sources
+            # carry the batch; this one sits out until SERPAPI_KEY is set.
+            log.warning("serpapi_no_key", source_id=source_id)
+            return []
+
+        url, params = self.request_for(source_id, query, limit=limit)
+        result = await self.egress.fetch(
+            source_id, url, params=params, secret_params={"api_key": self.api_key}
+        )
+        data = _safe_json(result.body, source_id=source_id, url=result.url)
+        if not isinstance(data, dict):
+            return []
+        if error := data.get("error"):
+            # SerpAPI answers 200 with {"error": "..."} for an exhausted plan or a bad
+            # key. Treated as a failure it would trip the breaker on a 200; treated as
+            # results it would be an empty batch with no explanation. Log and yield.
+            log.warning("serpapi_error", source_id=source_id, error=str(error)[:200])
+            return []
+
+        hits: list[SourceHit] = []
+        for item in data.get("organic_results", []) + data.get("news_results", []):
+            link = item.get("link")
+            if not link:
+                continue
+            hits.append(
+                SourceHit(
+                    url=str(link),
+                    title=str(item.get("title") or ""),
+                    snippet=str(item.get("snippet") or item.get("source") or "")[:500],
+                    source_id=source_id,
+                    published_at=_parse_iso(item.get("date")),
+                    raw={"position": item.get("position")},
+                )
+            )
+        return hits
 
 
 # ----------------------------------------------------------------- enrichment

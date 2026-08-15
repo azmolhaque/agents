@@ -179,9 +179,17 @@ class EgressClient:
         url: str,
         *,
         params: dict[str, str] | None = None,
+        secret_params: dict[str, str] | None = None,
         ttl_hours: float | None = None,
         allow_stale_on_open_circuit: bool = True,
     ) -> FetchResult:
+        """Fetch through the gauntlet.
+
+        ``secret_params`` are sent with the request but excluded from the cache key
+        and never recorded. An API key belongs in the query string of exactly one
+        outbound request — not in the cache key (where rotating the key would silently
+        invalidate every cached document), and not in provenance rows or logs.
+        """
         source = self.registry.require_enabled(source_id)  # (1)
         assert self.cache is not None and self.breakers is not None
         key = cache_key_for(source_id, url, params)
@@ -202,7 +210,7 @@ class EgressClient:
         self._inflight[key] = future
         try:
             result = await self._fetch_uncached(
-                source_id, url, key, params, ttl, allow_stale_on_open_circuit
+                source_id, url, key, params, secret_params, ttl, allow_stale_on_open_circuit
             )
         except BaseException as exc:
             if not future.done():
@@ -224,6 +232,7 @@ class EgressClient:
         url: str,
         key: str,
         params: dict[str, str] | None,
+        secret_params: dict[str, str] | None,
         ttl: float,
         allow_stale: bool,
     ) -> FetchResult:
@@ -256,7 +265,10 @@ class EgressClient:
 
         started = time.monotonic()
         try:
-            body, status, content_type = await self._request(url, params)
+            # Secrets join the request here and nowhere else: not in `key`, not in
+            # the provenance row, not in a log line.
+            wire = {**(params or {}), **secret_params} if secret_params else params
+            body, status, content_type = await self._request(url, wire)
         except (httpx.HTTPError, OSError) as exc:
             breaker.record_failure(f"{type(exc).__name__}: {exc}")
             log.warning("egress_failed", source_id=source_id, url=url, error=str(exc))

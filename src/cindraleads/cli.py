@@ -24,7 +24,7 @@ from typing import Annotated, Any, Protocol
 import typer
 
 from cindraleads import PIPELINE_VERSION, __version__
-from cindraleads.agents import HARVEST_KIND
+from cindraleads.agents import EXTRACT_KIND, HARVEST_KIND, RESOLVE_KIND
 from cindraleads.config import settings
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
@@ -325,6 +325,101 @@ def harvest(
     asyncio.run(_run())
 
 
+@app.command()
+def status() -> None:
+    """What the pipeline has actually produced.
+
+    `queue status` answers "is work moving?"; this answers "did any of it turn into a
+    prospect?". They are different questions, and a queue that drains cleanly while
+    producing zero companies is exactly the failure worth being able to see at a
+    glance.
+    """
+    store = _open_store()
+    conn = store.conn
+
+    def count(sql: str, *params: Any) -> int:
+        row = conn.execute(sql, params).fetchone()
+        return int(row[0]) if row else 0
+
+    typer.echo("candidates")
+    for row in conn.execute(
+        "SELECT status, COUNT(*) AS n FROM candidates GROUP BY status ORDER BY n DESC"
+    ):
+        typer.echo(f"  {row['status']!s:>14}: {row['n']}")
+
+    typer.echo("\nentities")
+    typer.echo(f"  {'companies':>14}: {count('SELECT COUNT(*) FROM companies')}")
+    typer.echo(f"  {'evidence':>14}: {count('SELECT COUNT(*) FROM evidence')}")
+    live = count(
+        "SELECT COUNT(*) FROM triggers WHERE active = 1 AND decays_at > ?", to_iso(utcnow())
+    )
+    typer.echo(f"  {'live triggers':>14}: {live}")
+    typer.echo(f"  {'quarantined':>14}: {count('SELECT COUNT(*) FROM quarantine')}")
+
+    triggers = list(
+        conn.execute(
+            "SELECT code, COUNT(*) AS n FROM triggers WHERE active = 1 AND decays_at > ? "
+            "GROUP BY code ORDER BY n DESC",
+            (to_iso(utcnow()),),
+        )
+    )
+    if triggers:
+        typer.echo("\ntriggers by code")
+        for row in triggers:
+            typer.echo(f"  {row['code']!s:>20}: {row['n']}")
+
+    # A company with no live trigger is fit without news, which the master prompt is
+    # explicit is not a lead. Surfacing the split stops "500 companies" reading as
+    # success when none of them has a reason to be contacted.
+    leadable = count(
+        "SELECT COUNT(DISTINCT canonical_domain) FROM triggers WHERE active = 1 AND decays_at > ?",
+        to_iso(utcnow()),
+    )
+    typer.echo(f"\ncompanies with >=1 live trigger: {leadable}")
+
+
+@app.command()
+def pipeline(
+    limit: Annotated[int, typer.Option(help="Max plans. 0 = the configured ceiling.")] = 0,
+    max_jobs: Annotated[int, typer.Option(help="Stop after N jobs. 0 = drain.")] = 0,
+) -> None:
+    """Harvest, extract and resolve in one pass.
+
+    The same three stages `work` runs, in one command, for a timer or a manual run.
+    Ordering is deliberate rather than incidental: each stage drains fully before the
+    next starts, so a batch of ~64 s extractions is never interleaved with harvest
+    fetches competing for the same worker.
+    """
+    cfg = settings()
+    cfg.ensure_dirs()
+    configure_logging(log_dir=cfg.resolve(cfg.log_dir), level=cfg.log_level, console=True)
+    store = _open_store()
+
+    async def _run() -> None:
+        async with Runtime(store=store, config=cfg) as runtime:
+            plans = runtime.scout.plan(limit=limit or None, can_spend=runtime.can_spend)
+            _ids, new = runtime.harvester.enqueue_plans(plans)
+            typer.echo(f"planned {len(plans)}, {new} new harvest job(s)")
+
+            for kind in PIPELINE_KINDS:
+                stages = _stages_for([kind], runtime)
+                done = await _work_loop(
+                    store,
+                    stages,
+                    kinds=[kind],
+                    worker_id=f"{os.uname().nodename}:{os.getpid()}",
+                    lease=600,  # an extraction is ~64 s; a short lease would expire mid-page
+                    max_jobs=max_jobs,
+                    idle_exit=True,
+                    drain_inflight=False,
+                    poll_ms=50,
+                    work_ms=0,
+                )
+                typer.echo(f"{kind}: {done} job(s)")
+
+    asyncio.run(_run())
+
+
 # -------------------------------------------------------------------- the worker
 
 _shutdown = False
@@ -366,13 +461,22 @@ def _stages_for(kinds: list[str], runtime: Runtime | None) -> dict[str, Stage]:
     stages: dict[str, Stage] = {
         kind: _SyncStage(kind, handler) for kind, handler in HANDLERS.items() if kind in kinds
     }
-    if runtime is not None and HARVEST_KIND in kinds:
-        stages[HARVEST_KIND] = runtime.harvester
+    if runtime is None:
+        return stages
+    available: dict[str, Stage] = {
+        HARVEST_KIND: runtime.harvester,
+        EXTRACT_KIND: runtime.extractor,
+        RESOLVE_KIND: runtime.resolver,
+    }
+    stages.update({kind: stage for kind, stage in available.items() if kind in kinds})
     return stages
 
 
+PIPELINE_KINDS = (HARVEST_KIND, EXTRACT_KIND, RESOLVE_KIND)
+
+
 def _needs_runtime(kinds: list[str]) -> bool:
-    return HARVEST_KIND in kinds
+    return any(kind in kinds for kind in PIPELINE_KINDS)
 
 
 @app.command()
@@ -489,7 +593,17 @@ async def _work_loop(
                 if not result.ok:
                     raise _StageFailed(result.error or "stage reported failure")
                 for kind, payload in result.follow_on:
-                    queue.enqueue(kind, payload, conn=conn)
+                    # A stage can ask for its follow-on to be held back — the Extractor
+                    # does this when a candidate hit the per-domain budget and is early
+                    # rather than finished. The key is stripped so it never reaches the
+                    # stage that reads the payload.
+                    body = {k: v for k, v in payload.items() if k != "_delay_seconds"}
+                    queue.enqueue(
+                        kind,
+                        body,
+                        delay_seconds=float(payload.get("_delay_seconds") or 0),
+                        conn=conn,
+                    )
                 if work_ms:
                     time.sleep(work_ms / 1000)
                 queue.complete(job.job_id, conn=conn)
