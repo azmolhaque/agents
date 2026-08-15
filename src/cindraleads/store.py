@@ -195,10 +195,22 @@ class Store:
         return "\n".join(f"{row['sql']};" for row in rows) + "\n"
 
     def backup_to(self, destination: Path) -> None:
-        """Online backup. Safe to run against a live WAL database."""
+        """Online backup. Safe to run against a live WAL database.
+
+        Note the explicit ``close()``. ``with sqlite3.connect(...)`` commits or rolls
+        back the transaction but does **not** close the connection — a stdlib gotcha
+        that leaks a file descriptor per call. That is invisible on Python 3.11 and
+        raises ResourceWarning on 3.13, and on the Pi this runs nightly from the
+        maintenance timer inside a process that stays up for weeks.
+        """
         destination.parent.mkdir(parents=True, exist_ok=True)
+        target: sqlite3.Connection | None = None
         try:
-            with sqlite3.connect(destination) as target:
+            target = sqlite3.connect(destination)
+            with target:
                 self.conn.backup(target)
         except sqlite3.Error as exc:
             raise StoreError(f"backup to {destination} failed: {exc}") from exc
+        finally:
+            if target is not None:
+                target.close()

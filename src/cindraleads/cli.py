@@ -8,6 +8,7 @@ subcommands off the same app: ``harvest``, ``replay``, ``lead show``, ``suppress
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import signal
@@ -49,7 +50,11 @@ Handler = Callable[[Job, sqlite3.Connection], None]
 def _open_store() -> Store:
     cfg = settings()
     cfg.ensure_dirs()
-    return Store()
+    store = Store()
+    # Python 3.13 warns about an unclosed sqlite3 connection at interpreter shutdown.
+    # A CLI process exiting would otherwise print a ResourceWarning after its output.
+    atexit.register(store.close)
+    return store
 
 
 def _selftest_handler(job: Job, conn: sqlite3.Connection) -> None:

@@ -13,12 +13,20 @@ jobs:
   check:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.11 is the declared floor. 3.13 is what Debian 13 ships, which is what the
+        # Pi actually runs -- testing only the floor let a 3.13-only ResourceWarning
+        # (unclosed sqlite3 connection) reach the hardware.
+        python-version: ["3.11", "3.13"]
+    name: check (py${{ matrix.python-version }})
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install

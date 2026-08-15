@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -124,6 +125,32 @@ def test_failed_migration_leaves_nothing_behind(tmp_path: Path):
     assert "good" not in s.table_names()
     assert s.applied_migrations() == []
     s.close()
+
+
+def test_backup_does_not_leak_a_connection(store, tmp_path: Path, monkeypatch):
+    """`with sqlite3.connect(...)` commits but does NOT close.
+
+    That leak is silent on Python 3.11 and raises ResourceWarning on 3.13, so this
+    asserts the property directly rather than relying on the interpreter to notice.
+    It matters because the Phase 7 maintenance timer backs up nightly inside a
+    process that stays up for weeks.
+    """
+    opened: list[sqlite3.Connection] = []
+    real_connect = sqlite3.connect
+
+    def tracking_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", tracking_connect)
+    store.backup_to(tmp_path / "b1.db")
+    store.backup_to(tmp_path / "b2.db")
+
+    assert len(opened) == 2, "expected one target connection per backup"
+    for conn in opened:
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")
 
 
 def test_backup_produces_a_readable_copy(store, tmp_path: Path):
