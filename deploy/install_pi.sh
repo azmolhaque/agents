@@ -185,7 +185,42 @@ fi
 
 say "Thermal sensors"
 if command -v vcgencmd >/dev/null 2>&1 && vcgencmd measure_temp >/dev/null 2>&1; then
-  ok "$(vcgencmd measure_temp)  $(vcgencmd get_throttled)"
+  TEMP_RAW="$(vcgencmd measure_temp)"
+  THROTTLE_RAW="$(vcgencmd get_throttled)"
+  ok "$TEMP_RAW"
+
+  # Decode rather than printing the hex word. A bare "throttled=0xe0000" looks fine
+  # at a glance and is not: bits 16-19 mean it HAS throttled since boot. The whole
+  # reason thermal.py exists is that throttling is otherwise invisible, so the
+  # bootstrap must not be the place that hides it.
+  .venv/bin/python - "$THROTTLE_RAW" <<'PY'
+import sys
+from cindraleads.thermal import parse_throttled
+
+flags = parse_throttled(sys.argv[1])
+active = sorted(k for k, v in flags.items() if v and k.endswith("_now") or (v and k == "currently_throttled"))
+historic = sorted(k for k, v in flags.items() if v and k.endswith("_occurred"))
+
+if not flags:
+    print("    \033[33mwarn\033[0m could not parse: " + sys.argv[1])
+elif active:
+    print("    \033[31mCRITICAL\033[0m throttled RIGHT NOW: " + ", ".join(active))
+    print("             The governor will drop to 1 worker and pause inference.")
+elif historic:
+    print("    \033[33mwarn\033[0m not throttled now, but HAS been since boot:")
+    for name in historic:
+        print(f"             - {name}")
+    if "under_voltage_occurred" in historic:
+        print("             under-voltage => power supply. Use the official 27W USB-C PSU.")
+    else:
+        print("             no under-voltage, so this is COOLING, not power.")
+        print("             Phase 7 requires zero throttle events over 72h. An active")
+        print("             cooler is required by the hardware budget; check yours.")
+    print("             These bits are sticky until reboot. For a clean baseline:")
+    print("               sudo reboot && vcgencmd get_throttled   # expect 0x0")
+else:
+    print("    \033[32mok\033[0m   throttled=0x0, no throttling since boot")
+PY
 else
   warn "vcgencmd unreadable. The service user needs the 'video' group:"
   echo "        sudo usermod -aG video \$USER   # then log out and back in"
