@@ -1,0 +1,148 @@
+# Source registry. Adding a source means adding a row HERE, not editing pipeline code.
+#
+# `legality_class` is not documentation. src/cindraleads/sources/registry.py enforces it
+# at the egress chokepoint, and Phase 4's passive.py will refuse anything that is not one
+# of these four. A source with no class cannot be fetched at all.
+#
+#   public_record  registries and logs that exist to be read: DNS, CT, RDAP
+#   public_web     a prospect's own self-published pages, robots-respecting
+#   licensed_api   an API we are entitled to call, under its own rate limits
+#   first_party    our own data (inbound mail to contact@cindrasec.com)
+#
+# There is deliberately no class for "scrape a site that forbids it". See PLAN.md.
+
+defaults:
+  user_agent: "CindrasecLeadsBot/0.1 (+https://cindrasec.com/bot; contact@cindrasec.com)"
+  timeout_seconds: 30
+  max_bytes: 900000
+  retries: 3
+  backoff_base_seconds: 1.0
+  backoff_max_seconds: 60.0
+  # Three consecutive failures opens the breaker for 15 minutes. One dead source must
+  # never turn into a crash loop or starve the others.
+  circuit_failure_threshold: 3
+  circuit_open_seconds: 900
+
+# Per-domain politeness for `public_web`. PLAN.md 2.5 (approved): the master prompt said
+# <=2 requests/domain/day but listed 5 paths to fetch, which cannot both hold.
+public_web_policy:
+  fetch_budget_per_domain_24h: 6
+  min_interval_seconds: 3.0
+  respect_robots: true
+  obey_crawl_delay: true
+  # Never fetch anything behind a login or paywall, and never follow a redirect off the
+  # origin we intended to visit.
+  follow_cross_origin_redirects: false
+  paths:
+    - "/"
+    - "/about"
+    - "/careers"
+    - "/security"
+    - "/.well-known/security.txt"
+
+sources:
+  - id: serpapi_search
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://serpapi.com/search
+    auth_env: SERPAPI_KEY
+    cache_ttl_hours: 48
+    cost_units: 1
+    notes: The spine. Trigger discovery across every vertical.
+
+  - id: serpapi_news
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://serpapi.com/search
+    auth_env: SERPAPI_KEY
+    cache_ttl_hours: 12 # news moves; cache it for less
+    cost_units: 1
+    notes: T2_FUNDING, T6_INCIDENT.
+
+  - id: serpapi_jobs
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://serpapi.com/search
+    auth_env: SERPAPI_KEY
+    cache_ttl_hours: 48
+    cost_units: 1
+    notes: T3, T4, T5, T11 via greenhouse/lever/ashby/workable/bdjobs.
+
+  # LinkedIn, Upwork and Fiverr are reachable ONLY as SerpAPI results. Never scraped
+  # directly -- that is a ToS violation and a brand risk, not a technical preference.
+  - id: serpapi_marketplace
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://serpapi.com/search
+    auth_env: SERPAPI_KEY
+    cache_ttl_hours: 12
+    cost_units: 1
+    notes: T9_MARKETPLACE, the highest-intent trigger.
+
+  - id: company_site
+    legality_class: public_web
+    enabled: true
+    cache_ttl_hours: 168
+    cost_units: 0
+    notes: Homepage and standard well-known paths. Subject to public_web_policy.
+
+  - id: crtsh
+    legality_class: public_record
+    enabled: true
+    base_url: https://crt.sh
+    cache_ttl_hours: 72
+    cost_units: 0
+    notes: T7_SURFACE_SPRAWL. A public log, queried as a log.
+
+  - id: github_api
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://api.github.com
+    auth_env: GITHUB_TOKEN
+    cache_ttl_hours: 24
+    cost_units: 0
+    notes: T1_AI_SHIP, T11_STACK_RISK.
+
+  - id: hn_algolia
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://hn.algolia.com/api/v1
+    cache_ttl_hours: 6
+    cost_units: 0
+    notes: T1_AI_SHIP, T10_VENDOR_PRESSURE. No auth, still rate-limited.
+
+  - id: sec_edgar
+    legality_class: public_record
+    enabled: true
+    base_url: https://www.sec.gov
+    cache_ttl_hours: 24
+    cost_units: 0
+    # EDGAR requires a descriptive UA with contact details and rejects generic ones.
+    requires_contact_ua: true
+    notes: T6_INCIDENT via 8-K Item 1.05.
+
+  - id: rss_feeds
+    legality_class: public_web
+    enabled: true
+    cache_ttl_hours: 6
+    cost_units: 0
+    notes: T2_FUNDING. Feeds are published for machines to read.
+
+  # Off until Phase 6. Listed so the class is decided before the code exists.
+  - id: inbound_web3forms
+    legality_class: first_party
+    enabled: false
+    cache_ttl_hours: 0
+    cost_units: 0
+    notes: T0_INBOUND. Our own inbox; highest intent of all.
+
+budget:
+  serpapi:
+    # Read the real quota from the account endpoint at startup. Never hardcode it.
+    discover_quota_at_startup: true
+    quota_endpoint: https://serpapi.com/account
+    # Stop at 85% and warn, leaving headroom for anything urgent.
+    safety_fraction: 0.85
+    # A naive daily counter gets spent by mid-morning because harvest runs hourly.
+    # A token bucket refilling across 24 h spreads the same quota over the whole day.
+    refill_window_hours: 24
