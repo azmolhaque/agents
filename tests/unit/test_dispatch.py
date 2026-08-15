@@ -412,3 +412,92 @@ async def test_build_card_works_for_any_tier(rig):
     embed = build_card(lead)
     assert embed["title"]
     await dispatcher.webhook.client.aclose()
+
+
+# ----------------------------------------------------------- score reconciliation
+
+
+def test_a_company_resolved_before_the_scorer_existed_still_gets_scored(rig):
+    """The gap the first real run exposed.
+
+    37 companies were resolved before the Resolver enqueued scoring, so nothing would
+    ever have scored them: the pipeline only reacted to events and never reconciled.
+    The same hole reopens after a restore, or a crash between stages.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="A")  # seeds a company with a live trigger
+    with store.tx() as conn:
+        conn.execute("DELETE FROM leads")  # as if the Scorer had never run
+
+    queued = enqueue_stale_scores(store, JobQueue(store))
+
+    assert queued == 1
+    row = store.conn.execute("SELECT payload FROM jobs WHERE kind = 'score.company'").fetchone()
+    assert json.loads(row["payload"])["canonical_domain"] == "acme.io"
+
+
+def test_reconciling_twice_queues_one_job(rig):
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute("DELETE FROM leads")
+
+    first = enqueue_stale_scores(store, JobQueue(store))
+    second = enqueue_stale_scores(store, JobQueue(store))
+
+    assert (first, second) == (1, 0)
+    jobs = store.conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE kind='score.company'")
+    assert jobs.fetchone()["n"] == 1
+
+
+def test_a_company_already_scored_is_left_alone(rig):
+    """The lead row is newer than every trigger, so there is nothing to recompute."""
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z'")
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 0
+
+
+def test_a_newer_trigger_makes_a_scored_company_stale_again(rig):
+    """A company that picks up a trigger after its last scoring must be re-scored, or
+    its lead permanently understates it."""
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET last_updated_at = '2026-08-15T00:00:00Z'")
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at) VALUES "
+            "('t9','acme.io','T9_MARKETPLACE',0.9,'2026-08-16T00:00:00Z','2099-01-01T00:00:00Z')"
+        )
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 1
+
+
+def test_a_company_with_no_live_trigger_is_not_scored(rig):
+    """Fit without news is not a lead, and scoring it would spend a model call to
+    conclude exactly that."""
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute("DELETE FROM leads")
+        conn.execute("UPDATE triggers SET decays_at = '2020-01-01T00:00:00Z'")
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 0

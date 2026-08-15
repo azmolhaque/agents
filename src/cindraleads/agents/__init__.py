@@ -10,7 +10,7 @@ from cindraleads.agents.dispatcher import DISPATCH_KIND, Dispatcher
 from cindraleads.agents.extractor import Extractor
 from cindraleads.agents.harvester import EXTRACT_KIND, HARVEST_KIND, Harvester
 from cindraleads.agents.resolver import RESOLVE_KIND, Resolver
-from cindraleads.agents.scorer import SCORE_KIND, Scorer
+from cindraleads.agents.scorer import SCORE_KIND, Scorer, enqueue_stale_scores
 from cindraleads.agents.scout import QueryTemplate, Scout, ScoutConfig
 
 __all__ = [
@@ -27,4 +27,5 @@ __all__ = [
     "Scorer",
     "Scout",
     "ScoutConfig",
+    "enqueue_stale_scores",
 ]

@@ -30,6 +30,7 @@ from cindraleads.agents import (
     HARVEST_KIND,
     RESOLVE_KIND,
     SCORE_KIND,
+    enqueue_stale_scores,
 )
 from cindraleads.config import settings
 from cindraleads.errors import CindraError, LeaseLost
@@ -461,6 +462,13 @@ def pipeline(
             plans = runtime.scout.plan(limit=limit or None, can_spend=runtime.can_spend)
             _ids, new = runtime.harvester.enqueue_plans(plans)
             typer.echo(f"planned {len(plans)}, {new} new harvest job(s)")
+
+            # Reconcile before running the stages. Scoring driven only by the resolve
+            # event cannot pick up companies resolved before the Scorer existed, nor
+            # re-score one whose triggers moved since its last lead.
+            stale = enqueue_stale_scores(store, runtime.queue)
+            if stale:
+                typer.echo(f"queued {stale} company/companies for (re)scoring")
 
             for kind in PIPELINE_KINDS:
                 stages = _stages_for([kind], runtime)

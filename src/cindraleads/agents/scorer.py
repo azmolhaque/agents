@@ -34,7 +34,13 @@ from cindraleads.models import Job, LeadProse, StageResult, from_iso, to_iso, ut
 from cindraleads.scoring import ScoreInput, ScoringConfig, TriggerObservation, score
 from cindraleads.store import Store
 
-__all__ = ["DISPATCH_KIND", "SCORE_KIND", "ScoreOutcome", "Scorer"]
+__all__ = [
+    "DISPATCH_KIND",
+    "SCORE_KIND",
+    "ScoreOutcome",
+    "Scorer",
+    "enqueue_stale_scores",
+]
 
 log = get_logger("cindraleads.scorer")
 
@@ -320,3 +326,47 @@ def _upsert_lead(
 
 def score_stamp(when: datetime) -> str:
     return to_iso(when)
+
+
+def enqueue_stale_scores(store: Store, queue: Any, *, limit: int = 0) -> int:
+    """Queue a score job for every company whose lead is behind its triggers.
+
+    Scoring driven only by the resolve event is not enough, and the first real run
+    proved it: 37 companies resolved before the Resolver enqueued scoring, so nothing
+    would ever have scored them. A pipeline that only reacts to events cannot heal
+    from a stage being added later, from a restore, or from a crash between stages.
+
+    Reconciling instead — "which company's lead is older than its newest trigger?" —
+    covers all three, and is the same query the Phase 7 nightly decay recompute needs.
+    The dedupe key carries that trigger timestamp, so re-running enqueues nothing while
+    a genuinely new trigger does.
+    """
+    rows = store.conn.execute(
+        "SELECT c.canonical_domain AS domain, MAX(t.observed_at) AS newest "
+        "FROM companies c "
+        "JOIN triggers t ON t.canonical_domain = c.canonical_domain "
+        "LEFT JOIN leads l ON l.canonical_domain = c.canonical_domain "
+        "WHERE t.active = 1 AND t.decays_at > ? "
+        "GROUP BY c.canonical_domain "
+        "HAVING l.lead_id IS NULL OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '') "
+        "ORDER BY newest DESC" + (" LIMIT ?" if limit else ""),
+        (to_iso(utcnow()), limit) if limit else (to_iso(utcnow()),),
+    ).fetchall()
+
+    queued = 0
+    with store.tx() as conn:
+        for row in rows:
+            domain = str(row["domain"])
+            digest = hashlib.sha256(f"{domain}|{row['newest']}".encode()).hexdigest()[:16]
+            existing = conn.execute(
+                "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (f"score:{digest}",)
+            ).fetchone()
+            queue.enqueue(
+                SCORE_KIND,
+                {"canonical_domain": domain},
+                dedupe_key=f"score:{digest}",
+                conn=conn,
+            )
+            if existing is None:
+                queued += 1
+    return queued
