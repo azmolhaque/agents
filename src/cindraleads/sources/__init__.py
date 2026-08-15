@@ -8,6 +8,20 @@ and re-argued each time someone adds a source.
 
 from cindraleads.sources.cache import CachedDocument, DocumentCache, cache_key_for
 from cindraleads.sources.circuit import CircuitBreaker, CircuitOpen, SourceBreakers
+from cindraleads.sources.clients import (
+    AshbyClient,
+    CrtShClient,
+    GitHubClient,
+    GreenhouseClient,
+    HackerNewsClient,
+    HiringSignal,
+    JobPosting,
+    LeverClient,
+    RdapClient,
+    SourceHit,
+    analyze_postings,
+    classify_role,
+)
 from cindraleads.sources.http import EgressClient, FetchDenied, FetchResult
 from cindraleads.sources.registry import (
     FetchDefaults,
@@ -17,17 +31,29 @@ from cindraleads.sources.registry import (
 )
 
 __all__ = [
+    "AshbyClient",
     "CachedDocument",
     "CircuitBreaker",
     "CircuitOpen",
+    "CrtShClient",
     "DocumentCache",
     "EgressClient",
     "FetchDefaults",
     "FetchDenied",
     "FetchResult",
+    "GitHubClient",
+    "GreenhouseClient",
+    "HackerNewsClient",
+    "HiringSignal",
+    "JobPosting",
+    "LeverClient",
     "PublicWebPolicy",
+    "RdapClient",
     "Source",
     "SourceBreakers",
+    "SourceHit",
     "SourceRegistry",
+    "analyze_postings",
     "cache_key_for",
+    "classify_role",
 ]
