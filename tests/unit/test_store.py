@@ -40,8 +40,13 @@ def test_migrate_creates_every_table_the_data_model_needs(store):
 
 
 def test_migrate_is_idempotent(store):
-    assert store.migrate() == []
-    assert store.applied_migrations() == ["0001_init"]
+    assert store.migrate() == [], "a second run applies nothing"
+    applied = store.applied_migrations()
+    # Every file on disk, in order, and nothing else. Asserting the relationship
+    # rather than a hardcoded list, so adding a migration does not break this.
+    assert applied == [p.stem for p in store.available_migrations()]
+    assert applied == sorted(applied)
+    assert applied[0] == "0001_init"
 
 
 def test_wal_and_foreign_keys_are_on(store):

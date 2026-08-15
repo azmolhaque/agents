@@ -6,6 +6,9 @@ legality class before doing so — rather than that rule being scattered across 
 and re-argued each time someone adds a source.
 """
 
+from cindraleads.sources.cache import CachedDocument, DocumentCache, cache_key_for
+from cindraleads.sources.circuit import CircuitBreaker, CircuitOpen, SourceBreakers
+from cindraleads.sources.http import EgressClient, FetchDenied, FetchResult
 from cindraleads.sources.registry import (
     FetchDefaults,
     PublicWebPolicy,
@@ -13,4 +16,18 @@ from cindraleads.sources.registry import (
     SourceRegistry,
 )
 
-__all__ = ["FetchDefaults", "PublicWebPolicy", "Source", "SourceRegistry"]
+__all__ = [
+    "CachedDocument",
+    "CircuitBreaker",
+    "CircuitOpen",
+    "DocumentCache",
+    "EgressClient",
+    "FetchDefaults",
+    "FetchDenied",
+    "FetchResult",
+    "PublicWebPolicy",
+    "Source",
+    "SourceBreakers",
+    "SourceRegistry",
+    "cache_key_for",
+]

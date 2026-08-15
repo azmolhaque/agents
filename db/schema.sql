@@ -88,6 +88,13 @@ CREATE TABLE dispatch_log (
     discord_message_id TEXT,
     dispatched_at      TEXT NOT NULL
 );
+CREATE TABLE domain_fetch_log (
+    fetch_id   TEXT PRIMARY KEY,
+    host       TEXT NOT NULL,
+    url        TEXT NOT NULL,
+    status     INTEGER,
+    fetched_at TEXT NOT NULL
+);
 CREATE TABLE evidence (
     evidence_id     TEXT PRIMARY KEY,
     url             TEXT NOT NULL,
@@ -106,6 +113,21 @@ CREATE TABLE feedback (
     actor        TEXT,
     note         TEXT,
     created_at   TEXT NOT NULL
+);
+CREATE TABLE fetch_cache (
+    cache_key       TEXT PRIMARY KEY,
+    content_sha256  TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    source_id       TEXT NOT NULL,
+    legality_class  TEXT NOT NULL,
+    content_type    TEXT,
+    status_code     INTEGER,
+    byte_size       INTEGER NOT NULL DEFAULT 0,
+    stored_bytes    INTEGER NOT NULL DEFAULT 0,
+    fetched_at      TEXT NOT NULL,
+    expires_at      TEXT NOT NULL,
+    hit_count       INTEGER NOT NULL DEFAULT 0,
+    last_hit_at     TEXT
 );
 CREATE TABLE jobs (
     job_id           TEXT PRIMARY KEY,
@@ -197,8 +219,12 @@ CREATE INDEX contacts_email ON contacts (email);
 CREATE UNIQUE INDEX dispatch_idem ON dispatch_log (idempotency_key);
 CREATE INDEX dispatch_lead ON dispatch_log (lead_id);
 CREATE INDEX dispatch_message ON dispatch_log (discord_message_id);
+CREATE INDEX domain_fetch_host_time ON domain_fetch_log (host, fetched_at);
 CREATE INDEX evidence_sha ON evidence (content_sha256);
 CREATE INDEX feedback_lead ON feedback (lead_id);
+CREATE INDEX fetch_cache_expiry ON fetch_cache (expires_at);
+CREATE INDEX fetch_cache_sha ON fetch_cache (content_sha256);
+CREATE INDEX fetch_cache_source ON fetch_cache (source_id);
 CREATE INDEX jobs_claim ON jobs (status, available_at, priority, created_at);
 CREATE UNIQUE INDEX jobs_dedupe ON jobs (dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX jobs_lease ON jobs (status, lease_expires_at);
