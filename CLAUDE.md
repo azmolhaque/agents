@@ -24,6 +24,8 @@ make check       # lint + typecheck + test (what CI runs)
 make gate        # Phase 0 acceptance: 100 jobs, kill -9, exactly once
 make fmt         # ruff format + autofix
 make schema      # regenerate db/schema.sql from db/migrations/
+make fixtures    # gather tests/fixtures/html/ (needs open outbound HTTPS)
+make bench       # Phase 1 benchmark -> docs/BENCHMARKS.md (RUN ON THE PI)
 
 cindra db migrate | db status | db backup <path>
 cindra queue status | queue reclaim | queue enqueue --kind K
@@ -73,5 +75,19 @@ tests/golden/   regression fixtures for prompt changes docs/RUNBOOK.md what to d
 
 ## Current state
 
-**Phase 0 complete.** Models, store, durable queue, structlog + redaction, CLI skeleton,
-CI. Phase 1 (Ollama, `thermal.py`, `llm.py`, benchmarks) is next and not yet started.
+**Phase 0 complete.** Models, store, durable queue, structlog + redaction, CLI skeleton, CI.
+
+**Phase 1 code complete, not yet measured.** `llm.py` (schema-constrained ladder),
+`thermal.py` (governor with injected readings), `textextract.py`, `config/models.yaml`,
+`deploy/ollama-override.conf`, and the benchmark + fixture scripts all exist and are
+tested. Two things still need the real hardware:
+
+1. `tests/fixtures/html/` is **empty** — this build container's network policy 403s
+   general web hosts, so the corpus could not be gathered here. Run `make fixtures`
+   on the Pi. See `tests/fixtures/README.md`.
+2. `docs/BENCHMARKS.md` is a **placeholder with no numbers in it**. Run `make bench`
+   on the Pi; it overwrites the file with measured values. Do not hand-write numbers
+   into it — the whole point is that the master prompt's estimates were untrustworthy.
+
+Until both are done, Phase 1's gate (schema validity >= 95%) is unverified. Phase 2
+(harvest) should not start before it passes.

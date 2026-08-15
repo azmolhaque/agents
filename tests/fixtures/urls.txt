@@ -1,0 +1,47 @@
+# Phase 1 fixture corpus: slug<TAB>url
+#
+# Fetch with:  python scripts/fetch_fixtures.py
+# Run it on the Pi -- the build container's network policy blocks these hosts.
+#
+# What makes a good fixture: a real, messy, production page of a shape the Harvester
+# will actually meet. The mix below is deliberate --
+#   *_home     marketing homepages (the common case, heavy JS shells, sparse text)
+#   *_about    company/about pages (headcount, location, founding date)
+#   *_careers  job listings (the T3/T4/T11 hiring triggers live here)
+#   security vendors are included ON PURPOSE as anti-ICP negatives: the extractor
+#   must be able to describe them, and the ComplianceGate must later reject them.
+#
+# The Phase 1 gate is schema validity (>= 95%), which needs realistic HTML but no
+# labels. Hand-labelling happens in Phase 3 for the 50-item golden set.
+
+langchain_home		https://www.langchain.com/
+llamaindex_home		https://www.llamaindex.ai/
+chroma_home		https://www.trychroma.com/
+weaviate_home		https://weaviate.io/
+pinecone_home		https://www.pinecone.io/
+modal_home		https://modal.com/
+replicate_home		https://replicate.com/
+inngest_home		https://www.inngest.com/
+convex_home		https://www.convex.dev/
+neon_home		https://neon.tech/
+resend_home		https://resend.com/
+tigris_home		https://www.tigrisdata.com/
+posthog_home		https://posthog.com/
+supabase_home		https://supabase.com/
+humanloop_home		https://humanloop.com/
+braintrust_home		https://www.braintrust.dev/
+railway_home		https://railway.com/
+
+# about / company pages
+inngest_about		https://www.inngest.com/about
+neon_about		https://neon.tech/about-us
+posthog_about		https://posthog.com/about
+
+# careers pages -- hiring triggers
+posthog_careers		https://posthog.com/careers
+supabase_careers	https://supabase.com/careers
+modal_careers		https://modal.com/careers
+
+# anti-ICP negatives: established security vendors with in-house teams
+chainguard_home		https://www.chainguard.dev/
+semgrep_home		https://semgrep.dev/

@@ -1,0 +1,42 @@
+# Model roles -> concrete Ollama tags.
+#
+# Code asks for a ROLE ("workhorse"), never a tag. Swapping models is an edit here.
+#
+# PLAN.md 2.2 (approved): TWO resident models, not three. The master prompt specified a
+# qwen3:1.7b router as well, but three models (~5.4 GB) contend for two Ollama load
+# slots and Ollama evicts and reloads on every alternation -- seconds of dead time per
+# switch, forever. The workhorse answers binary classification itself in ~5
+# grammar-constrained tokens, which is cheaper than a 2.8 GB reload.
+#
+# Re-add a router only if Phase 1 benchmarks show classification latency is genuinely
+# the bottleneck. Record the numbers in docs/BENCHMARKS.md before changing this.
+
+roles:
+  workhorse: qwen3:4b-instruct # 90% of all calls: extraction, normalization, classification
+  embedder: bge-m3 # 1024-d, multilingual (Bengali + English)
+
+# Candidates the Phase 1 benchmark should measure on the real Pi before we commit.
+# `scripts/benchmark_models.py --candidates` reads this list.
+# llama3.2:3b is here because it is what the Pi already has: if a qwen3 tag does not
+# resolve, the benchmark table says so and we fall back rather than pretending.
+benchmark_candidates:
+  - qwen3:4b-instruct
+  - llama3.2:3b
+
+# Overnight batch reasoner. Off by default -- benchmark before committing 5-8 GB.
+optional_reasoner: null
+
+defaults:
+  temperature: 0.2
+  max_tokens: 1024
+  # Ollama server-side settings live in deploy/ollama-override.conf, not here.
+  request_timeout_seconds: 180
+
+escalation:
+  # PLAN.md 2.4 (approved): the plain `anthropic` SDK, never claude-agent-sdk.
+  enabled: true
+  bulk_reread: claude-haiku-4-5 # cheap, high volume
+  hard_reasoning: claude-sonnet-5 # entity disambiguation, Tier A angles
+  # Hard stop. Persisted in SQLite so it survives a restart. On exhaustion the
+  # pipeline degrades to local-only and logs a WARNING -- it never crashes.
+  daily_usd_cap: 0.50
