@@ -79,12 +79,33 @@ class LLMResponse:
     latency_ms: int
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Ollama reports these separately, in nanoseconds. Keeping them apart matters:
+    # "3.3 tok/s" over total latency conflates reading the prompt with writing the
+    # answer, and the fix for each is different (shorter input vs smaller output).
+    prompt_eval_ms: int = 0
+    eval_ms: int = 0
+    load_ms: int = 0
 
     @property
     def tokens_per_second(self) -> float:
+        """Decode rate over TOTAL latency - the end-to-end number."""
         if self.latency_ms <= 0 or not self.completion_tokens:
             return 0.0
         return self.completion_tokens / (self.latency_ms / 1000)
+
+    @property
+    def decode_tokens_per_second(self) -> float:
+        """Decode rate over generation time only. The model's true speed."""
+        if self.eval_ms <= 0 or not self.completion_tokens:
+            return 0.0
+        return self.completion_tokens / (self.eval_ms / 1000)
+
+    @property
+    def prefill_tokens_per_second(self) -> float:
+        """Prompt-eval rate. Decides whether shortening the input helps."""
+        if self.prompt_eval_ms <= 0 or not self.prompt_tokens:
+            return 0.0
+        return self.prompt_tokens / (self.prompt_eval_ms / 1000)
 
 
 class LLMBackend(Protocol):
@@ -198,6 +219,9 @@ class OllamaBackend:
             latency_ms=int((time.monotonic() - started) * 1000),
             prompt_tokens=int(body.get("prompt_eval_count", 0)),
             completion_tokens=int(body.get("eval_count", 0)),
+            prompt_eval_ms=int(body.get("prompt_eval_duration", 0) / 1e6),
+            eval_ms=int(body.get("eval_duration", 0) / 1e6),
+            load_ms=int(body.get("load_duration", 0) / 1e6),
         )
 
     async def list_models(self) -> list[str]:

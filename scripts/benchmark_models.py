@@ -58,6 +58,10 @@ class ModelRun:
     latencies_ms: list[int] = field(default_factory=list)
     completion_tokens: list[int] = field(default_factory=list)
     prompt_tokens: list[int] = field(default_factory=list)
+    prompt_eval_ms: list[int] = field(default_factory=list)
+    eval_ms: list[int] = field(default_factory=list)
+    decode_tps: list[float] = field(default_factory=list)
+    prefill_tps: list[float] = field(default_factory=list)
     timeouts: int = 0
     tok_per_sec: list[float] = field(default_factory=list)
     peak_temp_c: float = 0.0
@@ -79,6 +83,22 @@ class ModelRun:
     @property
     def median_tps(self) -> float:
         return statistics.median(self.tok_per_sec) if self.tok_per_sec else 0.0
+
+    @property
+    def median_decode_tps(self) -> float:
+        return statistics.median(self.decode_tps) if self.decode_tps else 0.0
+
+    @property
+    def median_prefill_tps(self) -> float:
+        return statistics.median(self.prefill_tps) if self.prefill_tps else 0.0
+
+    @property
+    def median_prefill_ms(self) -> int:
+        return int(statistics.median(self.prompt_eval_ms)) if self.prompt_eval_ms else 0
+
+    @property
+    def median_decode_ms(self) -> int:
+        return int(statistics.median(self.eval_ms)) if self.eval_ms else 0
 
 
 def load_fixtures(limit: int | None) -> list[tuple[str, str]]:
@@ -163,6 +183,12 @@ async def run_model(
             run.prompt_tokens.append(result.prompt_tokens)
             if result.latency_ms > 0 and result.completion_tokens:
                 run.tok_per_sec.append(result.completion_tokens / (result.latency_ms / 1000))
+            if result.prompt_eval_ms:
+                run.prompt_eval_ms.append(result.prompt_eval_ms)
+                run.prefill_tps.append(result.prefill_tokens_per_second)
+            if result.eval_ms:
+                run.eval_ms.append(result.eval_ms)
+                run.decode_tps.append(result.decode_tokens_per_second)
 
         policy = governor.poll()
         reading = governor.last_reading
@@ -172,10 +198,14 @@ async def run_model(
             run.throttled = True
         # page_ok, not run.valid: the old version printed "ok" for every page after
         # the first success, because a running total is always truthy.
+        split = ""
+        if page_ok and run.prompt_eval_ms and run.eval_ms:
+            split = f" [prefill {run.prompt_eval_ms[-1]:>6}ms + decode {run.eval_ms[-1]:>6}ms]"
         print(
             f"  {slug:<24} {'ok  ' if page_ok else 'FAIL'} "
             f"{run.latencies_ms[-1]:>7} ms  {policy.state:<9} "
             f"{'' if not reading or reading.temp_c is None else f'{reading.temp_c:.1f}C'}"
+            f"{split}"
         )
 
     await backend.aclose()
@@ -216,6 +246,25 @@ def render(runs: list[ModelRun], fixture_count: int) -> str:
         )
 
     lines += ["", f"**Gate: {'PASS' if gate else 'FAIL'}**", ""]
+
+    usable = [r for r in runs if r.available and r.valid]
+    if usable:
+        lines += [
+            "## Where the time goes",
+            "",
+            "Prompt eval (reading the page) and decode (writing the JSON) have different",
+            "fixes: shorten the input vs shrink the output. A single tok/s figure over",
+            "total latency hides which one is binding.",
+            "",
+            "| Model | Median prefill | Median decode | Prefill tok/s | Decode tok/s |",
+            "| --- | ---: | ---: | ---: | ---: |",
+        ]
+        for r in usable:
+            lines.append(
+                f"| `{r.model}` | {r.median_prefill_ms} ms | {r.median_decode_ms} ms | "
+                f"{r.median_prefill_tps:.1f} | {r.median_decode_tps:.1f} |"
+            )
+        lines.append("")
 
     unavailable = [r for r in runs if not r.available]
     if unavailable:
@@ -313,7 +362,10 @@ def main() -> int:
         help="prompt text budget per page; prompt eval dominates latency on a Pi",
     )
     ap.add_argument("--timeout", type=float, default=180.0, help="per-request timeout, seconds")
-    ap.add_argument("--max-tokens", type=int, default=768, help="num_predict cap")
+    # 768 tokens at the ~3.3 tok/s measured on a Pi 5 is 233 s, which is longer than
+    # the request timeout: a full-length answer literally cannot finish. 320 bounds
+    # the worst case to ~97 s and is ample for a CompanyExtraction object.
+    ap.add_argument("--max-tokens", type=int, default=320, help="num_predict cap")
     return asyncio.run(main_async(ap.parse_args()))
 
 
