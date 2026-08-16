@@ -26,11 +26,13 @@ import typer
 from cindraleads import PIPELINE_VERSION, __version__
 from cindraleads.agents import (
     DISPATCH_KIND,
+    ENRICH_KIND,
     EXTRACT_KIND,
     HARVEST_KIND,
     RESOLVE_KIND,
     SCORE_KIND,
     enqueue_stale_scores,
+    enqueue_unenriched,
 )
 from cindraleads.config import settings
 from cindraleads.errors import CindraError, LeaseLost
@@ -466,6 +468,9 @@ def pipeline(
             # Reconcile before running the stages. Scoring driven only by the resolve
             # event cannot pick up companies resolved before the Scorer existed, nor
             # re-score one whose triggers moved since its last lead.
+            fresh = enqueue_unenriched(store, runtime.queue)
+            if fresh:
+                typer.echo(f"queued {fresh} company/companies for enrichment")
             stale = enqueue_stale_scores(store, runtime.queue)
             if stale:
                 typer.echo(f"queued {stale} company/companies for (re)scoring")
@@ -645,6 +650,7 @@ def _stages_for(kinds: list[str], runtime: Runtime | None) -> dict[str, Stage]:
         HARVEST_KIND: runtime.harvester,
         EXTRACT_KIND: runtime.extractor,
         RESOLVE_KIND: runtime.resolver,
+        ENRICH_KIND: runtime.enricher,
         SCORE_KIND: runtime.scorer,
         DISPATCH_KIND: runtime.dispatcher,
     }
@@ -655,7 +661,14 @@ def _stages_for(kinds: list[str], runtime: Runtime | None) -> dict[str, Stage]:
 # Order matters: `cindra pipeline` drains each fully before starting the next, so a
 # batch of ~64 s extractions never interleaves with harvest fetches or Discord posts
 # competing for the same worker.
-PIPELINE_KINDS = (HARVEST_KIND, EXTRACT_KIND, RESOLVE_KIND, SCORE_KIND, DISPATCH_KIND)
+PIPELINE_KINDS = (
+    HARVEST_KIND,
+    EXTRACT_KIND,
+    RESOLVE_KIND,
+    ENRICH_KIND,
+    SCORE_KIND,
+    DISPATCH_KIND,
+)
 
 
 def _needs_runtime(kinds: list[str]) -> bool:

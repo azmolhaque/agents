@@ -27,10 +27,19 @@ from typing import Any
 from cindraleads import PIPELINE_VERSION
 from cindraleads.compliance import ComplianceGate, LeadFacts
 from cindraleads.config import Settings, load_prompt, load_yaml, prompt_version, settings
+from cindraleads.dns_hygiene import hygiene_gaps
 from cindraleads.errors import ConfigError, SchemaValidationError
 from cindraleads.llm import StructuredLLM
 from cindraleads.logging import get_logger
-from cindraleads.models import Job, LeadProse, StageResult, from_iso, to_iso, utcnow
+from cindraleads.models import (
+    DnsHygiene,
+    Job,
+    LeadProse,
+    StageResult,
+    from_iso,
+    to_iso,
+    utcnow,
+)
 from cindraleads.scoring import ScoreInput, ScoringConfig, TriggerObservation, score
 from cindraleads.store import Store
 
@@ -276,7 +285,20 @@ class Scorer:
                 ).fetchall()
             ]
 
+        contacts = [
+            dict(r)
+            for r in active.execute(
+                "SELECT email, email_status, full_name FROM contacts WHERE canonical_domain = ? "
+                "ORDER BY CASE email_status WHEN 'verified' THEN 0 WHEN 'role_account' THEN 1 "
+                "WHEN 'catch_all' THEN 2 ELSE 3 END",
+                (domain,),
+            ).fetchall()
+        ]
+
         return {
+            "canonical_domain": domain,
+            "contacts": contacts,
+            "enriched_at": row["enriched_at"],
             "display_name": str(row["display_name"]),
             "description": row["description"],
             "employee_band": row["employee_band"],
@@ -284,6 +306,7 @@ class Scorer:
             "country": row["country"],
             "ai_surface": json.loads(row["ai_surface"] or "[]"),
             "subdomain_count": row["subdomain_count_ct"],
+            "hygiene_gaps": _hygiene_gaps(row["dns_hygiene"]),
             "triggers": triggers,
             "evidence": evidence,
             "evidence_urls": [e["url"] for e in evidence],
@@ -306,6 +329,15 @@ class Scorer:
             industry=facts["industry"],
             ai_surface=tuple(facts["ai_surface"]),
             subdomain_count=facts["subdomain_count"],
+            # The best contact we have decides reachability. Sorted by status in the
+            # query, so this is the strongest one rather than an arbitrary one.
+            email_status=str(facts["contacts"][0]["email_status"]) if facts["contacts"] else "none",
+            has_named_contact=any(c.get("full_name") for c in facts["contacts"]),
+            hygiene_gap=bool(facts["hygiene_gaps"]),
+            # Gates the `no_contact` penalty. Charging a lead for a missing contact
+            # before anything has looked for one punishes our own pipeline, not the
+            # prospect -- measured 2026-08-15, it put every lead below REJECT.
+            enrichment_ran=facts["enriched_at"] is not None,
             primary_sectors=self._sectors,
             local_tlds=self._local_tlds,
         )
@@ -417,3 +449,13 @@ def _is_recoverable(reason: str) -> bool:
 def _has_angle(conn: sqlite3.Connection, lead_id: str) -> bool:
     row = conn.execute("SELECT outreach_angle FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
     return bool(row and str(row["outreach_angle"] or "").strip())
+
+
+def _hygiene_gaps(raw: Any) -> list[str]:
+    """Published DNS gaps, from the JSON the Enricher stored."""
+    if not raw:
+        return []
+    try:
+        return hygiene_gaps(DnsHygiene.model_validate_json(str(raw)))
+    except ValueError:
+        return []

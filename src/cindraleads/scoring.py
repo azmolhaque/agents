@@ -22,11 +22,11 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, get_args
 
 from cindraleads.config import Settings, load_yaml, settings
 from cindraleads.errors import ConfigError
-from cindraleads.models import EmployeeBand, Offer, Tier, TriggerCode, utcnow
+from cindraleads.models import EmailStatus, EmployeeBand, Offer, Tier, TriggerCode, utcnow
 
 __all__ = [
     "ScoreInput",
@@ -79,6 +79,17 @@ class ScoringConfig:
             # A set summing to 0.9 caps every score at 90 and nothing looks broken.
             raise ConfigError(f"scoring.yaml components must sum to 1.0, got {total}")
 
+        reachability = {str(k): float(v) for k, v in (data.get("reachability") or {}).items()}
+        # Fail closed on a key that no `email_status` will ever equal. `verified_email`
+        # instead of `verified` silently scored every contactable lead at zero
+        # reachability -- 15% of the score, gone, with nothing in the output to show it.
+        missing = set(get_args(EmailStatus)) - set(reachability)
+        if missing:
+            raise ConfigError(
+                f"scoring.yaml reachability is missing {sorted(missing)}; keys must be "
+                f"EmailStatus values ({sorted(get_args(EmailStatus))})"
+            )
+
         return cls(
             triggers=triggers,
             components=components,
@@ -86,7 +97,7 @@ class ScoringConfig:
             tiers={str(k): float(v) for k, v in (data.get("tiers") or {}).items()},
             icp_fit=dict(data.get("icp_fit") or {}),
             surface={str(k): float(v) for k, v in (data.get("surface") or {}).items()},
-            reachability={str(k): float(v) for k, v in (data.get("reachability") or {}).items()},
+            reachability=reachability,
             freshness_zero_at_days=float((data.get("freshness") or {}).get("zero_at_days", 120)),
             sanctioned_countries=frozenset(
                 str(c).upper() for c in (data.get("sanctioned_countries") or [])

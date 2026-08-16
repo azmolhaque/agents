@@ -34,12 +34,12 @@ from cindraleads.logging import get_logger
 from cindraleads.models import Job, StageResult, TriggerCode, to_iso, utcnow
 from cindraleads.store import Store
 
-__all__ = ["RESOLVE_KIND", "SCORE_KIND", "TRIGGER_DECAY_DAYS", "Resolver"]
+__all__ = ["ENRICH_KIND", "RESOLVE_KIND", "TRIGGER_DECAY_DAYS", "Resolver"]
 
 log = get_logger("cindraleads.resolver")
 
 RESOLVE_KIND = "resolve.company"
-SCORE_KIND = "score.company"
+ENRICH_KIND = "enrich.company"
 
 # How long a trigger stays "news" (master prompt §2). A funding round is interesting for
 # a quarter; a shipped AI feature for two months; an inbound enquiry for a month.
@@ -151,9 +151,14 @@ class Resolver:
             merge_reason=match.reason if match else None,
             triggers=len(trigger_ids),
         )
-        # Only a company with a live trigger is worth scoring. Fit without news is not
-        # a lead, and queueing it would spend a model call to conclude exactly that.
-        follow_on = [(SCORE_KIND, {"canonical_domain": resolved})] if trigger_ids else []
+        # Only a company with a live trigger is worth pursuing. Fit without news is
+        # not a lead, and enriching it would spend real fetches to conclude that.
+        #
+        # Enrichment comes before scoring, not after: reachability and surface are
+        # 25% of CindraScore, so a company scored first would be scored against
+        # two components that are structurally zero. The Enricher enqueues the
+        # score itself when it is done.
+        follow_on = [(ENRICH_KIND, {"canonical_domain": resolved})] if trigger_ids else []
         return StageResult(ok=True, stage="resolver", job_id=job.job_id, follow_on=follow_on)
 
     async def run(self, job: Job) -> StageResult:

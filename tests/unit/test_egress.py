@@ -379,3 +379,64 @@ async def test_a_denied_fetch_does_not_count_against_the_circuit(store):
 
     assert client.breakers.for_source("site").state == "closed"
     await client.aclose()
+
+
+async def test_a_404_does_not_open_the_circuit(store):
+    """The bug that would have starved enrichment.
+
+    The Enricher checks five standard paths per company and most sites have three of
+    them. Three 404s on ONE company opened the breaker for `company_site` and every
+    other company then failed fast for the full 900 s window.
+    """
+
+    def missing(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /")
+        return httpx.Response(404, text="not found")
+
+    client = make_client(store, Recorder())
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(missing))
+    breaker = client.breakers.for_source("site")
+
+    for i in range(5):
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.fetch("site", f"https://x.io/missing{i}")
+
+    assert breaker.allow(), "a missing page is not evidence the source is down"
+    await client.aclose()
+
+
+async def test_a_500_still_opens_the_circuit(store):
+    """The breaker must still do its job for failures that are about the source."""
+    recorder = Recorder(fail_times=99)
+    client = make_client(store, recorder)
+    breaker = client.breakers.for_source("api")
+
+    # Exactly the threshold. A fourth call would raise FetchDenied from the now-open
+    # breaker rather than the HTTP error, which is the behaviour being asserted.
+    for i in range(3):
+        with pytest.raises(httpx.HTTPError):
+            await client.fetch("api", f"https://x.io/boom{i}")
+
+    assert not breaker.allow()
+    await client.aclose()
+
+
+async def test_a_429_still_counts_against_the_source(store):
+    """Rate limiting is the source telling us to back off — the one 4xx that is."""
+
+    def limited(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /")
+        return httpx.Response(429, json={"retry_after": 0})
+
+    client = make_client(store, Recorder())
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(limited))
+    breaker = client.breakers.for_source("site")
+
+    for i in range(3):
+        with pytest.raises(httpx.HTTPError):
+            await client.fetch("site", f"https://x.io/slow{i}")
+
+    assert not breaker.allow()
+    await client.aclose()

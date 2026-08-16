@@ -30,9 +30,10 @@ make bench       # Phase 1 benchmark -> docs/BENCHMARKS.md (RUN ON THE PI)
 cindra db migrate | db status | db backup <path>
 cindra queue status | queue reclaim | queue enqueue --kind K
 cindra harvest [--dry-run] [--limit N]   # Scout -> durable harvest jobs
-cindra pipeline                          # harvest -> extract -> resolve -> score -> dispatch
+cindra pipeline                          # harvest -> extract -> resolve -> enrich -> score -> dispatch
 cindra work --kinds harvest.query,extract.candidate,... [--drain-inflight]
 cindra dispatch-test [--dry-run]         # prove the Discord wiring, any tier
+cindra health                            # what the thermal governor sees
 cindra queue release [--kind K]          # pull deferred jobs forward
 cindra status                            # candidates, companies, live triggers
 cindra feedback <lead_id> good|bad
@@ -80,11 +81,10 @@ tests/golden/   regression fixtures for prompt changes docs/RUNBOOK.md what to d
 
 ## Current state
 
-**Phases 0-3, 5 and 6 code complete. Phase 4 (enrichment) is the gap, and it is
-load-bearing: see below.**
+**Phases 0-6 code complete.** The pipeline produces Tier A leads end to end.
 
-The pipeline runs end to end: `Scout -> Harvester -> Extractor -> Resolver -> Scorer
--> Dispatcher`, five durable job kinds driven by one async worker loop. Every stage is two-phase --
+The pipeline runs end to end: `Scout -> Harvester -> Extractor -> Resolver -> Enricher
+-> Scorer -> Dispatcher`, six durable job kinds driven by one async worker loop. Every stage is two-phase --
 `prepare()` does network I/O outside any transaction, `commit()` writes inside the one
 that also enqueues follow-on jobs and completes the current job. A stage that fails,
 by returning `ok=False` or by raising, rolls its own writes back.
@@ -135,14 +135,20 @@ one; the tests named after them are the reason they cannot come back.
 - Duplicate rate < 2% on real data using rungs 1/2/4.
 - Phase 1's full 24-page benchmark (`make bench`, ~26 min).
 
-**Phase 4 is why nothing reaches Discord yet.** Measured 2026-08-15, not predicted:
-`reachability` is 15% of CindraScore and `surface` another 10%, and both are structurally
-zero without enrichment. A company with three live triggers, full ICP fit and a shipped
-AI surface scores **52 (Tier C)**; a realistic single-trigger lead scores 17-38 (REJECT).
-Tier A needs contacts plus multi-source evidence. The tiers are not miscalibrated -- the
-system is correctly saying it does not know enough to recommend contacting anyone.
+**Phase 4 done, and it is what made Tier A reachable.** The same company that scored
+**52 (Tier C)** before enrichment scores **74 (Tier A)** after, verified end to end over
+real HTTP: reachability 0 -> 100 from a contact on the company's own page, surface
+60 -> 75 from a published DMARC gap. `reachability` is 15% of the score and `surface`
+another 10%; before the Enricher both were structurally zero and no lead could clear the
+threshold no matter how good it was.
 
-Do not "fix" this by lowering the thresholds. Build the Enricher.
+Enrichment is passive throughout: CT logs, public DNS, RDAP, the company's own pages and
+their ATS board's public JSON. `contacts.py` imports no socket library at all, which is
+the strongest available form of "never SMTP VRFY/RCPT" -- a test asserts it.
+
+**Still unmeasured: extraction accuracy.** Every extract test uses a stub model. Nothing
+has been checked against a real one, so `employee_band` and `display_name` correctness
+are unknown. That is the Phase 3 gate (PLAN.md 2.11) and needs ~50 hand-labelled pages.
 
 **Known hardware gaps for Phase 7:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Neither blocks Phases 2-6.

@@ -276,3 +276,44 @@ def test_no_llm_is_reachable_from_this_module():
     for forbidden in ("StructuredLLM", "OllamaBackend", "llm", "anthropic"):
         assert f"import {forbidden}" not in source
     assert "llm" not in {f.name for f in ScoreInput.__dataclass_fields__.values()}
+
+
+def test_every_email_status_has_a_reachability_score(cfg: ScoringConfig):
+    """The bug this exists to prevent.
+
+    `scoring.yaml` said `verified_email` where `EmailStatus` says `verified`. The
+    lookup missed, defaulted to 0, and a fully contactable lead lost its entire 15%
+    reachability component with nothing in the output to show it -- the same shape as
+    the SerpAPI budget key that silently uncapped spending.
+    """
+    import typing
+
+    from cindraleads.models import EmailStatus
+
+    missing = set(typing.get_args(EmailStatus)) - set(cfg.reachability)
+    assert not missing, f"scoring.yaml reachability has no entry for {sorted(missing)}"
+
+
+def test_a_reachability_map_with_an_unknown_key_will_not_load(tmp_path: Path):
+    from cindraleads.errors import ConfigError
+
+    (tmp_path / "scoring.yaml").write_text(
+        "triggers:\n  T1_AI_SHIP: {weight: 30, half_life_days: 180}\n"
+        "components: {trigger: 1.0}\n"
+        "reachability: {verified_email: 100}\n"
+    )
+    s = settings()
+    object.__setattr__(s, "config_dir", tmp_path)
+    with pytest.raises(ConfigError, match="reachability is missing"):
+        ScoringConfig.load(s)
+
+
+def test_a_contactable_lead_outscores_an_unreachable_one(cfg: ScoringConfig):
+    """Reachability is 15% of the score, and answers "who do I talk to?" -- half the
+    question the whole product exists to answer."""
+    unknown = score(make(email_status="none", enrichment_ran=True), cfg)
+    reachable = score(
+        make(email_status="verified", has_named_contact=True, enrichment_ran=True), cfg
+    )
+    assert reachable.score > unknown.score
+    assert reachable.breakdown["reachability"] == 100.0

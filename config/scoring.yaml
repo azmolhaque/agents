@@ -91,8 +91,12 @@ surface:
   subdomain_sprawl_points: 25
   hygiene_gap_points: 15
 
+# Keys are EmailStatus values verbatim. A key that does not match one scores zero
+# silently -- `verified_email` here instead of `verified` cost a fully-contactable
+# lead its entire 15% reachability component, and nothing looked wrong. Load-time
+# validation now rejects a map that does not cover every status.
 reachability:
-  verified_email: 100
+  verified: 100
   role_account: 70
   catch_all: 40
   risky: 25

@@ -270,8 +270,17 @@ class EgressClient:
             wire = {**(params or {}), **secret_params} if secret_params else params
             body, status, content_type = await self._request(url, wire)
         except (httpx.HTTPError, OSError) as exc:
-            breaker.record_failure(f"{type(exc).__name__}: {exc}")
-            log.warning("egress_failed", source_id=source_id, url=url, error=str(exc))
+            # A 4xx does not mean the source is unhealthy. `/about` returning 404 is a
+            # definitive answer from a working server, and counting it opened the
+            # breaker for `company_site` after three missing paths on ONE company --
+            # which would then have starved enrichment for every other company for the
+            # full 900 s open window. Only 5xx, timeouts and connection errors are
+            # evidence about the source itself.
+            if _is_client_error(exc):
+                log.info("egress_client_error", source_id=source_id, url=url, error=str(exc)[:200])
+            else:
+                breaker.record_failure(f"{type(exc).__name__}: {exc}")
+                log.warning("egress_failed", source_id=source_id, url=url, error=str(exc))
             raise
         breaker.record_success()  # (8)
 
@@ -408,4 +417,13 @@ def _from_cache(doc: CachedDocument, *, cost_units: int) -> FetchResult:
         cached=True,
         status_code=doc.status_code,
         cost_units=cost_units,
+    )
+
+
+def _is_client_error(exc: BaseException) -> bool:
+    """A 4xx: the server answered, and the answer was "no such thing"."""
+    return (
+        isinstance(exc, httpx.HTTPStatusError)
+        and 400 <= exc.response.status_code < 500
+        and exc.response.status_code != 429  # rate limiting IS about the source
     )

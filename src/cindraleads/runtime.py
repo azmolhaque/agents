@@ -19,7 +19,15 @@ from types import TracebackType
 import httpx
 from pydantic import SecretStr
 
-from cindraleads.agents import Dispatcher, Extractor, Harvester, Resolver, Scorer, Scout
+from cindraleads.agents import (
+    Dispatcher,
+    Enricher,
+    Extractor,
+    Harvester,
+    Resolver,
+    Scorer,
+    Scout,
+)
 from cindraleads.budget import BudgetGuard
 from cindraleads.compliance import ComplianceGate
 from cindraleads.config import Settings, settings
@@ -49,6 +57,7 @@ class Runtime:
     llm: StructuredLLM = field(init=False)
     extractor: Extractor = field(init=False)
     resolver: Resolver = field(init=False)
+    enricher: Enricher = field(init=False)
     scorer: Scorer = field(init=False)
     dispatcher: Dispatcher = field(init=False)
     cloud_budget: BudgetGuard = field(init=False)
@@ -108,6 +117,7 @@ class Runtime:
             store=self.store, egress=self.egress, llm=self.llm, config=self.config
         )
         self.resolver = Resolver(store=self.store)
+        self.enricher = Enricher(store=self.store, egress=self.egress, config=self.config)
         self.scorer = Scorer(
             store=self.store,
             llm=self.llm,
