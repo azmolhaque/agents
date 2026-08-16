@@ -563,8 +563,15 @@ def maintain(
         typer.echo("\nevidence")
         if no_network:
             typer.echo("  resample skipped (--no-network)")
+        elif dry_run:
+            # Not "re-checked": nothing was fetched, and retirement has not run either,
+            # so the live-trigger pool this sampled from is still the pre-retirement one.
+            typer.echo(f"  {'would sample':>14}: {report.evidence_sampled} (upper bound)")
         else:
-            typer.echo(f"  {'re-checked':>14}: {report.evidence_checked}")
+            inconclusive = report.evidence_sampled - report.evidence_checked
+            typer.echo(f"  {'sampled':>14}: {report.evidence_sampled}")
+            typer.echo(f"  {'answered':>14}: {report.evidence_checked}")
+            typer.echo(f"  {'inconclusive':>14}: {inconclusive}")
             typer.echo(f"  {'found dead':>14}: {report.evidence_dead}")
 
         typer.echo("\nretention")

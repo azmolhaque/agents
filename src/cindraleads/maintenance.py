@@ -119,6 +119,7 @@ class MaintenanceReport:
     superseded: int = 0
     superseded_codes: dict[str, int] = field(default_factory=dict)
     decayed: int = 0
+    evidence_sampled: int = 0
     evidence_checked: int = 0
     evidence_dead: int = 0
     unevidenced: int = 0
@@ -242,10 +243,15 @@ async def resample_evidence(
     config: MaintenanceConfig,
     rng: random.Random | None = None,
     dry_run: bool = False,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """HEAD-equivalent re-check of a sample of live evidence URLs.
 
-    Returns ``(checked, found_dead)``.
+    Returns ``(sampled, checked, found_dead)``, and the gap between the first two is
+    the interesting number. On the first real run 24 URLs were sampled and only 14
+    produced an answer: the rest were unregistered sources, robots denials, budget
+    exhaustion, or a crt.sh outage. Collapsing those into one figure would report
+    "re-checked 24" for a pass that verified 14, which is the kind of number that reads
+    as reassurance and is not.
 
     Every request goes through the egress chokepoint like any other, which means it is
     subject to robots, the per-domain budget and the minimum interval -- a re-check is
@@ -270,12 +276,15 @@ async def resample_evidence(
         (to_iso(now), stale_before),
     ).fetchall()
     if not candidates:
-        return 0, 0
+        return 0, 0, 0
 
     take = min(config.resample_max, max(1, round(len(candidates) * config.resample_fraction)))
     sample = picker.sample(list(candidates), min(take, len(candidates)))
     if dry_run:
-        return len(sample), 0
+        # Sampled, but nothing was checked -- and the dry-run figure is an upper bound
+        # in a second way: retirement has not run, so the live-trigger pool it samples
+        # from still contains evidence the real pass would have retired first.
+        return len(sample), 0, 0
 
     checked = 0
     dead = 0
@@ -291,9 +300,15 @@ async def resample_evidence(
                 "UPDATE evidence SET reachable = ?, last_checked_at = ? WHERE evidence_id = ?",
                 (1 if verdict else 0, to_iso(utcnow()), str(row["evidence_id"])),
             )
-    if checked:
-        log.info("evidence_resampled", checked=checked, dead=dead, sampled=len(sample))
-    return checked, dead
+    if sample:
+        log.info(
+            "evidence_resampled",
+            sampled=len(sample),
+            checked=checked,
+            dead=dead,
+            inconclusive=len(sample) - checked,
+        )
+    return len(sample), checked, dead
 
 
 async def _probe_evidence(egress: Any, source_id: str, url: str) -> bool | None:
@@ -538,9 +553,11 @@ async def run_maintenance(
     report.decayed = expire_decayed_triggers(store, dry_run=dry_run)
 
     if egress is not None:
-        report.evidence_checked, report.evidence_dead = await resample_evidence(
-            store, egress, config=cfg, rng=rng, dry_run=dry_run
-        )
+        (
+            report.evidence_sampled,
+            report.evidence_checked,
+            report.evidence_dead,
+        ) = await resample_evidence(store, egress, config=cfg, rng=rng, dry_run=dry_run)
         if report.evidence_dead:
             report.unevidenced, dead_domains = retire_unevidenced_triggers(store, dry_run=dry_run)
             dirty.extend(dead_domains)
@@ -565,6 +582,7 @@ async def run_maintenance(
         dry_run=dry_run,
         superseded=report.superseded,
         decayed=report.decayed,
+        evidence_sampled=report.evidence_sampled,
         evidence_checked=report.evidence_checked,
         evidence_dead=report.evidence_dead,
         unevidenced=report.unevidenced,

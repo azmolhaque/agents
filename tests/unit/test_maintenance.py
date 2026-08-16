@@ -279,9 +279,11 @@ async def test_404_marks_evidence_dead(store: Any) -> None:
     egress = _Egress({"https://acme.io/gone": _status_error(404)})
     cfg = MaintenanceConfig.load()
 
-    checked, dead = await resample_evidence(store, egress, config=cfg, rng=random.Random(0))
+    sampled, checked, dead = await resample_evidence(
+        store, egress, config=cfg, rng=random.Random(0)
+    )
 
-    assert (checked, dead) == (1, 1)
+    assert (sampled, checked, dead) == (1, 1, 1)
     row = store.conn.execute("SELECT reachable, last_checked_at FROM evidence").fetchone()
     assert row["reachable"] == 0
     assert row["last_checked_at"]
@@ -299,11 +301,11 @@ async def test_inconclusive_status_leaves_reachability_unknown(store: Any, code:
     _trigger(store, "acme.io", "T1_AI_SHIP", evidence=[("https://acme.io/walled", None)])
     egress = _Egress({"https://acme.io/walled": _status_error(code)})
 
-    checked, dead = await resample_evidence(
+    sampled, checked, dead = await resample_evidence(
         store, egress, config=MaintenanceConfig.load(), rng=random.Random(0)
     )
 
-    assert (checked, dead) == (0, 0)
+    assert (sampled, checked, dead) == (1, 0, 0)
     assert store.conn.execute("SELECT reachable FROM evidence").fetchone()["reachable"] is None
 
 
@@ -315,11 +317,11 @@ async def test_robots_denial_is_not_a_dead_link(store: Any) -> None:
     _trigger(store, "acme.io", "T1_AI_SHIP", evidence=[("https://acme.io/x", None)])
     egress = _Egress({"https://acme.io/x": FetchDenied("robots.txt", "https://acme.io/x")})
 
-    checked, dead = await resample_evidence(
+    sampled, checked, dead = await resample_evidence(
         store, egress, config=MaintenanceConfig.load(), rng=random.Random(0)
     )
 
-    assert (checked, dead) == (0, 0)
+    assert (sampled, checked, dead) == (1, 0, 0)
     assert store.conn.execute("SELECT reachable FROM evidence").fetchone()["reachable"] is None
 
 
@@ -336,11 +338,11 @@ async def test_unregistered_source_is_never_fetched(store: Any) -> None:
         conn.execute("UPDATE evidence SET source_id = 'dns_public'")
     egress = _Egress({}, enabled={"company_site"})
 
-    checked, _ = await resample_evidence(
+    sampled, checked, _ = await resample_evidence(
         store, egress, config=MaintenanceConfig.load(), rng=random.Random(0)
     )
 
-    assert checked == 0
+    assert (sampled, checked) == (1, 0)
     assert egress.asked == []
 
 
@@ -351,11 +353,11 @@ async def test_evidence_for_a_dead_trigger_is_not_resampled(store: Any) -> None:
     _trigger(store, "acme.io", "T1_AI_SHIP", decays_in_days=-1, evidence=[("https://a.io/x", None)])
     egress = _Egress({})
 
-    checked, _ = await resample_evidence(
+    sampled, checked, _ = await resample_evidence(
         store, egress, config=MaintenanceConfig.load(), rng=random.Random(0)
     )
 
-    assert (checked, egress.asked) == (0, [])
+    assert (sampled, checked, egress.asked) == (0, 0, [])
 
 
 @pytest.mark.asyncio
@@ -366,11 +368,11 @@ async def test_recently_checked_evidence_is_skipped(store: Any) -> None:
         conn.execute("UPDATE evidence SET last_checked_at = ?", (to_iso(utcnow()),))
     egress = _Egress({})
 
-    checked, _ = await resample_evidence(
+    sampled, checked, _ = await resample_evidence(
         store, egress, config=MaintenanceConfig.load(), rng=random.Random(0)
     )
 
-    assert (checked, egress.asked) == (0, [])
+    assert (sampled, checked, egress.asked) == (0, 0, [])
 
 
 # --------------------------------------------------------- retiring on dead evidence
