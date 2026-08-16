@@ -489,6 +489,48 @@ def pipeline(
     asyncio.run(_run())
 
 
+@app.command()
+def health() -> None:
+    """Host state as the governor sees it.
+
+    Exists because "inference is paused by the thermal governor" is not actionable on
+    its own: heat, an under-voltage fault and a missing `vcgencmd` are three different
+    problems with three different fixes, and the log line cannot tell them apart.
+    """
+    from cindraleads.thermal import ThermalGovernor, VcgencmdReader
+
+    reader = VcgencmdReader()
+    typer.echo(f"vcgencmd on PATH: {reader.available()}")
+    if not reader.available():
+        typer.echo(
+            "  vcgencmd is missing, so temperature is unknown. The governor holds its\n"
+            "  last state rather than assuming the Pi is cool."
+        )
+
+    governor = ThermalGovernor()
+    policy = governor.poll()
+    snapshot = governor.snapshot()
+    for key in (
+        "state",
+        "temp_c",
+        "throttled_now",
+        "throttled_ever",
+        "active_flags",
+        "available_ram_mb",
+        "max_workers",
+        "allow_llm",
+        "alert_level",
+        "reason",
+    ):
+        typer.echo(f"  {key:>18}: {snapshot.get(key)}")
+
+    if not policy.allow_llm:
+        typer.echo(
+            "\nLLM inference is PAUSED. Leads still score -- the arithmetic needs no\n"
+            "model -- but outreach angles are deferred until this clears."
+        )
+
+
 @app.command("dispatch-test")
 def dispatch_test(
     lead_id: Annotated[str, typer.Option(help="A specific lead. Empty = highest scoring.")] = "",

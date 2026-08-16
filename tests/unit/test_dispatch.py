@@ -501,3 +501,75 @@ def test_a_company_with_no_live_trigger_is_not_scored(rig):
         conn.execute("UPDATE triggers SET decays_at = '2020-01-01T00:00:00Z'")
 
     assert enqueue_stale_scores(store, JobQueue(store)) == 0
+
+
+# --------------------------------------------------------------- prose recovery
+
+
+def test_a_thermal_pause_defers_prose_instead_of_losing_it(rig):
+    """What the first real scoring run cost: 32 of 32 leads finalised with no angle.
+
+    The governor paused inference for the whole batch. Each lead scored correctly --
+    the arithmetic never needed a model -- but the job completed, so no lead would
+    ever have been given an angle without a manual rescore.
+    """
+    from cindraleads.agents.scorer import PROSE_RETRY_SECONDS, SCORE_KIND, ScoreOutcome, Scorer
+    from cindraleads.config import settings
+
+    _build, _posts, store = rig
+    cfg = settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+    scorer = Scorer(store=store, llm=None, config=cfg)
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO companies (canonical_domain, display_name, ai_surface, "
+            "tech_signals, first_seen_at, last_updated_at) VALUES "
+            "('acme.io','Acme','[]','[]','2026-08-15T00:00:00Z','2026-08-15T00:00:00Z')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO evidence (evidence_id, url, source_id, snippet, "
+            "observed_at, content_sha256) VALUES "
+            "('e1','https://acme.io/','company_site','s','2026-08-15T00:00:00Z','h')"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at) VALUES "
+            "('t1','acme.io','T1_AI_SHIP',0.9,'2026-08-15T00:00:00Z','2099-01-01T00:00:00Z')"
+        )
+        conn.execute("INSERT OR REPLACE INTO trigger_evidence VALUES ('t1','e1')")
+
+    outcome = ScoreOutcome(canonical_domain="acme.io", retry_prose_in=PROSE_RETRY_SECONDS)
+    job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
+    with store.tx() as conn:
+        result = scorer.commit(job, outcome, conn)
+
+    assert result.ok
+    assert store.conn.execute("SELECT * FROM leads").fetchone() is not None, "still scored"
+    retries = [kind for kind, _ in result.follow_on if kind == SCORE_KIND]
+    assert retries == [SCORE_KIND], "the lead comes back for its angle"
+    payload = next(p for k, p in result.follow_on if k == SCORE_KIND)
+    assert payload["_delay_seconds"] == PROSE_RETRY_SECONDS
+
+
+def test_a_schema_failure_is_not_retried():
+    """The ladder already retried locally and escalated. Asking again in 20 minutes
+    would just spend the Pi's time reaching the same conclusion."""
+    from cindraleads.agents.scorer import _is_recoverable
+
+    assert not _is_recoverable("extraction failed schema: 3 validation errors")
+    assert _is_recoverable("LLM inference is paused by the thermal governor; retry when cool")
+    assert _is_recoverable("ConnectError: connection refused")
+
+
+def test_a_lead_that_already_has_an_angle_is_not_re_queued(rig):
+    """Otherwise every rescore of an angle-bearing lead schedules pointless work."""
+    from cindraleads.agents.scorer import _has_angle
+
+    build, _posts, store = rig
+    build(tier="A")  # seeds a lead with outreach_angle = 'angle'
+    assert _has_angle(store.conn, "lead1")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET outreach_angle = ''")
+    assert not _has_angle(store.conn, "lead1")

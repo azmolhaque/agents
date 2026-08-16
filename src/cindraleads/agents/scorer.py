@@ -57,12 +57,22 @@ def lead_id_for(canonical_domain: str) -> str:
     return hashlib.sha256(canonical_domain.encode()).hexdigest()[:16]
 
 
+# How long to wait before retrying prose that the thermal governor blocked. The Pi
+# plateaus at 80-82 C under load and sheds that in minutes once inference stops, so
+# 20 minutes is comfortably past the recovery without hammering the governor.
+PROSE_RETRY_SECONDS = 20 * 60
+
+
 @dataclass(frozen=True)
 class ScoreOutcome:
     canonical_domain: str
     prose: LeadProse | None = None
     error: str | None = None
     skipped: str | None = None
+    # Set when the model was unavailable for a *recoverable* reason. The lead is still
+    # scored and stored -- the arithmetic never needed a model -- but the job asks to
+    # come back for the prose rather than finalising the lead without an angle.
+    retry_prose_in: int = 0
 
 
 @dataclass
@@ -127,10 +137,24 @@ class Scorer:
         try:
             structured = await self.llm.generate(prompt, LeadProse, max_tokens=400)
         except SchemaValidationError as exc:
-            # Prose is a nice-to-have. The lead is already fully decided without it, so
-            # a model failure must not cost us the lead.
-            log.warning("scorer_prose_failed", canonical_domain=domain, error=str(exc)[:200])
-            return ScoreOutcome(canonical_domain=domain)
+            # Prose is a nice-to-have: the lead is already fully decided without it, so
+            # a model failure must never cost us the lead. But *why* it failed decides
+            # whether to come back. A thermal pause or a dead Ollama is temporary, and
+            # finalising the lead without an angle would mean the whole batch scored
+            # during one hot spell is permanently angle-less -- which is what happened
+            # on the first real scoring run: 32 of 32.
+            reason = str(exc)
+            recoverable = _is_recoverable(reason)
+            log.warning(
+                "scorer_prose_failed",
+                canonical_domain=domain,
+                error=reason[:200],
+                will_retry=recoverable,
+            )
+            return ScoreOutcome(
+                canonical_domain=domain,
+                retry_prose_in=PROSE_RETRY_SECONDS if recoverable else 0,
+            )
         return ScoreOutcome(canonical_domain=domain, prose=structured.value)
 
     # ------------------------------------------------------------------ phase 2
@@ -185,18 +209,26 @@ class Scorer:
             offer=result.offer,
             penalties=sorted(result.penalties),
         )
+        follow_on: list[tuple[str, dict[str, Any]]] = []
+        if outcome.retry_prose_in and not _has_angle(conn, lead_id):
+            follow_on.append(
+                (
+                    SCORE_KIND,
+                    {
+                        "canonical_domain": outcome.canonical_domain,
+                        "_delay_seconds": outcome.retry_prose_in,
+                    },
+                )
+            )
+
         if result.tier == "REJECT":
             # Scored, stored, never dispatched. Kept because tomorrow's trigger may
             # lift it over the threshold, and because a REJECT rate that suddenly
             # doubles is the first sign the ICP has drifted.
-            return StageResult(ok=True, stage="scorer", job_id=job.job_id)
+            return StageResult(ok=True, stage="scorer", job_id=job.job_id, follow_on=follow_on)
 
-        return StageResult(
-            ok=True,
-            stage="scorer",
-            job_id=job.job_id,
-            follow_on=[(DISPATCH_KIND, {"lead_id": lead_id})],
-        )
+        follow_on.append((DISPATCH_KIND, {"lead_id": lead_id}))
+        return StageResult(ok=True, stage="scorer", job_id=job.job_id, follow_on=follow_on)
 
     async def run(self, job: Job) -> StageResult:
         outcome = await self.prepare(job)
@@ -370,3 +402,18 @@ def enqueue_stale_scores(store: Store, queue: Any, *, limit: int = 0) -> int:
             if existing is None:
                 queued += 1
     return queued
+
+
+# Failures that will plausibly answer differently later. A schema violation from the
+# model will not -- it has already been retried at temperature 0 and escalated.
+_RECOVERABLE = ("thermal governor", "no escalation backend", "connect", "timeout", "refused")
+
+
+def _is_recoverable(reason: str) -> bool:
+    lowered = reason.lower()
+    return any(marker in lowered for marker in _RECOVERABLE)
+
+
+def _has_angle(conn: sqlite3.Connection, lead_id: str) -> bool:
+    row = conn.execute("SELECT outreach_angle FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
+    return bool(row and str(row["outreach_angle"] or "").strip())
