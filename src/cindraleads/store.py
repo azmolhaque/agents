@@ -140,6 +140,17 @@ class Store:
                 raise MigrationError(f"migration {path.name!r} must match NNNN_lower_snake.sql")
         return files
 
+    def pending_migrations(self) -> list[str]:
+        """Versions on disk that this database has not applied.
+
+        A `git pull` that ships a migration leaves every command broken until someone
+        remembers to run `db migrate`, and the failure surfaces as "no such column"
+        from whichever query happens to touch the new field first. Commands can ask
+        this instead of finding out that way.
+        """
+        already = set(self.applied_migrations())
+        return [path.stem for path in self.available_migrations() if path.stem not in already]
+
     def migrate(self) -> list[str]:
         """Apply pending migrations. Returns the versions applied this call.
 

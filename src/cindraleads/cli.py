@@ -75,13 +75,29 @@ class _StageFailed(CindraError):
     """Raised inside the transaction so an unsuccessful stage rolls its writes back."""
 
 
-def _open_store() -> Store:
+def _open_store(*, migrate: bool = False) -> Store:
+    """Open the database, optionally bringing the schema up to date first.
+
+    `migrate=True` for the unattended entry points -- `pipeline` and `work` -- because
+    a systemd timer has nobody to read an error message. A `git pull` that ships a
+    migration would otherwise leave the pipeline dead until a human noticed, and the
+    symptom would be "no such column" from whichever query touched the new field
+    first, which is a long way from the cause.
+
+    Migrations are additive and each runs in its own transaction, so applying them
+    here cannot leave a half-migrated database.
+    """
     cfg = settings()
     cfg.ensure_dirs()
     store = Store()
     # Python 3.13 warns about an unclosed sqlite3 connection at interpreter shutdown.
     # A CLI process exiting would otherwise print a ResourceWarning after its output.
     atexit.register(store.close)
+    if migrate:
+        applied = store.migrate()
+        if applied:
+            log.info("schema_migrated", applied=applied)
+            typer.echo(f"applied pending migration(s): {', '.join(applied)}")
     return store
 
 
@@ -370,6 +386,14 @@ def status() -> None:
     glance.
     """
     store = _open_store()
+    pending = store.pending_migrations()
+    if pending:
+        # Reported, not applied: `status` is a read-only command and a surprise schema
+        # change is not what someone asking for a summary wants. Everything below still
+        # works, because it only reads columns that predate the drift.
+        typer.echo(
+            f"schema is behind: {', '.join(pending)} not applied. Run `cindra db migrate`.\n"
+        )
     conn = store.conn
 
     def count(sql: str, *params: Any) -> int:
@@ -457,7 +481,7 @@ def pipeline(
     cfg = settings()
     cfg.ensure_dirs()
     configure_logging(log_dir=cfg.resolve(cfg.log_dir), level=cfg.log_level, console=True)
-    store = _open_store()
+    store = _open_store(migrate=True)
 
     async def _run() -> None:
         async with Runtime(store=store, config=cfg) as runtime:
@@ -701,7 +725,7 @@ def work(
     signal.signal(signal.SIGINT, _request_shutdown)
 
     wanted = [k.strip() for k in kinds.split(",") if k.strip()]
-    store = _open_store()
+    store = _open_store(migrate=True)
 
     async def _main() -> int:
         if not _needs_runtime(wanted):

@@ -168,3 +168,43 @@ def test_backup_produces_a_readable_copy(store, tmp_path: Path):
     restored = Store(target, migrations_dir=MIGRATIONS)
     assert restored.conn.execute("SELECT value FROM suppression_list").fetchone()[0] == "x.io"
     restored.close()
+
+
+def test_pending_migrations_reports_the_drift(tmp_path: Path):
+    """A `git pull` that ships a migration must be detectable before a query fails.
+
+    Without this the symptom is "no such column" from whichever stage touches the new
+    field first, which is a long way from the cause.
+    """
+    store = Store(tmp_path / "m.db", migrations_dir=MIGRATIONS)
+    assert store.pending_migrations(), "a fresh database has not applied anything"
+    store.migrate()
+    assert store.pending_migrations() == []
+    store.close()
+
+
+def test_the_unattended_entry_points_migrate_themselves(tmp_path: Path, monkeypatch):
+    """A systemd timer has nobody to read an error message.
+
+    `pipeline` and `work` bring the schema up to date on open; a schema shipped by a
+    pull would otherwise leave the pipeline dead until a human noticed.
+    """
+    import inspect
+
+    from cindraleads import cli
+
+    for name in ("pipeline", "work"):
+        source = inspect.getsource(getattr(cli, name))
+        assert "_open_store(migrate=True)" in source, f"`cindra {name}` does not self-migrate"
+
+
+def test_read_only_commands_do_not_migrate_silently():
+    """`status` reports drift instead of applying it. Someone asking for a summary is
+    not asking for a schema change."""
+    import inspect
+
+    from cindraleads import cli
+
+    source = inspect.getsource(cli.status)
+    assert "_open_store(migrate=True)" not in source
+    assert "pending_migrations" in source
