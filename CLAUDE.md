@@ -36,6 +36,7 @@ cindra dispatch-test [--dry-run]         # prove the Discord wiring, any tier
 cindra health                            # what the thermal governor sees
 cindra queue release [--kind K]          # pull deferred jobs forward
 cindra status                            # candidates, companies, live triggers
+cindra maintain [--dry-run] [--no-network]  # nightly: retire, decay, resample, purge
 cindra feedback <lead_id> good|bad
 ```
 
@@ -145,6 +146,23 @@ threshold no matter how good it was.
 Enrichment is passive throughout: CT logs, public DNS, RDAP, the company's own pages and
 their ATS board's public JSON. `contacts.py` imports no socket library at all, which is
 the strongest available form of "never SMTP VRFY/RCPT" -- a test asserts it.
+
+**`cindra maintain` is the only thing in the system that looks backwards.** Every stage
+moves work forward and never revisits a row it wrote, so decay, retirement, evidence
+reachability and retention all live in one nightly pass (PLAN.md 2.7,
+`deploy/systemd/cindraleads-maintenance.*`).
+
+It exists because narrowing `mail_auth_weakness` did not un-write the 95 T8 rows the
+loose rule had already produced -- they kept a 60-day decay and kept feeding scores.
+**Editing a derived-trigger rule is half a change; the other half is an entry in
+`RETIREMENT_RULES` so the pass re-runs it over what the old rule wrote.** Retirement
+also has to enqueue its own re-scoring: `enqueue_stale_scores` reconciles on
+`MAX(observed_at) > lead.last_updated_at`, and retiring a trigger moves neither.
+
+Reachability is three-valued on purpose. `evidence.reachable` is 1, 0 or NULL, and a
+robots denial, an exhausted domain budget and a timeout all leave NULL. Only a 4xx
+(never 401/403/429) sets 0, and a trigger is retired for dead evidence only when every
+URL it cites is *known* dead.
 
 **Still unmeasured: extraction accuracy.** Every extract test uses a stub model. Nothing
 has been checked against a real one, so `employee_band` and `display_name` correctness

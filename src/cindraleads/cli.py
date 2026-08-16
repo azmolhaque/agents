@@ -519,6 +519,68 @@ def pipeline(
 
 
 @app.command()
+def maintain(
+    dry_run: Annotated[bool, typer.Option(help="Report what would change, change nothing.")] = (
+        False
+    ),
+    no_network: Annotated[bool, typer.Option(help="Skip the evidence resample.")] = False,
+) -> None:
+    """The nightly backward-looking pass.
+
+    Retire triggers a tightened rule would no longer write, flip decayed ones, re-check
+    a sample of evidence URLs, purge past retention, and sweep the cache. Companies
+    whose trigger set changed are queued for re-scoring, because nothing else notices:
+    the score reconciler keys on trigger timestamps, and a retirement moves none of them.
+    """
+    from cindraleads.maintenance import MaintenanceConfig, run_maintenance
+
+    cfg = settings()
+    cfg.ensure_dirs()
+    configure_logging(log_dir=cfg.resolve(cfg.log_dir), level=cfg.log_level, console=True)
+    store = _open_store(migrate=True)
+    mcfg = MaintenanceConfig.load(cfg)
+
+    async def _run() -> None:
+        async with Runtime(store=store, config=cfg) as runtime:
+            report = await run_maintenance(
+                store,
+                queue=runtime.queue,
+                egress=None if no_network else runtime.egress,
+                cache=runtime.cache,
+                config=mcfg,
+                dry_run=dry_run,
+            )
+
+        if dry_run:
+            typer.echo("dry run -- nothing was changed\n")
+        typer.echo("triggers")
+        typer.echo(f"  {'superseded':>14}: {report.superseded}")
+        for code, count in sorted(report.superseded_codes.items()):
+            typer.echo(f"  {'':>14}  {code}: {count}")
+        typer.echo(f"  {'decayed':>14}: {report.decayed}")
+        typer.echo(f"  {'unevidenced':>14}: {report.unevidenced}")
+
+        typer.echo("\nevidence")
+        if no_network:
+            typer.echo("  resample skipped (--no-network)")
+        else:
+            typer.echo(f"  {'re-checked':>14}: {report.evidence_checked}")
+            typer.echo(f"  {'found dead':>14}: {report.evidence_dead}")
+
+        typer.echo("\nretention")
+        for table, count in sorted(report.purged.items()):
+            typer.echo(f"  {table:>14}: {count}")
+        typer.echo(f"  {'cache rows':>14}: {report.cache_rows}")
+        typer.echo(f"  {'cache files':>14}: {report.cache_files}")
+
+        typer.echo(f"\nqueued {report.rescored} company/companies for re-scoring")
+        if not report.changed:
+            typer.echo("nothing needed changing")
+
+    asyncio.run(_run())
+
+
+@app.command()
 def health() -> None:
     """Host state as the governor sees it.
 

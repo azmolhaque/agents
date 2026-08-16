@@ -1,0 +1,39 @@
+# What the nightly maintenance run does. PLAN.md 2.7.
+#
+# The pipeline stages only ever move work forward. Nothing in harvest -> dispatch
+# ever looks back at a row it already wrote, so every backward-looking obligation --
+# decay, retirement, retention, reachability -- lands here or does not happen at all.
+#
+# Every number is a policy, not a tuning knob. Changing one changes what we keep about
+# people and how long a claim survives without being re-checked, so they live in config
+# where the diff is reviewable.
+
+retention:
+  # Content-addressed page bodies. The cache sweep already drops expired index rows;
+  # this drops the provenance record long after the body is gone.
+  raw_documents_days: 180
+  # Terminal candidates only. A candidate still waiting to extract is never purged
+  # regardless of age -- it is pending work, not history.
+  candidates_days: 180
+  dead_letter_days: 180
+  # Metrics are the shortest: they are aggregate and cheap to lose.
+  metrics_days: 90
+  # Completed jobs are the queue's dedupe memory, so this must stay far longer than
+  # any dedupe time bucket. 180 days against a 1 hour harvest bucket has enormous room.
+  done_jobs_days: 180
+  # Evidence no trigger points at any more.
+  orphan_evidence_days: 180
+  # Personal data. A named individual at a company we have no live reason to contact
+  # is data we have no basis to keep.
+  contacts_days: 180
+
+cache:
+  sweep_older_than_days: 30
+
+evidence:
+  # A sample, not a sweep: re-checking every evidence URL nightly would be a crawl of
+  # every prospect we have ever seen, which is exactly what passive-only forbids.
+  resample_fraction: 0.10
+  resample_max: 40
+  # A URL checked more recently than this is not re-sampled, however the dice land.
+  recheck_after_days: 14

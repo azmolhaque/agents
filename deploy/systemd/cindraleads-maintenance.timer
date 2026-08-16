@@ -1,0 +1,18 @@
+[Unit]
+Description=Run CindraLeads maintenance nightly
+Documentation=file:///home/pi/cindraleads/PLAN.md
+
+[Timer]
+# 03:20 local, off-peak: no harvest is running, the SoC is at its coolest, and the
+# write lock this takes is not competing with a 64 s extraction holding a lease.
+# The odd minute keeps it off the same tick as every other cron-shaped job on the box.
+OnCalendar=*-*-* 03:20:00
+Persistent=true
+
+# The Pi is not always on. Persistent=true means a missed night runs at next boot,
+# and the jitter stops a cold start from firing maintenance into the middle of the
+# first harvest of the day.
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

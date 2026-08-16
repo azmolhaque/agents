@@ -1,0 +1,32 @@
+[Unit]
+Description=CindraLeads nightly maintenance (decay, retirement, retention, resample)
+Documentation=file:///home/pi/cindraleads/PLAN.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/cindraleads
+EnvironmentFile=/home/pi/cindraleads/.env
+ExecStart=/home/pi/cindraleads/.venv/bin/cindra maintain
+
+# The pass is a handful of SQLite statements and at most `resample_max` fetches.
+# If it has not finished in ten minutes something is wedged, and a maintenance job
+# holding the write lock is worse than a maintenance job that did not run.
+TimeoutStartSec=600
+
+# It writes to the database and the cache directory and nothing else.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/cindraleads/var
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Well under the two-model inference envelope: this stage never loads a model.
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
