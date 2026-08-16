@@ -37,6 +37,9 @@ cindra health                            # what the thermal governor sees
 cindra queue release [--kind K]          # pull deferred jobs forward
 cindra status                            # candidates, companies, live triggers
 cindra maintain [--dry-run] [--no-network]  # nightly: retire, decay, resample, purge
+cindra reconcile                         # enqueue-only: unenriched + stale scores
+cindra digest [--dry-run] [--limit N]    # batch the Tier C backlog to Discord
+cindra serve [--port 9109]               # /healthz, /metrics, HTML view (localhost)
 cindra feedback <lead_id> good|bad
 ```
 
@@ -168,5 +171,37 @@ URL it cites is *known* dead.
 has been checked against a real one, so `employee_band` and `display_name` correctness
 are unknown. That is the Phase 3 gate (PLAN.md 2.11) and needs ~50 hand-labelled pages.
 
-**Known hardware gaps for Phase 7:** root is on microSD (no NVMe present), and sustained
-inference reaches ~80 C with the fan at ~6000 RPM. Neither blocks Phases 2-6.
+**Phase 7 code complete; the 72 h unattended run is not yet done.** Two long-running
+units (`worker`, `health`) and four timers (`harvest`, `reconcile`, `digest`,
+`maintenance`), installed by `./deploy/install_pi.sh --install-units`. `docs/RUNBOOK.md`
+is the 3am document.
+
+**Timers only ever enqueue; the worker drains.** A timer that also drained would race
+the worker for the same jobs and load a second copy of the model on a box sized for two.
+That is why `cindra reconcile` exists separately from `cindra pipeline`.
+
+Three things that shape the rest of Phase 7:
+
+- **Metrics are computed from SQLite at scrape time, never accumulated in process
+  memory.** Harvest, digest and maintenance are short-lived processes; an in-process
+  counter would die with each one and a scrape would report whatever the last process
+  to exit had done. `prometheus_client` is deliberately unused -- the text format is a
+  dozen lines, and a metrics endpoint that fails to start on a missing optional extra
+  is worse than none.
+- **The health endpoint's whole job is telling *idle* from *stopped*.** Zero ready jobs
+  is both a healthy finished system and one whose harvest timer died on Tuesday; the
+  job table cannot distinguish them, so `HEARTBEAT_UNITS` does. **A new timer needs an
+  entry there or it is a blind spot** -- a test asserts every `*.timer` has one, and it
+  caught exactly that when `enrich.timer` was renamed to `reconcile.timer`.
+- **Degraded is not failure.** Ollama down, budget spent, SoC hot are all designed-for
+  states: `/healthz` returns 200 and only a stuck queue, a dead-letter pile or a silent
+  unit gives 503. A probe that failed on heat would restart the worker into the heat.
+
+**Tier C now batches.** `digest_pages` existed and was tested but nothing called it, so
+Tier C posted one message per lead. The per-lead stage now sends only A and B; `cindra
+digest` reconciles the rest against `dispatch_log` daily, so a missed morning costs a
+day's delay and not a day's leads.
+
+**Known hardware gaps:** root is on microSD (no NVMe present), and sustained
+inference reaches ~80 C with the fan at ~6000 RPM. The Phase 7 acceptance run requires
+`get_throttled` to stay `0x0` for 72 h, which this hardware has not yet demonstrated.

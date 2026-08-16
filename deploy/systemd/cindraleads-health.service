@@ -1,0 +1,36 @@
+[Unit]
+Description=CindraLeads health and metrics endpoint (localhost only)
+Documentation=file:///home/pi/cindraleads/docs/RUNBOOK.md
+After=network-online.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=pi
+Group=pi
+SupplementaryGroups=video
+WorkingDirectory=/home/pi/cindraleads
+EnvironmentFile=/home/pi/cindraleads/.env
+ExecStart=/home/pi/cindraleads/.venv/bin/cindra serve --port 9109
+
+# Its own unit rather than a thread inside the worker. The endpoint's whole job is to
+# tell you what is wrong, and a worker crash is exactly when you need it answering.
+Restart=always
+RestartSec=5
+
+# Binds 127.0.0.1 in code and refuses anything else, but defence in depth: this unit
+# has no business reaching the network at all beyond loopback.
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+MemoryMax=256M
+CPUQuota=25%
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/cindraleads/var
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

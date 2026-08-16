@@ -223,13 +223,30 @@ def test_no_stage_shells_out_at_all():
 
     If a `subprocess` call ever appears, this fails and whoever added it has to route
     it through `assert_command_allowed` deliberately.
+
+    Checks imports rather than raw text, for the same reason the no-SMTP test does:
+    the modules that document this rule have to be able to name `subprocess` in a
+    comment without tripping the test that enforces it.
     """
+    import ast
+
     src = REPO_ROOT / "src" / "cindraleads"
-    offenders = [
-        path.relative_to(REPO_ROOT)
-        for path in src.rglob("*.py")
-        if "subprocess" in path.read_text() and path.name not in {"passive.py", "thermal.py"}
-    ]
+    allowed = {"passive.py", "thermal.py"}
+    offenders: list[Path] = []
+    for path in src.rglob("*.py"):
+        if path.name in allowed:
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                names = {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = {node.module.split(".")[0]}
+            else:
+                continue
+            if "subprocess" in names:
+                offenders.append(path.relative_to(REPO_ROOT))
+                break
+
     assert not offenders, f"these modules shell out without the passive-only guard: {offenders}"
 
 

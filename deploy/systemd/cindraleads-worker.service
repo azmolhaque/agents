@@ -1,0 +1,57 @@
+[Unit]
+Description=CindraLeads pipeline worker
+Documentation=file:///home/pi/cindraleads/docs/RUNBOOK.md
+After=network-online.target ollama.service
+Wants=network-online.target
+# `After=` orders the start, and that is all. Deliberately not `Requires=`: the worker
+# runs perfectly well with Ollama down -- it keeps fetching, defers anything needing
+# inference, and resumes when the model returns. A hard dependency would take the
+# whole pipeline down for an `ollama` restart, and the chaos suite asserts it does not.
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=pi
+Group=pi
+# vcgencmd needs this or the thermal governor reads nothing and never engages, which
+# is invisible until the Pi cooks. PLAN.md 2.10.
+SupplementaryGroups=video
+WorkingDirectory=/home/pi/cindraleads
+EnvironmentFile=/home/pi/cindraleads/.env
+ExecStart=/home/pi/cindraleads/.venv/bin/cindra work \
+  --kinds harvest.query,extract.candidate,resolve.company,enrich.company,score.company,dispatch.lead \
+  --no-idle-exit --lease 600 --poll-ms 500
+
+# The loop pets the watchdog every iteration including empty polls, so silence means
+# wedged rather than idle. 90 s is comfortably longer than one 64 s extraction.
+WatchdogSec=180
+Restart=always
+RestartSec=10
+# Five restarts in five minutes is a crash loop, not a blip. Stop and let /healthz and
+# `systemctl status` say so, rather than hammering Ollama and the queue forever.
+StartLimitBurst=5
+StartLimitIntervalSec=300
+
+# SIGTERM sets the shutdown flag and the loop finishes its current job. An extraction
+# can take ~64 s and a cold model load ~32 s, so the grace period has to clear both or
+# a routine `systemctl restart` would SIGKILL mid-stage every time.
+KillSignal=SIGTERM
+TimeoutStopSec=180
+
+# Two resident models are Ollama's memory, not ours. This bounds the Python side, so
+# a leak here cannot push the models out of RAM.
+MemoryMax=2G
+CPUQuota=350%
+Nice=5
+# Inference is the priority. The worker should yield disk to Ollama's model loads.
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/cindraleads/var
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

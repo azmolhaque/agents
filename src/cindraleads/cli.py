@@ -37,9 +37,11 @@ from cindraleads.agents import (
 from cindraleads.config import settings
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
+from cindraleads.metrics import record_heartbeat
 from cindraleads.models import Job, StageResult, to_iso, utcnow
 from cindraleads.queue import JobQueue
 from cindraleads.runtime import Runtime
+from cindraleads.sdnotify import Watchdog, notify_ready, notify_stopping
 from cindraleads.store import Store
 
 app = typer.Typer(no_args_is_help=True, add_completion=False, help="CindraLeads control CLI.")
@@ -53,6 +55,10 @@ app.add_typer(selftest_app, name="selftest")
 log = get_logger()
 
 SELFTEST_KIND = "selftest.sideeffect"
+
+# How often the worker records that it is alive. Well under the 15 minute silence
+# budget in `HEARTBEAT_UNITS`, and far above the 50 ms poll interval.
+WORKER_HEARTBEAT_SECONDS = 60.0
 
 # A stage handler receives the claimed job and the *open* transaction. It must do all
 # of its writing through that connection so the work and the completion commit as one.
@@ -368,6 +374,7 @@ def harvest(
             # queued nothing "enqueued 12 harvest job(s)", which made a second run
             # look like it had worked when it had in fact been deduped away.
             skipped = len(ids) - new
+            record_heartbeat(store, "harvest", planned=len(plans), enqueued=new)
             typer.echo(
                 f"enqueued {new} new harvest job(s)"
                 + (f", {skipped} already queued or run this cache window" if skipped else "")
@@ -498,6 +505,7 @@ def pipeline(
             stale = enqueue_stale_scores(store, runtime.queue)
             if stale:
                 typer.echo(f"queued {stale} company/companies for (re)scoring")
+            record_heartbeat(store, "reconcile", queued_enrich=fresh, queued_score=stale)
 
             for kind in PIPELINE_KINDS:
                 stages = _stages_for([kind], runtime)
@@ -516,6 +524,104 @@ def pipeline(
                 typer.echo(f"{kind}: {done} job(s)")
 
     asyncio.run(_run())
+
+
+@app.command()
+def reconcile() -> None:
+    """Queue the work the event flow missed. Enqueue only -- drains nothing.
+
+    Under systemd the worker is a long-running service and the timers only ever add
+    to the queue; a timer that also drained would race the worker for the same jobs.
+    The lease makes that safe rather than correct, and two processes loading the same
+    model on a 16 GB Pi is not something to rely on being merely wasteful.
+
+    Both reconcilers ask "what state is inconsistent", not "what happened", so this
+    heals a stage added later, a restore from backup, and a crash between stages --
+    none of which any event would replay.
+    """
+    cfg = settings()
+    cfg.ensure_dirs()
+    configure_logging(log_dir=cfg.resolve(cfg.log_dir), level=cfg.log_level, console=True)
+    store = _open_store(migrate=True)
+
+    async def _run() -> None:
+        async with Runtime(store=store, config=cfg) as runtime:
+            fresh = enqueue_unenriched(store, runtime.queue)
+            stale = enqueue_stale_scores(store, runtime.queue)
+        typer.echo(f"queued {fresh} for enrichment, {stale} for (re)scoring")
+        record_heartbeat(store, "reconcile", queued_enrich=fresh, queued_score=stale)
+
+    asyncio.run(_run())
+
+
+@app.command()
+def digest(
+    limit: Annotated[int, typer.Option(help="Max leads in one run.")] = 40,
+    dry_run: Annotated[bool, typer.Option(help="Count the pages, post nothing.")] = False,
+) -> None:
+    """Post the Tier C backlog as a paginated digest.
+
+    The per-lead stage only sends A and B, so this is the only route a Tier C lead has
+    to Discord. It reconciles rather than draining a queue -- "leads below Tier B that
+    `dispatch_log` has never seen" -- so a missed timer costs a day's delay, not a
+    day's leads.
+    """
+    from cindraleads.agents.dispatcher import send_digest
+
+    cfg = settings()
+    cfg.ensure_dirs()
+    configure_logging(log_dir=cfg.resolve(cfg.log_dir), level=cfg.log_level, console=True)
+    store = _open_store(migrate=True)
+
+    async def _run() -> None:
+        async with Runtime(store=store, config=cfg) as runtime:
+            report = await send_digest(runtime.dispatcher, limit=limit, dry_run=dry_run)
+
+        typer.echo(f"pending below Tier B: {report.pending}")
+        if report.skipped:
+            typer.echo(f"skipped: {report.skipped}")
+        elif dry_run:
+            typer.echo(f"dry run: would post {report.pages} page(s)")
+        else:
+            typer.echo(f"sent {report.sent} lead(s) in {report.pages} page(s)")
+        if report.error:
+            typer.echo(f"stopped early: {report.error}")
+        if not dry_run:
+            record_heartbeat(
+                store, "digest", ok=not report.error, sent=report.sent, pending=report.pending
+            )
+
+    asyncio.run(_run())
+
+
+@app.command()
+def serve(
+    port: Annotated[int, typer.Option(help="Localhost port for /healthz and /metrics.")] = 9109,
+) -> None:
+    """Run the health and metrics endpoint until stopped.
+
+    Its own process on purpose. Folding it into the worker would mean the endpoint
+    dies with the thing it is there to report on, which is the one moment you need it.
+    """
+    from cindraleads.health import DEFAULT_HOST
+    from cindraleads.health import serve as serve_health
+
+    cfg = settings()
+    cfg.ensure_dirs()
+    configure_logging(log_dir=cfg.resolve(cfg.log_dir), level=cfg.log_level, console=False)
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+
+    store = _open_store(migrate=True)
+    server = serve_health(store, config=cfg, port=port)
+    typer.echo(f"listening on http://{DEFAULT_HOST}:{port}/  (healthz, metrics)")
+    notify_ready(f"health endpoint on {port}")
+    try:
+        while not _shutdown:
+            time.sleep(0.5)
+    finally:
+        notify_stopping()
+        server.shutdown()
 
 
 @app.command()
@@ -583,6 +689,10 @@ def maintain(
         typer.echo(f"\nqueued {report.rescored} company/companies for re-scoring")
         if not report.changed:
             typer.echo("nothing needed changing")
+        if not dry_run:
+            record_heartbeat(
+                store, "maintenance", superseded=report.superseded, rescored=report.rescored
+            )
 
     asyncio.run(_run())
 
@@ -797,10 +907,18 @@ def work(
     store = _open_store(migrate=True)
 
     async def _main() -> int:
-        if not _needs_runtime(wanted):
-            return await _work_loop(store, _stages_for(wanted, None), **_opts())
-        async with Runtime(store=store, config=cfg) as runtime:
-            return await _work_loop(store, _stages_for(wanted, runtime), **_opts())
+        # READY only once the Runtime is built. Under `Type=notify` systemd holds
+        # dependent units until this fires, so announcing it earlier would report the
+        # worker up while Ollama and the egress client were still being wired.
+        try:
+            if not _needs_runtime(wanted):
+                notify_ready(f"worker: {','.join(wanted)}")
+                return await _work_loop(store, _stages_for(wanted, None), **_opts())
+            async with Runtime(store=store, config=cfg) as runtime:
+                notify_ready(f"worker: {','.join(wanted)}")
+                return await _work_loop(store, _stages_for(wanted, runtime), **_opts())
+        finally:
+            notify_stopping()
 
     def _opts() -> dict[str, Any]:
         return {
@@ -833,8 +951,24 @@ async def _work_loop(
     queue = JobQueue(store)
     queue.reclaim_expired()
 
+    # Petted at the top of every iteration, including the empty polls. That is the
+    # point: a worker with nothing to do is healthy and must keep saying so, while one
+    # wedged inside a stage stops petting and systemd restarts it. `Watchdog` is inert
+    # unless systemd set WATCHDOG_USEC for this pid.
+    watchdog = Watchdog()
+    heartbeat_due = 0.0
+
     processed = 0
     while not _shutdown:
+        watchdog.pet()
+        now = time.monotonic()
+        if now >= heartbeat_due:
+            # The liveness record the health endpoint reads. Cheap, but not free -- one
+            # INSERT per loop on an empty queue polling every 50 ms would be 20 writes
+            # a second against the same lock the stages need.
+            record_heartbeat(store, "worker", worker_id=worker_id, processed=processed)
+            heartbeat_due = now + WORKER_HEARTBEAT_SECONDS
+
         if max_jobs and processed >= max_jobs:
             break
         try:
@@ -914,6 +1048,7 @@ async def _work_loop(
             duration_ms=int((time.monotonic() - started) * 1000),
         )
 
+    record_heartbeat(store, "worker", worker_id=worker_id, processed=processed, exiting=True)
     log.info("worker_exit", worker_id=worker_id, processed=processed)
     return processed
 

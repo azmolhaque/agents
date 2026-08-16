@@ -9,9 +9,12 @@
 # the database, and the test suite.
 #
 # What it deliberately does NOT do without being asked:
-#   --tune-boot   edits /boot/firmware/config.txt for NVMe Gen 3. That needs a reboot
-#                 and can leave a Pi unbootable if the SD/NVMe setup is unusual, so it
-#                 is opt-in and printed as a recommendation otherwise.
+#   --tune-boot      edits /boot/firmware/config.txt for NVMe Gen 3. That needs a reboot
+#                    and can leave a Pi unbootable if the SD/NVMe setup is unusual, so
+#                    it is opt-in and printed as a recommendation otherwise.
+#   --install-units  installs and enables the systemd units, which starts a worker that
+#                    harvests and posts to Discord on its own. Turning a manual tool
+#                    into an unattended one is a decision, not a bootstrap step.
 #
 set -euo pipefail
 
@@ -19,10 +22,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 TUNE_BOOT=0
+INSTALL_UNITS=0
 for arg in "$@"; do
   case "$arg" in
     --tune-boot) TUNE_BOOT=1 ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --install-units) INSTALL_UNITS=1 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -157,6 +162,33 @@ fi
 say "Test suite + Phase 0 durability gate"
 make check
 make gate
+
+# --------------------------------------------------------------- systemd units
+
+say "Systemd units (Phase 7)"
+if [ "$INSTALL_UNITS" = "1" ]; then
+  UNIT_TMP="$(mktemp -d)"
+  trap 'rm -rf "$UNIT_TMP"' EXIT
+  for unit in deploy/systemd/cindraleads-*.service deploy/systemd/cindraleads-*.timer; do
+    # The units are written for user `pi` at /home/pi/cindraleads. Rewrite to whoever
+    # is actually running this, rather than shipping units that only work on one box.
+    sed -e "s|/home/pi/cindraleads|${REPO_ROOT}|g" \
+        -e "s|^User=pi$|User=${USER}|" \
+        -e "s|^Group=pi$|Group=${USER}|" \
+        "$unit" > "${UNIT_TMP}/$(basename "$unit")"
+  done
+  sudo cp "${UNIT_TMP}"/cindraleads-*.service "${UNIT_TMP}"/cindraleads-*.timer /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now cindraleads-worker cindraleads-health
+  sudo systemctl enable --now cindraleads-harvest.timer cindraleads-reconcile.timer \
+       cindraleads-digest.timer cindraleads-maintenance.timer
+  ok "units installed and enabled"
+  systemctl list-timers 'cindraleads-*' --no-pager || true
+else
+  warn "not installing systemd units. To run unattended:"
+  echo "        ./deploy/install_pi.sh --install-units"
+  echo "        # or follow docs/RUNBOOK.md section 4"
+fi
 
 # ------------------------------------------------------------------ boot tune
 

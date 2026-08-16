@@ -1,0 +1,15 @@
+[Unit]
+Description=Reconcile CindraLeads enrichment and scoring every 30 minutes
+Documentation=file:///home/pi/cindraleads/docs/RUNBOOK.md
+
+[Timer]
+# More often than harvest, and cheap: two indexed queries and some INSERTs, no network.
+# This is what turns "a stage was added after those rows were written" and "the process
+# died between resolve and score" into work that eventually runs.
+OnBootSec=3min
+OnUnitActiveSec=30min
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

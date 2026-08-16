@@ -1,0 +1,28 @@
+[Unit]
+Description=CindraLeads reconciler: queue unenriched companies and stale scores
+Documentation=file:///home/pi/cindraleads/docs/RUNBOOK.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+SupplementaryGroups=video
+WorkingDirectory=/home/pi/cindraleads
+EnvironmentFile=/home/pi/cindraleads/.env
+# Enqueue only. The worker service drains; a timer that also drained would race it
+# for the same jobs and, worse, load a second copy of the model.
+ExecStart=/home/pi/cindraleads/.venv/bin/cindra reconcile
+TimeoutStartSec=300
+
+MemoryMax=512M
+CPUQuota=50%
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/cindraleads/var
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

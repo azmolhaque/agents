@@ -37,10 +37,13 @@ from cindraleads.store import Store
 
 __all__ = [
     "DISPATCH_KIND",
+    "IMMEDIATE_TIERS",
+    "DigestReport",
     "DispatchOutcome",
     "Dispatcher",
     "build_card",
     "idempotency_key",
+    "send_digest",
 ]
 
 log = get_logger("cindraleads.dispatcher")
@@ -48,6 +51,13 @@ log = get_logger("cindraleads.dispatcher")
 DISPATCH_KIND = "dispatch.lead"
 
 TIER_CHANNEL: dict[str, str] = {"A": "hot", "B": "warm", "C": "digest"}
+
+# Tiers worth interrupting someone for. A and B go out the moment they score, because
+# a funding round or a shipped LLM feature is worth a call this week. C is a backlog to
+# read over coffee, and `send_digest` batches it once a day -- posting a Tier C card the
+# instant it scores turns the digest channel into a stream nobody reads, which costs the
+# A and B cards their signal value too.
+IMMEDIATE_TIERS = ("A", "B")
 
 
 # Presentation order for the card, from the taxonomy weights in `scoring.yaml`. Loaded
@@ -150,6 +160,10 @@ class Dispatcher:
         tier = str(lead["tier"])
         if tier == "REJECT":
             return DispatchOutcome(lead_id=lead_id, skipped="tier REJECT is never dispatched")
+        if tier not in IMMEDIATE_TIERS:
+            # Not dropped -- deferred. `send_digest` picks it up on the daily timer by
+            # querying for tiers nothing has logged yet, so no state is needed here.
+            return DispatchOutcome(lead_id=lead_id, tier=tier, skipped=f"tier {tier} digests daily")
 
         key = idempotency_key(lead_id, [t["code"] for t in lead["triggers"]], int(lead["score"]))
         if self._already_sent(key):
@@ -312,6 +326,104 @@ def _card_data(lead: dict[str, Any]) -> CardData:
         pipeline_version=str(lead["pipeline_version"]),
         observed_at=now,
     )
+
+
+@dataclass
+class DigestReport:
+    """What one digest run did. `pending` is what it found before any limit applied."""
+
+    pending: int = 0
+    sent: int = 0
+    pages: int = 0
+    skipped: str = ""
+    error: str = ""
+
+
+async def send_digest(
+    dispatcher: Dispatcher, *, limit: int = 40, dry_run: bool = False
+) -> DigestReport:
+    """Post the day's Tier C backlog as paginated digest rows.
+
+    The per-lead stage refuses anything below Tier B, so this is the only path a Tier C
+    lead has to Discord. It reads the backlog rather than a queue: "leads at a digest
+    tier whose current idempotency key is not in `dispatch_log`" is a reconciliation,
+    which means a missed timer, a crash, or a webhook that was not configured yesterday
+    all heal on the next run instead of losing a day of leads.
+
+    Each page is POSTed and then logged, in that order, for the same reason the
+    per-lead path does it: the write must not be able to claim a card was sent when the
+    POST failed. A crash between the two re-sends one page, and `INSERT OR IGNORE` on
+    the idempotency key keeps that from double-logging.
+    """
+    report = DigestReport()
+    rows = dispatcher.store.conn.execute(
+        "SELECT lead_id FROM leads WHERE tier NOT IN ('REJECT','A','B') "
+        "ORDER BY score DESC, last_updated_at DESC"
+    ).fetchall()
+
+    cards: list[tuple[str, str, int, CardData]] = []
+    for row in rows:
+        lead = dispatcher.read_lead(str(row["lead_id"]))
+        if lead is None:
+            continue
+        key = idempotency_key(
+            str(lead["lead_id"]), [t["code"] for t in lead["triggers"]], int(lead["score"])
+        )
+        if dispatcher._already_sent(key):
+            continue
+        cards.append((str(lead["lead_id"]), key, int(lead["score"]), _card_data(lead)))
+
+    report.pending = len(cards)
+    if not cards:
+        report.skipped = "nothing new below Tier B"
+        return report
+
+    cards = cards[:limit]
+    url = dispatcher.webhook_for("digest")
+    if not url:
+        report.skipped = "no webhook configured"
+        return report
+    if dry_run:
+        report.pages = len(digest_pages([card for _, _, _, card in cards]))
+        return report
+
+    index = 0
+    for page in digest_pages([card for _, _, _, card in cards]):
+        batch = cards[index : index + len(page)]
+        index += len(page)
+        result = await dispatcher.webhook.post(
+            url, {"embeds": page, "username": "CindraLeads digest"}
+        )
+        if not result.ok:
+            # Stop, do not continue to the next page. The pages already sent are
+            # logged and will not repeat; the rest stay pending and go out tomorrow,
+            # or on the next run. Pressing on through a 429 would make it worse.
+            report.error = result.error or "digest post failed"
+            log.warning("digest_page_failed", page=report.pages + 1, error=report.error)
+            break
+
+        with dispatcher.store.tx() as conn:
+            for lead_id, key, score, _ in batch:
+                conn.execute(
+                    "INSERT OR IGNORE INTO dispatch_log (dispatch_id, lead_id, channel, tier, "
+                    "score, idempotency_key, discord_message_id, dispatched_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        uuid.uuid4().hex,
+                        lead_id,
+                        "digest",
+                        "C",
+                        score,
+                        key,
+                        result.message_id,
+                        to_iso(utcnow()),
+                    ),
+                )
+        report.pages += 1
+        report.sent += len(batch)
+
+    log.info("digest_sent", sent=report.sent, pages=report.pages, pending=report.pending)
+    return report
 
 
 def digest_pages(cards: list[CardData]) -> list[list[dict[str, Any]]]:

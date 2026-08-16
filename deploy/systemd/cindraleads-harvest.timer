@@ -1,0 +1,19 @@
+[Unit]
+Description=Plan CindraLeads discovery queries hourly
+Documentation=file:///home/pi/cindraleads/docs/RUNBOOK.md
+
+[Timer]
+# Hourly, anchored to boot rather than the clock. Discovery is rationed by cache TTL
+# and the SerpAPI token bucket, not by this interval -- most firings will plan nothing
+# because every query is still inside its cache window, and that is the intended shape:
+# the timer's job is to be there the moment a window reopens, which a human running it
+# by hand in the evening never is.
+OnBootSec=5min
+OnUnitActiveSec=1h
+# A missed hour is not made up. Discovery is a sample of a continuously moving world,
+# so replaying yesterday's skipped runs at boot would spend credits on stale queries.
+Persistent=false
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

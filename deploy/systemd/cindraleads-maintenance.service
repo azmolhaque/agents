@@ -11,6 +11,11 @@ Group=pi
 WorkingDirectory=/home/pi/cindraleads
 EnvironmentFile=/home/pi/cindraleads/.env
 ExecStart=/home/pi/cindraleads/.venv/bin/cindra maintain
+# Backup after the purge, so the snapshot is of the database we intend to keep rather
+# than of six months of rows that were about to be deleted. `-` prefix: a backup
+# failure must not mark the maintenance run failed, because the retire/decay/purge
+# work already committed and re-running it is not what a full disk needs.
+ExecStart=-/home/pi/cindraleads/scripts/backup.sh
 
 # The pass is a handful of SQLite statements and at most `resample_max` fetches.
 # If it has not finished in ten minutes something is wedged, and a maintenance job

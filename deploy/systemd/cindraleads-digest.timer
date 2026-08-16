@@ -1,0 +1,15 @@
+[Unit]
+Description=Post the CindraLeads Tier C digest daily
+Documentation=file:///home/pi/cindraleads/docs/RUNBOOK.md
+
+[Timer]
+# 08:30 local, before the working day. Tier A and B do not wait for this -- they go out
+# the moment they score. This is the backlog you read over coffee.
+OnCalendar=*-*-* 08:30:00
+# A missed morning still gets its digest: `send_digest` reconciles against dispatch_log
+# rather than draining a queue, so a late run sends exactly what was never sent.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
