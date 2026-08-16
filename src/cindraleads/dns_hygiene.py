@@ -29,7 +29,13 @@ from typing import Any
 from cindraleads.logging import get_logger
 from cindraleads.models import DnsHygiene, utcnow
 
-__all__ = ["DnsProbe", "dnspython_available", "hygiene_gaps", "lookup_hygiene"]
+__all__ = [
+    "DnsProbe",
+    "dnspython_available",
+    "hygiene_gaps",
+    "lookup_hygiene",
+    "mail_auth_weakness",
+]
 
 log = get_logger("cindraleads.dns")
 
@@ -139,21 +145,46 @@ def _lookup_sync(domain: str, probe: DnsProbe, security_txt: bool | None) -> Dns
     )
 
 
-def hygiene_gaps(hygiene: DnsHygiene) -> list[str]:
-    """Human-readable gaps, or [] .
+def mail_auth_weakness(hygiene: DnsHygiene) -> list[str]:
+    """Gaps strong enough to justify a trigger. Usually none.
 
-    Only *published* facts count. A field we could not read contributes nothing —
-    reporting "no SPF" because the lookup timed out would put a false claim on a lead
-    card, and the card is a document a human may act on.
+    **This is deliberately narrower than `hygiene_gaps`.** The first real run fired
+    T8_HYGIENE_GAP on 85 of 93 companies, because absent DNSSEC and absent
+    `security.txt` were counted as gaps -- and both are the *default* state of the
+    internet. Global DNSSEC adoption is a few percent and `security.txt` is rarer
+    still, so a trigger that fires on their absence fires on everybody and ranks
+    nobody. It became the headline on every card and buried the AI-launch signal that
+    was the actual reason to call.
+
+    What survives is mail authentication: a domain that receives mail and publishes no
+    SPF, no DMARC, or DMARC in monitor-only mode. Those are specific, unusual enough to
+    mean something, and directly relevant to what we would offer to look at.
+
+    Only *published* facts count. A field we could not read contributes nothing --
+    reporting "no SPF" after a resolver timeout would put a false claim on a card.
     """
-    gaps: list[str] = []
-    if hygiene.spf is None and hygiene.mx_present:
-        # Only meaningful for a domain that actually receives mail.
-        gaps.append("no SPF record published")
-    if hygiene.dmarc_policy is None and hygiene.mx_present:
-        gaps.append("no DMARC record published")
+    if not hygiene.mx_present:
+        # A domain that receives no mail has no reason to publish any of this.
+        return []
+
+    weak: list[str] = []
+    if hygiene.spf is None:
+        weak.append("no SPF record published")
+    if hygiene.dmarc_policy is None:
+        weak.append("no DMARC record published")
     elif hygiene.dmarc_policy == "none":
-        gaps.append("DMARC p=none (monitor only)")
+        weak.append("DMARC p=none (monitor only)")
+    return weak
+
+
+def hygiene_gaps(hygiene: DnsHygiene) -> list[str]:
+    """Everything worth *showing*, which is more than is worth triggering on.
+
+    DNSSEC and `security.txt` belong here: they are useful context on a card and a
+    fair thing to mention in conversation. They are not evidence that this company is
+    worth calling ahead of any other, which is what a trigger claims.
+    """
+    gaps = mail_auth_weakness(hygiene)
     if hygiene.dnssec is False:
         gaps.append("DNSSEC not enabled")
     if hygiene.security_txt is False:

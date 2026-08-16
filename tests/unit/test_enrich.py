@@ -439,3 +439,70 @@ def test_a_stale_enrichment_is_redone(rig):
     with store.tx() as conn:
         conn.execute("UPDATE companies SET enriched_at = ?", ("2020-01-01T00:00:00Z",))
     assert enqueue_unenriched(store, JobQueue(store)) == 1
+
+
+# ------------------------------------------------- what T8 is allowed to claim
+
+
+def test_the_internet_default_is_not_a_trigger():
+    """Measured on the first real run: T8_HYGIENE_GAP fired on 85 of 93 companies.
+
+    Absent DNSSEC and absent security.txt were being counted as gaps, and both are the
+    *default* state of the internet -- global DNSSEC adoption is a few percent. A
+    trigger that fires on everybody ranks nobody, and this one became the headline on
+    every card, burying the AI-launch signal that was the actual reason to call.
+    """
+    from cindraleads.dns_hygiene import mail_auth_weakness
+
+    typical = DnsHygiene(
+        mx_present=True,
+        spf="v=spf1 include:_spf.google.com ~all",
+        dmarc_policy="reject",
+        dnssec=False,  # true of most of the internet
+        security_txt=False,  # true of almost all of it
+    )
+    assert mail_auth_weakness(typical) == [], "a normal domain must not trigger"
+    assert hygiene_gaps(typical), "but it is still worth showing on the card"
+
+
+@pytest.mark.parametrize(
+    ("hygiene", "expected"),
+    [
+        (DnsHygiene(mx_present=True, dmarc_policy="reject"), ["no SPF record published"]),
+        (DnsHygiene(mx_present=True, spf="v=spf1 ~all"), ["no DMARC record published"]),
+        (
+            DnsHygiene(mx_present=True, spf="v=spf1 ~all", dmarc_policy="none"),
+            ["DMARC p=none (monitor only)"],
+        ),
+    ],
+)
+def test_real_mail_auth_weakness_still_triggers(hygiene, expected):
+    """The specific, unusual, actionable cases survive the narrowing."""
+    from cindraleads.dns_hygiene import mail_auth_weakness
+
+    assert mail_auth_weakness(hygiene) == expected
+
+
+def test_a_domain_with_no_mail_never_triggers():
+    from cindraleads.dns_hygiene import mail_auth_weakness
+
+    assert mail_auth_weakness(DnsHygiene(mx_present=False, dnssec=False)) == []
+
+
+async def test_a_typical_domain_gets_no_hygiene_trigger(rig):
+    """The end-to-end version: normal mail setup, no DNSSEC, no security.txt."""
+    build, store = rig
+    enricher = build(
+        probe=StubProbe(
+            {
+                ("acme.io", "MX"): ["10 mx.acme.io."],
+                ("acme.io", "TXT"): ["v=spf1 ~all"],
+                ("_dmarc.acme.io", "TXT"): ["v=DMARC1; p=quarantine"],
+            }
+        )
+    )
+    await enricher.run(job())
+    assert (
+        store.conn.execute("SELECT * FROM triggers WHERE code='T8_HYGIENE_GAP'").fetchone() is None
+    )
+    await enricher.egress.aclose()

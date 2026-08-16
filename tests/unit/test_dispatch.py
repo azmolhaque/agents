@@ -573,3 +573,30 @@ def test_a_lead_that_already_has_an_angle_is_not_re_queued(rig):
     with store.tx() as conn:
         conn.execute("UPDATE leads SET outreach_angle = ''")
     assert not _has_angle(store.conn, "lead1")
+
+
+def test_the_card_leads_with_the_heaviest_trigger():
+    """Measured on the first real run: every card led with "DNS hygiene".
+
+    The dispatcher ordered triggers by confidence, and T8_HYGIENE_GAP is written at
+    0.8 (a DNS record read directly) while T1_AI_SHIP is written at 0.7 (a model
+    reading a page). Weight 12 therefore outranked weight 30, and the digest row --
+    which shows only the first trigger -- buried the reason to call.
+    """
+    from cindraleads.agents.dispatcher import TRIGGER_ORDER
+
+    assert TRIGGER_ORDER, "trigger weights failed to load; the card cannot rank"
+    assert TRIGGER_ORDER["T1_AI_SHIP"] > TRIGGER_ORDER["T8_HYGIENE_GAP"]
+
+    data = card(
+        triggers=(("T8_HYGIENE_GAP", 0.8, "0d ago"), ("T1_AI_SHIP", 0.7, "11d ago")),
+        tier="C",
+    )
+    # digest_row renders only the first, so the caller's order is what reaches Discord.
+    assert "T8_HYGIENE_GAP" in digest_row(data)["description"]
+
+    ordered = card(
+        triggers=(("T1_AI_SHIP", 0.7, "11d ago"), ("T8_HYGIENE_GAP", 0.8, "0d ago")),
+        tier="C",
+    )
+    assert "T1_AI_SHIP" in digest_row(ordered)["description"]

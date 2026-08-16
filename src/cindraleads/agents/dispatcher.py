@@ -50,6 +50,22 @@ DISPATCH_KIND = "dispatch.lead"
 TIER_CHANNEL: dict[str, str] = {"A": "hot", "B": "warm", "C": "digest"}
 
 
+# Presentation order for the card, from the taxonomy weights in `scoring.yaml`. Loaded
+# once at import: a card is built per dispatch and re-reading YAML each time would be a
+# disk read in the hot path. Falls back to a flat order if the config is unreadable,
+# because a missing weight must not stop a lead going out.
+def _trigger_order() -> dict[str, int]:
+    try:
+        from cindraleads.scoring import ScoringConfig
+
+        return {code: int(spec.weight) for code, spec in ScoringConfig.load().triggers.items()}
+    except Exception:
+        return {}
+
+
+TRIGGER_ORDER: dict[str, int] = _trigger_order()
+
+
 def idempotency_key(lead_id: str, trigger_codes: list[str], score: int) -> str:
     """`(lead_id, sorted(triggers), score // 10)`, hashed.
 
@@ -233,8 +249,7 @@ class Dispatcher:
             dict(r)
             for r in self.store.conn.execute(
                 "SELECT trigger_id, code, confidence, observed_at FROM triggers "
-                "WHERE canonical_domain = ? AND active = 1 AND decays_at > ? "
-                "ORDER BY confidence DESC",
+                "WHERE canonical_domain = ? AND active = 1 AND decays_at > ?",
                 (row["canonical_domain"], to_iso(utcnow())),
             ).fetchall()
         ]
@@ -249,6 +264,13 @@ class Dispatcher:
                     (trigger["trigger_id"],),
                 ).fetchall()
             )
+        # Ordered by taxonomy weight, not confidence. The digest row shows only the
+        # first trigger, and confidence order put T8_HYGIENE_GAP (weight 12, written
+        # at 0.8 because a DNS record is read directly) ahead of T1_AI_SHIP (weight
+        # 30, written at 0.7 because a model read it off a page). Every card in the
+        # first real run therefore led with "DNS hygiene" and buried the AI launch
+        # that was the actual reason to call.
+        triggers.sort(key=lambda t: -TRIGGER_ORDER.get(str(t["code"]), 0))
         return {**dict(row), "triggers": triggers, "evidence": evidence}
 
 

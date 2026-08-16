@@ -35,7 +35,7 @@ import httpx
 
 from cindraleads.config import Settings, settings
 from cindraleads.contacts import DiscoveredContact, extract_contacts, persona_for
-from cindraleads.dns_hygiene import DnsProbe, hygiene_gaps, lookup_hygiene
+from cindraleads.dns_hygiene import DnsProbe, hygiene_gaps, lookup_hygiene, mail_auth_weakness
 from cindraleads.errors import CindraError
 from cindraleads.logging import get_logger
 from cindraleads.models import DnsHygiene, Job, StageResult, to_iso, utcnow
@@ -348,7 +348,9 @@ class Enricher:
             written.append(_trigger(conn, domain, "T7_SURFACE_SPRAWL", evidence, url))
 
         if outcome.hygiene is not None:
-            gaps = hygiene_gaps(outcome.hygiene)
+            # The narrow set. `hygiene_gaps` is what the card shows; this is what is
+            # strong enough to claim as a reason to call.
+            gaps = mail_auth_weakness(outcome.hygiene)
             if gaps:
                 # The evidence is the published record itself. Phrased as what they
                 # publish, never as something we found wrong with them -- this string
