@@ -121,7 +121,7 @@ def assess(
     report = HealthReport(checked_at=at.isoformat())
     report.metrics = snapshot(store, now=at)
 
-    _check_heartbeats(report, store, now=at)
+    _check_heartbeats(report, store, now=at, uptime_seconds=uptime_seconds())
     _check_queue(report)
     _check_disk(report, disk_path or cfg.resolve(cfg.db_path).parent)
     _check_thermal(report, thermal)
@@ -129,7 +129,22 @@ def assess(
     return report
 
 
-def _check_heartbeats(report: HealthReport, store: Store, *, now: datetime) -> None:
+def uptime_seconds() -> float | None:
+    """Seconds since boot, or None where that is not knowable.
+
+    None on anything without `/proc/uptime`, which the caller must treat as "no
+    information" rather than as zero -- reading a missing file as a fresh boot would
+    suppress every staleness alarm on the one platform that could not prove otherwise.
+    """
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _check_heartbeats(
+    report: HealthReport, store: Store, *, now: datetime, uptime_seconds: float | None = None
+) -> None:
     for unit, max_silence_hours in HEARTBEAT_UNITS.items():
         beat = heartbeats(store).get(unit)
         if beat is None:
@@ -146,7 +161,29 @@ def _check_heartbeats(report: HealthReport, store: Store, *, now: datetime) -> N
             continue
 
         age_hours = beat.age_seconds(now=now) / 3600
-        if age_hours > max_silence_hours:
+        # A heartbeat cannot be fresher than the boot. If the machine has been up for
+        # less than this unit's silence budget, an old heartbeat says the box was off,
+        # not that the timer is broken -- and the two need completely different
+        # responses. Reporting critical here would fire on every single reboot and
+        # train whoever is reading to ignore the endpoint.
+        #
+        # The window is the unit's own budget rather than a fixed grace period, so it
+        # closes exactly when the timer has had a fair chance to fire: once uptime
+        # exceeds the budget and the heartbeat is still old, the timer really is dead.
+        booted_recently = uptime_seconds is not None and uptime_seconds < max_silence_hours * 3600
+        if age_hours > max_silence_hours and booted_recently:
+            up_hours = (uptime_seconds or 0) / 3600
+            report.add(
+                Check(
+                    f"heartbeat:{unit}",
+                    "degraded",
+                    f"{unit} last ran {age_hours:.1f}h ago, but the host has only been up "
+                    f"{up_hours:.1f}h -- it was powered off, and the timer has not "
+                    f"fired yet",
+                    value=age_hours,
+                )
+            )
+        elif age_hours > max_silence_hours:
             report.add(
                 Check(
                     f"heartbeat:{unit}",

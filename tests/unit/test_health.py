@@ -112,7 +112,12 @@ def test_a_never_run_unit_is_flagged_not_silent(store: Any) -> None:
     assert report.status == "degraded"
 
 
-def test_a_stale_unit_is_critical(store: Any) -> None:
+def test_a_stale_unit_is_critical(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Uptime is pinned, not inherited from the test host. Staleness is now judged
+    # against how long the machine has been up, so leaving this to the real
+    # `/proc/uptime` would make the test pass or fail depending on when the box last
+    # rebooted -- which is exactly the ambiguity the check exists to remove.
+    monkeypatch.setattr("cindraleads.health.uptime_seconds", lambda: 90 * 24 * 3600.0)
     _all_units_fresh(store)
     now = utcnow()
     stale = now + timedelta(hours=HEARTBEAT_UNITS["harvest"] + 1)
@@ -122,6 +127,70 @@ def test_a_stale_unit_is_critical(store: Any) -> None:
 
     assert check.status == "critical"
     assert report.status == "critical"
+
+
+def test_a_reboot_does_not_look_like_a_dead_timer(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Pi is not always on, and the first `/healthz` after a weekend off reported
+    `critical` on two timers that were queued and about to fire.
+
+    A heartbeat cannot be fresher than the boot: if the host has been up for less than
+    the unit's silence budget, an old heartbeat says the box was off, not that the
+    timer is broken. Firing critical on every reboot is how an endpoint gets ignored.
+    """
+    _all_units_fresh(store)
+    now = utcnow()
+    later = now + timedelta(hours=43)
+
+    monkeypatch.setattr("cindraleads.health.uptime_seconds", lambda: 4 * 60.0)
+    report = assess(store, now=later, thermal=_Governor())
+
+    harvest = next(c for c in report.checks if c.name == "heartbeat:harvest")
+    assert harvest.status == "degraded"
+    assert "powered off" in harvest.detail
+    assert report.status != "critical"
+
+
+def test_a_dead_timer_on_a_long_running_host_is_still_critical(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half. Once uptime exceeds the budget the timer has had a fair chance,
+    and a stale heartbeat means it is genuinely not firing."""
+    _all_units_fresh(store)
+    later = utcnow() + timedelta(hours=43)
+
+    monkeypatch.setattr("cindraleads.health.uptime_seconds", lambda: 40 * 3600.0)
+    report = assess(store, now=later, thermal=_Governor())
+
+    harvest = next(c for c in report.checks if c.name == "heartbeat:harvest")
+    assert harvest.status == "critical"
+    assert report.status == "critical"
+
+
+def test_unknown_uptime_never_suppresses_an_alarm(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/proc/uptime` is missing on plenty of platforms. Reading that as a fresh boot
+    would silence every staleness alarm on the one host that could not prove it was
+    running -- so None means "no information", not "just booted"."""
+    _all_units_fresh(store)
+    later = utcnow() + timedelta(hours=43)
+
+    monkeypatch.setattr("cindraleads.health.uptime_seconds", lambda: None)
+    report = assess(store, now=later, thermal=_Governor())
+
+    assert report.status == "critical"
+
+
+def test_uptime_reads_a_real_number_on_linux() -> None:
+    """Pinned because the whole downgrade hinges on this returning something."""
+    from cindraleads.health import uptime_seconds
+
+    value = uptime_seconds()
+    if value is None:
+        pytest.skip("no /proc/uptime on this platform")
+    assert value > 0
 
 
 def test_a_healthy_system_is_ok(store: Any) -> None:
