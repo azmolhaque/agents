@@ -53,7 +53,10 @@ __all__ = [
 #   1: initial
 #   2: `single_source` asks whether the lead rests on one source, across every
 #      trigger, rather than whether its top trigger does
-ARITHMETIC_VERSION = 2
+#   3: `no_contact` removed -- it charged the same fact as the `reachability`
+#      component, so a lead with no contact lost up to 15 points there and another 25
+#      here, a 40-point swing on a 100-point scale with a Tier C floor of 40
+ARITHMETIC_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -177,12 +180,6 @@ class ScoreInput:
     has_named_contact: bool = False
     is_anti_icp: bool = False
     is_suppressed: bool = False
-    # Whether enrichment has actually run for this company. The `no_contact`
-    # penalty means "we looked and found nobody", which is a fact about the
-    # prospect. Before Phase 4 exists nobody has looked, and charging -25 for our
-    # own missing stage put every lead below the REJECT threshold regardless of
-    # how good it was -- measured 2026-08-15: a fresh T1_AI_SHIP scored 0.
-    enrichment_ran: bool = False
     primary_sectors: tuple[str, ...] = ()
     local_tlds: tuple[str, ...] = ()
 
@@ -285,12 +282,6 @@ def _penalties(inp: ScoreInput, cfg: ScoringConfig, now: datetime) -> dict[str, 
         applied["anti_icp"] = cfg.penalties.get("anti_icp", 0)
     if inp.is_suppressed:
         applied["suppressed"] = cfg.penalties.get("suppressed", 0)
-    if (
-        inp.enrichment_ran
-        and not inp.has_named_contact
-        and inp.email_status in {"none", "unverified"}
-    ):
-        applied["no_contact"] = cfg.penalties.get("no_contact", 0)
     if inp.triggers and all(_age_days(t.observed_at, now) > 180 for t in inp.triggers):
         applied["stale_evidence"] = cfg.penalties.get("stale_evidence", 0)
     if inp.country and inp.country.upper() in cfg.sanctioned_countries:

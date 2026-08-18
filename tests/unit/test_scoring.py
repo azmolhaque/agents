@@ -358,10 +358,8 @@ def test_a_reachability_map_with_an_unknown_key_will_not_load(tmp_path: Path):
 def test_a_contactable_lead_outscores_an_unreachable_one(cfg: ScoringConfig):
     """Reachability is 15% of the score, and answers "who do I talk to?" -- half the
     question the whole product exists to answer."""
-    unknown = score(make(email_status="none", enrichment_ran=True), cfg)
-    reachable = score(
-        make(email_status="verified", has_named_contact=True, enrichment_ran=True), cfg
-    )
+    unknown = score(make(email_status="none"), cfg)
+    reachable = score(make(email_status="verified", has_named_contact=True), cfg)
     assert reachable.score > unknown.score
     assert reachable.breakdown["reachability"] == 100.0
 

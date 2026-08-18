@@ -56,7 +56,14 @@ components:
 penalties:
   anti_icp: -100 # enterprise, competitor, government/CNI
   suppressed: -100 # on the suppression list, or told us no
-  no_contact: -25 # no named contact and no role address
+  # no_contact removed 2026-08-18. It asked the same question as the `reachability`
+  # component above -- "is there a named human with a verified address" -- once as a
+  # 0-100 gradient and again as a cliff. A lead with no contact therefore lost up to 15
+  # points from the component and another 25 here: 40 points of a 100-point scale for
+  # one fact, against a Tier C floor of 40, and a wider spread than the `trigger`
+  # component varies across the whole corpus. The gradient is the better half: it
+  # already separates verified from role_account from nothing. Do not re-add without
+  # also lowering the reachability weight.
   stale_evidence: -20 # every evidence URL older than 180 days
   single_source: -15 # the top trigger rests on one URL from one source
   sanctioned_country: -10

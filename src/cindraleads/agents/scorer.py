@@ -356,10 +356,6 @@ class Scorer:
             email_status=str(facts["contacts"][0]["email_status"]) if facts["contacts"] else "none",
             has_named_contact=any(c.get("full_name") for c in facts["contacts"]),
             hygiene_gap=bool(facts["hygiene_gaps"]),
-            # Gates the `no_contact` penalty. Charging a lead for a missing contact
-            # before anything has looked for one punishes our own pipeline, not the
-            # prospect -- measured 2026-08-15, it put every lead below REJECT.
-            enrichment_ran=facts["enriched_at"] is not None,
             primary_sectors=self._sectors,
             local_tlds=self._local_tlds,
         )
