@@ -24,6 +24,7 @@ thing the project refuses to produce.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import sqlite3
 import uuid
 from collections.abc import Awaitable, Callable
@@ -65,8 +66,11 @@ SPRAWL_TOTAL = 25
 SPRAWL_GROWTH = 8
 SPRAWL_WINDOW_DAYS = 30
 
-# Pages that are self-published, standard, and where a business contact actually lives.
-CONTACT_PATHS = ("/", "/about", "/contact", "/team", "/.well-known/security.txt")
+# Pages that may carry a human contact. security.txt is deliberately not among them:
+# it is fetched separately because its answer is a published *fact* decided by content,
+# not another page of prose to scan for an email address.
+CONTENT_PATHS = ("/", "/about", "/contact", "/team")
+SECURITY_TXT_PATH = "/.well-known/security.txt"
 
 TRIGGER_DECAY_DAYS = {"T7_SURFACE_SPRAWL": 60, "T8_HYGIENE_GAP": 60}
 
@@ -204,22 +208,52 @@ class Enricher:
             return "", None
 
         collected: list[str] = []
-        security_txt: bool | None = None
-        for path in CONTACT_PATHS:
-            url = f"https://{domain}{path}"
+        seen: set[str] = set()
+
+        for path in CONTENT_PATHS:
             try:
-                result = await self.egress.fetch("company_site", url)
+                result = await self.egress.fetch("company_site", f"https://{domain}{path}")
             except FetchDenied:
-                break  # out of budget for today; keep what we have
+                # Out of budget for today. Keep what we have and skip security.txt
+                # too -- there is nothing left to spend on it.
+                return "\n".join(collected), None
             except (httpx.HTTPError, OSError, CindraError):
-                if path == "/.well-known/security.txt":
-                    # A 404 here is a real, publishable fact about the company.
-                    security_txt = False
                 continue
-            if path == "/.well-known/security.txt":
-                security_txt = True
+
+            # A single-page app serves byte-identical HTML for /about, /contact and
+            # /team. Reading it three more times teaches nothing and costs three of
+            # the six requests a day this domain gets -- budget that a real
+            # prospect's distinct pages need. One repeat is enough to know.
+            digest = hashlib.sha256(result.body.encode("utf-8", "ignore")).hexdigest()
+            if digest in seen:
+                log.debug("site_paths_mirrored", canonical_domain=domain, at=path)
+                break
+            seen.add(digest)
             collected.append(extract_text(result.body, max_chars=8000))
-        return "\n".join(collected), security_txt
+
+        return "\n".join(collected), await self._security_txt(domain)
+
+    async def _security_txt(self, domain: str) -> bool | None:
+        """Three-valued, and decided by content rather than by status code.
+
+        **200 is not evidence that a security.txt exists.** An SPA answers 200 with
+        its HTML shell for every route, so trusting the status recorded "publishes a
+        security.txt" about companies publishing nothing of the kind -- a false fact
+        that reaches `hygiene_gaps` and can be printed on a card.
+
+        True only for something that parses as one, False only for a definite 404,
+        and None for everything else: an app shell, a 403, an exhausted budget. Same
+        rule as `evidence.reachable` -- absent and unknown are different answers.
+        """
+        try:
+            result = await self.egress.fetch("company_site", f"https://{domain}{SECURITY_TXT_PATH}")
+        except FetchDenied:
+            return None
+        except (httpx.HTTPError, OSError, CindraError) as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            # A 404 is a real, publishable fact. A 403 is "you may not see it".
+            return False if status == 404 else None
+        return True if _is_security_txt(result.body) else None
 
     async def _boards(self, board_token: str) -> tuple[tuple[str, ...], str | None]:
         """Whichever ATS the company uses. This is what makes decision 7 work.
@@ -446,3 +480,17 @@ def enqueue_unenriched(store: Store, queue: Any, *, stale_after_days: int = 30) 
             if existing is None:
                 queued += 1
     return queued
+
+
+def _is_security_txt(body: str) -> bool:
+    """Does this actually parse as RFC 9116, or is it an app shell?
+
+    `Contact:` is the one field RFC 9116 makes mandatory, so its absence is decisive.
+    The HTML check is not redundant: a single-page app's shell could contain the word
+    "contact:" in ordinary copy, and that must not be read as a published policy.
+    """
+    head = body.lstrip()[:2000].lower()
+    if head.startswith("<!doctype") or head.startswith("<html") or "<body" in head:
+        return False
+    # RFC 9116 field names are case-insensitive, and real files write `Contact:`.
+    return any(line.strip().lower().startswith("contact:") for line in body.splitlines()[:50])

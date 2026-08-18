@@ -506,3 +506,99 @@ async def test_a_typical_domain_gets_no_hygiene_trigger(rig):
         store.conn.execute("SELECT * FROM triggers WHERE code='T8_HYGIENE_GAP'").fetchone() is None
     )
     await enricher.egress.aclose()
+
+
+# ------------------------------------------------- single-page apps lie about paths
+
+
+def _spa_rig(tmp_path: Path, store, registry, shell: str):
+    """A site that answers every route with the same HTML shell.
+
+    Not hypothetical: partisanboost.com returned an identical 32,091 bytes for `/`,
+    `/about`, `/contact`, `/team` and `/.well-known/security.txt` on the first real run.
+    """
+    fetched: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "crt.sh" in url or "rdap" in url:
+            return httpx.Response(404, text="{}")
+        if "greenhouse" in url or "lever" in url or "ashby" in url:
+            return httpx.Response(404, text="{}")
+        fetched.append(request.url.path)
+        return httpx.Response(200, text=shell)
+
+    egress = EgressClient(
+        store=store,
+        registry=registry,
+        cache=DocumentCache(store, cache_dir=tmp_path / "spa-cache"),
+        breakers=SourceBreakers(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    return Enricher(store=store, egress=egress, enabled_sources=frozenset({"site"})), fetched
+
+
+async def test_an_spa_does_not_burn_the_domain_budget_on_mirrors(rig, tmp_path: Path):
+    """Six requests a day per domain. Spending four of them re-reading one page is
+    budget a real prospect's distinct pages need."""
+    build, store = rig
+    enricher = build()
+    shell = "<html><body><div id=root>Loading…</div></body></html>"
+    spa, fetched = _spa_rig(tmp_path, store, enricher.egress.registry, shell)
+
+    await spa.prepare(job())
+
+    content_paths = [p for p in fetched if not p.startswith("/.well-known")]
+    assert len(content_paths) == 2, (
+        f"stopped after one repeat, got {content_paths} -- an SPA must not cost four requests"
+    )
+
+
+async def test_an_spa_is_not_recorded_as_publishing_a_security_txt(rig, tmp_path: Path):
+    """The correctness half. A 200 carrying an HTML shell was recorded as
+    `security_txt = True`, putting a false published-policy claim about the company
+    into `hygiene_gaps` -- where it can reach a lead card."""
+    build, store = rig
+    enricher = build()
+    shell = "<!doctype html><html><body>app</body></html>"
+    spa, _ = _spa_rig(tmp_path, store, enricher.egress.registry, shell)
+
+    outcome = await spa.prepare(job())
+
+    assert outcome.hygiene is None or outcome.hygiene.security_txt is not True
+
+
+async def test_a_real_security_txt_is_still_recognised(rig, tmp_path: Path):
+    build, store = rig
+    enricher = build()
+    body = "Contact: mailto:security@acme.io\nExpires: 2027-01-01T00:00:00.000Z\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/.well-known"):
+            return httpx.Response(200, text=body)
+        return httpx.Response(200, text=f"<html><body>page {request.url.path}</body></html>")
+
+    egress = EgressClient(
+        store=store,
+        registry=enricher.egress.registry,
+        cache=DocumentCache(store, cache_dir=tmp_path / "sec-cache"),
+        breakers=SourceBreakers(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    site = Enricher(store=store, egress=egress, enabled_sources=frozenset({"site"}))
+
+    _text, security_txt = await site._site("acme.io")
+    assert security_txt is True
+
+
+def test_the_security_txt_validator_tells_a_policy_from_a_page():
+    from cindraleads.agents.enricher import _is_security_txt
+
+    assert _is_security_txt("Contact: mailto:s@acme.io\nExpires: 2027-01-01T00:00:00Z\n")
+    assert _is_security_txt("# comment\nContact: https://acme.io/report\n")
+
+    assert not _is_security_txt("<!doctype html><html><body>Contact: us!</body></html>")
+    assert not _is_security_txt("<html><head></head><body>contact: sales</body></html>")
+    # No Contact field at all: RFC 9116 makes it mandatory, so absence is decisive.
+    assert not _is_security_txt("Expires: 2027-01-01T00:00:00Z\n")
+    assert not _is_security_txt("")
