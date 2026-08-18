@@ -232,3 +232,84 @@ def test_the_report_writes_nothing(store: Any) -> None:
     }
     assert after == before
     assert store.conn.execute("SELECT score, tier FROM leads").fetchone()[0] == 45
+
+
+# --------------------------------------------------- evidence breadth vs the rule
+
+
+def _trigger_with_evidence(store: Any, domain: str, code: str, sources: list[str]) -> None:
+    """One live trigger citing one URL per named source."""
+    now = to_iso(utcnow())
+    trigger_id = uuid.uuid4().hex[:16]
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at, active) VALUES (?,?,?,0.7,?,'2099-01-01T00:00:00+00:00',1)",
+            (trigger_id, domain, code, now),
+        )
+        for source in sources:
+            evidence_id = uuid.uuid4().hex[:16]
+            conn.execute(
+                "INSERT INTO evidence (evidence_id, url, source_id, snippet, observed_at, "
+                "content_sha256) VALUES (?,?,?,'x',?,'')",
+                (evidence_id, f"https://{domain}/{source}", source, now),
+            )
+            conn.execute(
+                "INSERT INTO trigger_evidence (trigger_id, evidence_id) VALUES (?,?)",
+                (trigger_id, evidence_id),
+            )
+
+
+def test_breadth_counts_sources_across_every_trigger(store: Any) -> None:
+    """The gap the report exists to expose: `single_source` inspects only the top
+    trigger, so a lead resting on three independent sources still carries it."""
+    _lead(store, "acme.io", score=0, tier="REJECT", **_strong(), single_source=-15.0)
+    _trigger_with_evidence(store, "acme.io", "T1_AI_SHIP", ["company_site"])
+    _trigger_with_evidence(store, "acme.io", "T8_HYGIENE_GAP", ["dns_public"])
+    _trigger_with_evidence(store, "acme.io", "T2_FUNDING", ["serpapi_news"])
+
+    report = diagnose(store)
+
+    assert report.corroborated == 1
+    assert report.penalised_but_corroborated == 1
+    assert report.promoted_if_corroboration_counted == 1
+
+
+def test_a_genuinely_single_sourced_lead_is_not_exonerated(store: Any) -> None:
+    """Three pages of a company's own site are three URLs and one party's account of
+    itself. Counting URLs instead of sources would call that corroboration."""
+    _lead(store, "acme.io", score=0, tier="REJECT", **_strong(), single_source=-15.0)
+    _trigger_with_evidence(store, "acme.io", "T1_AI_SHIP", ["company_site"])
+    _trigger_with_evidence(store, "acme.io", "T4_HIRING_AI_ONLY", ["company_site"])
+
+    report = diagnose(store)
+
+    assert report.corroborated == 0
+    assert report.penalised_but_corroborated == 0
+
+
+def test_a_decayed_trigger_does_not_count_as_corroboration(store: Any) -> None:
+    """Breadth has to mean live evidence. A retired trigger still in the table would
+    otherwise make a thin lead look independently confirmed."""
+    _lead(store, "acme.io", score=0, tier="REJECT", **_strong(), single_source=-15.0)
+    _trigger_with_evidence(store, "acme.io", "T1_AI_SHIP", ["company_site"])
+    _trigger_with_evidence(store, "acme.io", "T8_HYGIENE_GAP", ["dns_public"])
+    with store.tx() as conn:
+        conn.execute("UPDATE triggers SET active = 0 WHERE code = 'T8_HYGIENE_GAP'")
+
+    report = diagnose(store)
+
+    assert report.corroborated == 0
+
+
+def test_breadth_is_reported_never_applied(store: Any) -> None:
+    """It informs a rule change; it must not be one. The stored score is untouched."""
+    _lead(store, "acme.io", score=0, tier="REJECT", **_strong(), single_source=-15.0)
+    _trigger_with_evidence(store, "acme.io", "T1_AI_SHIP", ["company_site"])
+    _trigger_with_evidence(store, "acme.io", "T2_FUNDING", ["serpapi_news"])
+
+    report = diagnose(store)
+
+    assert report.promoted_if_corroboration_counted == 1
+    row = store.conn.execute("SELECT score, tier FROM leads").fetchone()
+    assert (row[0], row[1]) == (0, "REJECT"), "diagnosing must not rescore"

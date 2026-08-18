@@ -27,6 +27,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from cindraleads.models import to_iso, utcnow
 from cindraleads.scoring import ScoringConfig, tier_for
 from cindraleads.store import Store
 
@@ -34,6 +35,7 @@ __all__ = [
     "LeadRow",
     "ScoreDiagnosis",
     "diagnose",
+    "evidence_breadth",
 ]
 
 # Components carry a 0-100 value; anything else in the breakdown dict is a penalty.
@@ -70,6 +72,15 @@ class ScoreDiagnosis:
     promoted_by_lifting: dict[str, int] = field(default_factory=dict)
     near_misses: list[tuple[LeadRow, float, str]] = field(default_factory=list)
     floor: float = 0.0
+
+    # Evidence breadth, which the `single_source` rule turns out not to measure. It
+    # inspects only the *top* trigger, so a company with three triggers from three
+    # independent sources is still penalised when its highest-weighted one happens to
+    # cite a single page. These count what a lead actually rests on, across every live
+    # trigger, so the difference between the two readings is visible rather than argued.
+    corroborated: int = 0
+    penalised_but_corroborated: int = 0
+    promoted_if_corroboration_counted: int = 0
 
     @property
     def dispatchable(self) -> int:
@@ -128,6 +139,25 @@ def read_leads(store: Store, cfg: ScoringConfig) -> list[LeadRow]:
     return rows
 
 
+def evidence_breadth(store: Store) -> dict[str, int]:
+    """Distinct evidence sources per company, across every live trigger.
+
+    This is what "single source" ought to mean for a *lead*, as opposed to for one
+    trigger. Counting sources rather than URLs on purpose: three pages of the same
+    company's own site are three URLs and still one party's account of itself.
+    """
+    rows = store.conn.execute(
+        "SELECT t.canonical_domain AS domain, COUNT(DISTINCT e.source_id) AS sources "
+        "FROM triggers t "
+        "JOIN trigger_evidence te ON te.trigger_id = t.trigger_id "
+        "JOIN evidence e ON e.evidence_id = te.evidence_id "
+        "WHERE t.active = 1 AND t.decays_at > ? "
+        "GROUP BY t.canonical_domain",
+        (to_iso(utcnow()),),
+    ).fetchall()
+    return {str(row["domain"]): int(row["sources"]) for row in rows}
+
+
 def diagnose(
     store: Store, *, config: ScoringConfig | None = None, near_miss_limit: int = 10
 ) -> ScoreDiagnosis:
@@ -137,6 +167,8 @@ def diagnose(
     result.floor = float(cfg.tiers.get("C", 40))
     if not leads:
         return result
+
+    breadth = evidence_breadth(store)
 
     for lead in leads:
         result.tiers[lead.tier] = result.tiers.get(lead.tier, 0) + 1
@@ -165,6 +197,17 @@ def diagnose(
             lifted = tier_for(_final(raw - cost), cfg)
             if lifted != lead.tier:
                 result.promoted_by_lifting[name] = result.promoted_by_lifting.get(name, 0) + 1
+
+        # What the penalty would do if it asked "does this *lead* rest on one source"
+        # rather than "does its top trigger". Reported, never applied -- widening the
+        # rule changes which companies get called, which is not a diagnostic's call.
+        if breadth.get(lead.domain, 0) >= 2:
+            result.corroborated += 1
+            cost = lead.penalties.get("single_source", 0.0)
+            if cost:
+                result.penalised_but_corroborated += 1
+                if tier_for(_final(raw - cost), cfg) != lead.tier:
+                    result.promoted_if_corroboration_counted += 1
 
     # Near misses, by true distance to the tier floor rather than by stored score. A
     # lead clamped to 0 from a raw of -8 is 48 points away, not 40, and ranking by the

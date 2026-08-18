@@ -579,6 +579,21 @@ def explain(
             f"lifting it alone promotes {promoted}"
         )
 
+    if report.penalty_counts.get("single_source"):
+        typer.echo("\nevidence breadth (what `single_source` does not currently measure)")
+        typer.echo(
+            f"  {report.corroborated:>4} lead(s) cite 2+ distinct sources across all their "
+            f"live triggers"
+        )
+        typer.echo(
+            f"  {report.penalised_but_corroborated:>4} of those carry single_source anyway, "
+            f"because the rule only inspects the top trigger"
+        )
+        typer.echo(
+            f"  {report.promoted_if_corroboration_counted:>4} would change tier if the rule "
+            f"counted every trigger's evidence"
+        )
+
     typer.echo(f"\nclosest to the Tier C floor of {report.floor:.0f}")
     for lead, gap, blocker in report.near_misses:
         typer.echo(
