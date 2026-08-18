@@ -16,23 +16,44 @@
 # ---------------------------------------------------------------------------
 
 triggers:
-  T1_AI_SHIP: { weight: 30, half_life_days: 180 }
-  T2_FUNDING: { weight: 22, half_life_days: 120 }
-  T3_HIRING_SEC: { weight: 20, half_life_days: 90 }
-  T4_HIRING_AI_ONLY: { weight: 18, half_life_days: 90 }
-  T5_COMPLIANCE: { weight: 18, half_life_days: 180 }
-  T6_INCIDENT: { weight: 26, half_life_days: 60 }
-  T7_SURFACE_SPRAWL: { weight: 15, half_life_days: 90 }
-  T8_HYGIENE_GAP: { weight: 12, half_life_days: 30 }
-  T9_MARKETPLACE: { weight: 28, half_life_days: 30 }
-  T10_VENDOR_PRESSURE: { weight: 24, half_life_days: 90 }
-  T11_STACK_RISK: { weight: 14, half_life_days: 180 }
+  # `means` is the phrase a *prospect* would recognise, and it is not decoration.
+  # The Scorer feeds it to the outreach-angle prompt in place of the code, because the
+  # first Tier B card to reach Discord read "You published T1_AI_SHIP and
+  # T8_HYGIENE_GAP on your public page" -- the model had nothing but the code, so it
+  # parroted the code, into prose written to be pasted into a prospect's inbox.
+  #
+  # Phrase each one as something *they* did, in their words, and never as something we
+  # found. `means` is prospect-facing text and rule 4 of the prompt applies to it.
+  T1_AI_SHIP:
+    { weight: 30, half_life_days: 180, means: "announced an AI feature or assistant" }
+  T2_FUNDING:
+    { weight: 22, half_life_days: 120, means: "announced a funding round" }
+  T3_HIRING_SEC:
+    { weight: 20, half_life_days: 90, means: "have a security role open" }
+  T4_HIRING_AI_ONLY:
+    { weight: 18, half_life_days: 90, means: "are hiring AI engineers with no security role open" }
+  T5_COMPLIANCE:
+    { weight: 18, half_life_days: 180, means: "are working toward SOC 2 or a similar audit" }
+  T6_INCIDENT:
+    { weight: 26, half_life_days: 60, means: "published a security incident notice" }
+  T7_SURFACE_SPRAWL:
+    { weight: 15, half_life_days: 90, means: "have added a lot of new hosts to public certificate logs" }
+  T8_HYGIENE_GAP:
+    { weight: 12, half_life_days: 30, means: "publish a mail-authentication policy with gaps in it" }
+  T9_MARKETPLACE:
+    { weight: 28, half_life_days: 30, means: "posted a public brief asking for security testing" }
+  T10_VENDOR_PRESSURE:
+    { weight: 24, half_life_days: 90, means: "have been asked by a customer for a pentest report" }
+  T11_STACK_RISK:
+    { weight: 14, half_life_days: 180, means: "publish code using an LLM agent framework" }
   # T12 is a standing fact about where a company is, not news. `half_life_days: 0`
   # means no decay -- being in Dhaka does not become less true.
-  T12_LOCAL: { weight: 10, half_life_days: 0 }
+  T12_LOCAL:
+    { weight: 10, half_life_days: 0, means: "are based in Bangladesh or South Asia" }
   # PLAN.md 2.8: inbound mail is the highest-intent signal there is, and it had no
   # row in the master prompt's taxonomy at all.
-  T0_INBOUND: { weight: 35, half_life_days: 30 }
+  T0_INBOUND:
+    { weight: 35, half_life_days: 30, means: "wrote to us" }
 
 # ---------------------------------------------------------------------------
 # Component weights. These sum to 1.0 and a test asserts it -- a set that sums to

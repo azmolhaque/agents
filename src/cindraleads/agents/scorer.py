@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -140,8 +141,15 @@ class Scorer:
             display_name=facts["display_name"],
             canonical_domain=domain,
             description=facts["description"] or "",
-            triggers=", ".join(
-                f"{t.code} (observed {t.observed_at:%Y-%m-%d})"
+            # The human phrase, never the code. Handing the model `T1_AI_SHIP` gave it
+            # nothing to say, so it said "T1_AI_SHIP" -- in an angle written to be
+            # pasted into a prospect's inbox. `means` is validated non-empty at config
+            # load, so the fallback is unreachable and exists only so a future code
+            # added without one degrades to a vague angle rather than a crash.
+            triggers="; ".join(
+                f"{self.scoring.triggers[t.code].means} ({_age_phrase(t.observed_at)})"
+                if t.code in self.scoring.triggers and self.scoring.triggers[t.code].means
+                else "published something relevant recently"
                 for t in self._score_input(facts).triggers
             ),
             offer=result.offer,
@@ -168,7 +176,17 @@ class Scorer:
                 canonical_domain=domain,
                 retry_prose_in=PROSE_RETRY_SECONDS if recoverable else 0,
             )
-        return ScoreOutcome(canonical_domain=domain, prose=structured.value)
+        prose = structured.value
+        leaked = _leaked_codes(prose)
+        if leaked:
+            # Discard the prose, keep the lead. An angle naming our internal taxonomy
+            # is worse than no angle: the card exists to be pasted into an email, and
+            # "You published T1_AI_SHIP" is unusable there. Not retried -- the same
+            # prompt would produce the same thing -- so the lead ships angle-less and
+            # the log names the codes that leaked.
+            log.warning("scorer_prose_leaked_codes", canonical_domain=domain, codes=leaked)
+            return ScoreOutcome(canonical_domain=domain)
+        return ScoreOutcome(canonical_domain=domain, prose=prose)
 
     # ------------------------------------------------------------------ phase 2
 
@@ -520,3 +538,34 @@ def _hygiene_gaps(raw: Any) -> list[str]:
         return hygiene_gaps(DnsHygiene.model_validate_json(str(raw)))
     except ValueError:
         return []
+
+
+def _age_phrase(observed: datetime) -> str:
+    """ "11 days ago", not a date. The angle reads as a person describing something they
+    saw, and a person does not write "observed 2026-08-17"."""
+    days = max(0, (utcnow() - observed).days)
+    if days == 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    if days < 14:
+        return f"{days} days ago"
+    if days < 60:
+        return f"{days // 7} weeks ago"
+    return f"{days // 30} months ago"
+
+
+# Any internal trigger code, in any prose field. `\b` on both sides so a company
+# genuinely called "T5" in its own name is not caught.
+_CODE_PATTERN = re.compile(r"\bT\d{1,2}_[A-Z][A-Z_]+\b")
+
+
+def _leaked_codes(prose: LeadProse) -> list[str]:
+    """Internal taxonomy codes that reached prospect-facing text.
+
+    Checked on every prose field rather than just the angle: `rationale` is ours to
+    read, but the Bengali angle is as prospect-facing as the English one, and a card
+    is a single object that gets pasted whole.
+    """
+    text = " ".join(str(value) for value in (prose.outreach_angle, prose.bengali_angle) if value)
+    return sorted(set(_CODE_PATTERN.findall(text)))

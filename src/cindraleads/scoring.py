@@ -63,6 +63,9 @@ ARITHMETIC_VERSION = 3
 class TriggerWeight:
     weight: float
     half_life_days: float
+    # What a prospect would recognise this as, in their words. Prospect-facing text:
+    # it is fed to the outreach-angle prompt in place of the code.
+    means: str = ""
 
 
 @dataclass(frozen=True)
@@ -91,6 +94,9 @@ class ScoringConfig:
                 code: [spec.weight, spec.half_life_days]
                 for code, spec in sorted(self.triggers.items())
             },
+            # `means` is deliberately absent: it changes the prose, never the number,
+            # and rewording a phrase must not force a corpus-wide rescore. The prompt
+            # hash in `prompt_version` is what tracks prose changes.
             "components": dict(sorted(self.components.items())),
             "penalties": dict(sorted(self.penalties.items())),
             "tiers": dict(sorted(self.tiers.items())),
@@ -115,10 +121,10 @@ class ScoringConfig:
             str(code): TriggerWeight(
                 weight=float(spec.get("weight", 0)),
                 half_life_days=float(spec.get("half_life_days", 0)),
+                means=str(spec.get("means", "")).strip(),
             )
             for code, spec in raw_triggers.items()
         }
-
         components = {str(k): float(v) for k, v in (data.get("components") or {}).items()}
         total = sum(components.values())
         if not math.isclose(total, 1.0, abs_tol=1e-6):
@@ -134,6 +140,21 @@ class ScoringConfig:
             raise ConfigError(
                 f"scoring.yaml reachability is missing {sorted(missing)}; keys must be "
                 f"EmailStatus values ({sorted(get_args(EmailStatus))})"
+            )
+
+        # Checked last, after the arithmetic. A config whose weights do not sum to 1.0
+        # is broken in a way that makes every score wrong; a missing phrase only makes
+        # one card read badly, so the more fundamental failure gets reported first.
+        #
+        # Fail closed all the same: a trigger with no `means` reaches the outreach
+        # prompt as a bare code, and the model writes the code into the angle. "You
+        # published T1_AI_SHIP on your public page" was the first Tier B card ever
+        # dispatched to Discord.
+        unphrased = sorted(code for code, spec in triggers.items() if not spec.means)
+        if unphrased:
+            raise ConfigError(
+                f"scoring.yaml triggers need a human `means` phrase: {unphrased}. "
+                f"Without it the outreach angle names the internal code to the prospect."
             )
 
         return cls(

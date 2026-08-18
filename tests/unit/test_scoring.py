@@ -398,3 +398,127 @@ def test_the_fingerprint_covers_the_arithmetic_not_just_the_config(cfg: ScoringC
         assert cfg.fingerprint() != before
     finally:
         scoring_module.ARITHMETIC_VERSION = original
+
+
+# ------------------------------------------------- what the prospect actually reads
+
+
+def test_every_trigger_has_a_human_phrase(cfg: ScoringConfig):
+    """The first Tier B card ever dispatched read "You published T1_AI_SHIP and
+    T8_HYGIENE_GAP on your public page".
+
+    The prompt was handed the raw code, so the 4B had nothing to say and said the code
+    -- in an angle written to be pasted into a prospect's inbox. A trigger with no
+    `means` is a card waiting to do that again.
+    """
+    for code, spec in cfg.triggers.items():
+        assert spec.means, f"{code} has no human phrase"
+        assert not spec.means.isupper(), f"{code}'s phrase looks like a code: {spec.means}"
+
+
+def test_a_trigger_without_a_phrase_is_fatal(tmp_path: Path):
+    from cindraleads.errors import ConfigError
+
+    (tmp_path / "scoring.yaml").write_text(
+        "triggers:\n  T1_AI_SHIP: {weight: 30, half_life_days: 180}\n"
+        "components:\n  trigger: 1.0\n"
+        "reachability: {verified: 100, role_account: 70, catch_all: 40, risky: 25, "
+        "unverified: 15, none: 0}\n"
+    )
+    s = settings()
+    object.__setattr__(s, "config_dir", tmp_path)
+    with pytest.raises(ConfigError, match="human `means` phrase"):
+        ScoringConfig.load(s)
+
+
+def test_no_phrase_reads_as_something_we_found(cfg: ScoringConfig):
+    """Rule 4 of the prompt applies to `means` too -- it is prospect-facing text, and
+    the promise is "no scan ever starts without a signed RoE"."""
+    forbidden = ("we found", "we detected", "vulnerab", "exposed", "we scanned", "insecure")
+    for code, spec in cfg.triggers.items():
+        lowered = spec.means.lower()
+        for phrase in forbidden:
+            assert phrase not in lowered, f"{code} phrases a finding, not an observation"
+
+
+def test_rewording_a_phrase_does_not_force_a_rescore(cfg: ScoringConfig):
+    """`means` changes the prose and never the number. Putting it in the fingerprint
+    would make a typo fix recompute 141 leads at ~18 s each."""
+    from dataclasses import replace
+
+    from cindraleads.scoring import TriggerWeight
+
+    original = cfg.triggers["T1_AI_SHIP"]
+    reworded = replace(
+        cfg,
+        triggers={
+            **cfg.triggers,
+            "T1_AI_SHIP": TriggerWeight(original.weight, original.half_life_days, "reworded"),
+        },
+    )
+    assert reworded.fingerprint() == cfg.fingerprint()
+
+
+def test_a_leaked_code_costs_the_angle_not_the_lead():
+    """The guard, and the choice it encodes.
+
+    An angle naming our internal taxonomy is unusable -- the card exists to be pasted
+    into an email. But the lead itself is already fully decided by arithmetic the model
+    never touched, so the prose is discarded and the lead ships without it. Not
+    retried: the same prompt would produce the same thing.
+    """
+    from cindraleads.agents.scorer import _leaked_codes
+    from cindraleads.models import LeadProse
+
+    leaky = LeadProse(
+        outreach_angle="You published T1_AI_SHIP and T8_HYGIENE_GAP on your public page.",
+        rationale="fine",
+    )
+    assert _leaked_codes(leaky) == ["T1_AI_SHIP", "T8_HYGIENE_GAP"]
+
+    clean = LeadProse(
+        outreach_angle="You announced an AI assistant two weeks ago.", rationale="fine"
+    )
+    assert _leaked_codes(clean) == []
+
+
+def test_the_bengali_angle_is_checked_too():
+    """As prospect-facing as the English one. A card is pasted whole."""
+    from cindraleads.agents.scorer import _leaked_codes
+    from cindraleads.models import LeadProse
+
+    prose = LeadProse(
+        outreach_angle="You announced an AI assistant.",
+        rationale="fine",
+        bengali_angle="আপনারা T1_AI_SHIP প্রকাশ করেছেন।",
+    )
+    assert _leaked_codes(prose) == ["T1_AI_SHIP"]
+
+
+def test_a_company_named_like_a_code_is_not_a_false_positive():
+    """`\\b` on both sides. The guard must not eat a legitimate angle."""
+    from cindraleads.agents.scorer import _leaked_codes
+    from cindraleads.models import LeadProse
+
+    for text in (
+        "Your T3 pricing tier launched last week.",
+        "You published an AI_ASSISTANT changelog.",
+        "T5 Systems announced a funding round.",
+    ):
+        assert _leaked_codes(LeadProse(outreach_angle=text, rationale="x")) == [], text
+
+
+def test_the_age_phrase_reads_as_a_person_wrote_it():
+    """ "observed 2026-08-17" is a log line. A researcher writes "11 days ago"."""
+    from datetime import timedelta
+
+    from cindraleads.agents.scorer import _age_phrase
+
+    now = utcnow()
+    assert _age_phrase(now) == "today"
+    assert _age_phrase(now - timedelta(days=1)) == "yesterday"
+    assert _age_phrase(now - timedelta(days=5)) == "5 days ago"
+    assert _age_phrase(now - timedelta(days=21)) == "3 weeks ago"
+    assert _age_phrase(now - timedelta(days=95)) == "3 months ago"
+    # A future-dated trigger from a bad page must not read as "-3 days ago".
+    assert _age_phrase(now + timedelta(days=30)) == "today"

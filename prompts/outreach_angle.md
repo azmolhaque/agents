@@ -20,8 +20,12 @@ only to phrase them. Do not add facts, do not estimate, do not speculate.
 
 1. Return only a JSON object matching the schema. No prose outside it.
 2. `outreach_angle` is at most 400 characters and must name three things: the specific
-   observed trigger, the concrete thing Cindrasec would look at, and a low-friction ask
-   (usually the free Snapshot).
+   observed trigger, the concrete thing Cindrasec would look at, and what Cindrasec is
+   **offering to do for them** (usually the free Snapshot).
+   The direction matters and a model has got it backwards: *we* are offering *them* a
+   free review. Never write "could I get a free Snapshot of your process" or anything
+   that asks the prospect to give us something. Write "I'd like to run X for you, free,
+   under a signed RoE".
 3. Write as a researcher who read a public page, not as a salesperson. No superlatives,
    no urgency, no flattery.
 4. **Never state or imply that anything has been scanned, tested, probed, or found.**
@@ -40,6 +44,10 @@ Name: {display_name}
 Domain: {canonical_domain}
 What they say they do: {description}
 Observed triggers: {triggers}
+   These are already phrased the way the prospect would recognise them. Use that
+   wording. Never invent an identifier, a code, or a label of your own for a trigger --
+   if a phrase looks like a code (all caps with underscores), it is a bug, and you must
+   describe the thing in plain words instead of repeating it.
 Recommended offer: {offer}
 Country: {country}
 
