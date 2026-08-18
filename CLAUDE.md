@@ -220,6 +220,14 @@ sendable-per-template. **Before it existed, no query change was checkable.** A w
 to organizations" for weeks while calling an unfiltered search, so every personal
 langchain project became a candidate.
 
+**A `git pull` does not change what is running.** The worker and health units are
+long-lived Python processes; they keep the modules imported at boot while the new code
+sits on disk, draining jobs and reporting healthy. Deploying is
+`git pull && cindra db migrate && sudo systemctl restart cindraleads-worker cindraleads-health`.
+`/healthz` reports the gap as `worker:build` -- the worker stamps `source_mtime` on its
+heartbeat and health compares it against the newest `.py` on disk. Timers are exempt:
+each firing is a fresh process.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. The Phase 7 acceptance run requires
 `get_throttled` to stay `0x0` for 72 h, which this hardware has not yet demonstrated.

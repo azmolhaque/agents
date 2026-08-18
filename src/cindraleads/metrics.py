@@ -27,6 +27,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from cindraleads.logging import get_logger
@@ -41,6 +42,7 @@ __all__ = [
     "record_heartbeat",
     "render_prometheus",
     "snapshot",
+    "source_mtime",
 ]
 
 log = get_logger("cindraleads.metrics")
@@ -103,6 +105,28 @@ def record_heartbeat(
         with store.tx() as own:
             own.execute(statement, row)
     log.debug("heartbeat", unit=unit, ok=ok, **detail)
+
+
+def source_mtime() -> float:
+    """Newest modification time across the package source, or 0 if unreadable.
+
+    Used to catch a long-running worker still executing the code it imported at boot.
+    `git pull` rewrites these files; the running process keeps its old modules, so
+    every fix sits on disk doing nothing until the unit restarts -- silently, while
+    the worker looks perfectly healthy and drains jobs the whole time.
+
+    mtime rather than a git sha: no subprocess (the passive-only rule forbids shelling
+    out from the package), no dependency on a `.git` directory that a deployed copy may
+    not have, and it catches an edited file as readily as a pulled one.
+    """
+    root = Path(__file__).resolve().parent
+    newest = 0.0
+    try:
+        for path in root.rglob("*.py"):
+            newest = max(newest, path.stat().st_mtime)
+    except OSError:
+        return 0.0
+    return newest
 
 
 def last_heartbeat(store: Store, unit: str) -> Heartbeat | None:

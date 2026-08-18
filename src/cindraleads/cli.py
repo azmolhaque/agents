@@ -37,7 +37,7 @@ from cindraleads.agents import (
 from cindraleads.config import settings
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
-from cindraleads.metrics import record_heartbeat
+from cindraleads.metrics import record_heartbeat, source_mtime
 from cindraleads.models import Job, StageResult, to_iso, utcnow
 from cindraleads.queue import JobQueue
 from cindraleads.runtime import Runtime
@@ -59,6 +59,10 @@ SELFTEST_KIND = "selftest.sideeffect"
 # How often the worker records that it is alive. Well under the 15 minute silence
 # budget in `HEARTBEAT_UNITS`, and far above the 50 ms poll interval.
 WORKER_HEARTBEAT_SECONDS = 60.0
+
+# Read once, at import, so it describes the code this process actually loaded rather
+# than whatever is on disk by the time a heartbeat fires.
+_RUNNING_SOURCE_MTIME = source_mtime()
 
 # A stage handler receives the claimed job and the *open* transaction. It must do all
 # of its writing through that connection so the work and the completion commit as one.
@@ -1083,7 +1087,16 @@ async def _work_loop(
             # The liveness record the health endpoint reads. Cheap, but not free -- one
             # INSERT per loop on an empty queue polling every 50 ms would be 20 writes
             # a second against the same lock the stages need.
-            record_heartbeat(store, "worker", worker_id=worker_id, processed=processed)
+            record_heartbeat(
+                store,
+                "worker",
+                worker_id=worker_id,
+                processed=processed,
+                # The build this process is *running*, captured once at import. If the
+                # source on disk is newer, a `git pull` has landed that this worker
+                # cannot see -- Python does not reload modules.
+                source_mtime=_RUNNING_SOURCE_MTIME,
+            )
             heartbeat_due = now + WORKER_HEARTBEAT_SECONDS
 
         if max_jobs and processed >= max_jobs:

@@ -27,6 +27,7 @@ from cindraleads.metrics import (
     record_heartbeat,
     render_prometheus,
     snapshot,
+    source_mtime,
 )
 from cindraleads.models import to_iso, utcnow
 from cindraleads.sdnotify import Watchdog, available, notify, watchdog_interval_seconds
@@ -50,8 +51,17 @@ class _Governor:
 
 
 def _all_units_fresh(store: Any) -> None:
+    """Every unit reporting in, and the worker running the code on disk.
+
+    The worker's heartbeat has to carry `source_mtime` or the build check correctly
+    reports it as behind -- a worker that does not say which build it is running is
+    one that predates the check, which is the same situation as being stale.
+    """
     for unit in HEARTBEAT_UNITS:
-        record_heartbeat(store, unit)
+        if unit == "worker":
+            record_heartbeat(store, unit, source_mtime=source_mtime())
+        else:
+            record_heartbeat(store, unit)
 
 
 # ------------------------------------------------------------------------ heartbeats
@@ -481,3 +491,49 @@ def test_every_unattended_command_migrates_itself() -> None:
     assert unattended <= migrating, (
         f"these run under systemd but do not self-migrate: {sorted(unattended - migrating)}"
     )
+
+
+# ------------------------------------------------- is the worker running this code?
+
+
+def test_a_worker_behind_the_source_is_flagged(store: Any) -> None:
+    """The silent failure that cost several rounds of "the fix did not work".
+
+    `git pull` rewrites the source; the long-running worker keeps the modules it
+    imported at boot. Every fix sits on disk doing nothing while the unit drains jobs
+    and reports itself perfectly healthy. A scoring change was deployed four times
+    before anyone noticed the process applying it was four builds old.
+    """
+    import time as _time
+
+    record_heartbeat(store, "worker", source_mtime=_time.time() - 3600)
+
+    report = assess(store, thermal=_Governor())
+    check = next(c for c in report.checks if c.name == "worker:build")
+
+    assert check.status == "degraded"
+    assert "systemctl restart cindraleads-worker" in check.detail
+
+
+def test_a_worker_on_the_current_build_is_ok(store: Any) -> None:
+    record_heartbeat(store, "worker", source_mtime=source_mtime())
+
+    check = next(c for c in assess(store, thermal=_Governor()).checks if c.name == "worker:build")
+    assert check.status == "ok"
+
+
+def test_a_worker_that_does_not_report_its_build_is_flagged(store: Any) -> None:
+    """ "Predates the check" and "is stale" are the same situation, and a worker old
+    enough to lack the field is certainly old enough to be behind."""
+    record_heartbeat(store, "worker")
+
+    check = next(c for c in assess(store, thermal=_Governor()).checks if c.name == "worker:build")
+    assert check.status == "degraded"
+    assert "predates this check" in check.detail
+
+
+def test_no_worker_heartbeat_means_no_build_check(store: Any) -> None:
+    """A missing worker is already reported by the heartbeat check. Saying it twice in
+    different words makes the report harder to read, not more informative."""
+    report = assess(store, thermal=_Governor())
+    assert not any(c.name == "worker:build" for c in report.checks)

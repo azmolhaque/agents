@@ -30,14 +30,20 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Literal
 
 from cindraleads.config import Settings, settings
 from cindraleads.logging import get_logger
-from cindraleads.metrics import HEARTBEAT_UNITS, heartbeats, render_prometheus, snapshot
+from cindraleads.metrics import (
+    HEARTBEAT_UNITS,
+    heartbeats,
+    render_prometheus,
+    snapshot,
+    source_mtime,
+)
 from cindraleads.models import utcnow
 from cindraleads.store import Store
 
@@ -122,6 +128,7 @@ def assess(
     report.metrics = snapshot(store, now=at)
 
     _check_heartbeats(report, store, now=at, uptime_seconds=uptime_seconds())
+    _check_worker_build(report, store)
     _check_queue(report)
     _check_disk(report, disk_path or cfg.resolve(cfg.db_path).parent)
     _check_thermal(report, thermal)
@@ -205,6 +212,52 @@ def _check_heartbeats(
             report.add(
                 Check(f"heartbeat:{unit}", "ok", f"ran {age_hours:.1f}h ago", value=age_hours)
             )
+
+
+def _check_worker_build(report: HealthReport, store: Store) -> None:
+    """Is the worker running the code that is on disk?
+
+    The failure this catches is completely silent. `git pull` rewrites the source; the
+    long-running worker keeps the modules it imported at boot, so every fix sits on
+    disk doing nothing while the unit drains jobs and reports itself healthy. It cost
+    several rounds of "the fix did not work" before the cause was visible: a scoring
+    change had been deployed four times and the process applying it was four builds old.
+
+    Degraded, not critical: the worker is doing real work, just not the newest version
+    of it. The remedy is one line and belongs in the detail.
+    """
+    beat = heartbeats(store).get("worker")
+    if beat is None:
+        return  # the heartbeat check already reports a missing worker
+
+    running = beat.detail.get("source_mtime")
+    if not isinstance(running, int | float) or not running:
+        # An older worker that predates this field. Saying so is better than staying
+        # quiet, because "predates the field" and "is stale" are the same situation.
+        report.add(
+            Check(
+                "worker:build",
+                "degraded",
+                "worker does not report its build; it predates this check and is "
+                "certainly behind. Restart: systemctl restart cindraleads-worker",
+            )
+        )
+        return
+
+    on_disk = source_mtime()
+    if on_disk > running + 1.0:  # a second of slack for filesystem timestamp jitter
+        behind = timedelta(seconds=int(on_disk - running))
+        report.add(
+            Check(
+                "worker:build",
+                "degraded",
+                f"source on disk is {behind} newer than the running worker; it cannot "
+                f"see those changes. Restart: systemctl restart cindraleads-worker",
+                value=on_disk - running,
+            )
+        )
+    else:
+        report.add(Check("worker:build", "ok", "worker is running the code on disk"))
 
 
 def _check_queue(report: HealthReport) -> None:

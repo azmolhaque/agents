@@ -159,6 +159,23 @@ journalctl -u cindraleads-worker --since '1 hour ago' -o cat | jq -c 'select(.le
 Logs are structlog JSON, one object per line, with secrets redacted by a processor.
 `-o cat` strips systemd's prefix so `jq` can read them.
 
+### After every `git pull` — restart the worker
+
+```bash
+git pull && cindra db migrate && sudo systemctl restart cindraleads-worker cindraleads-health
+```
+
+**A pull alone changes nothing that is running.** Python imports its modules once, at
+process start. The worker is long-lived, so it keeps executing the build it loaded at
+boot while the new code sits on disk — and it goes on draining jobs and reporting
+itself healthy the entire time, which is what makes this so easy to miss. A scoring
+change was deployed four times before anyone noticed the process applying it was four
+builds old.
+
+`/healthz` now reports it as `worker:build`, so if you forget, the endpoint tells you.
+The timers are unaffected: each firing is a fresh process and picks up new code by
+itself. Only the two long-running units need the restart.
+
 ### Restarting safely
 
 ```bash
