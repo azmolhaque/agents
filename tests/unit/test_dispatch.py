@@ -460,11 +460,19 @@ def test_a_company_already_scored_is_left_alone(rig):
     """The lead row is newer than every trigger, so there is nothing to recompute."""
     from cindraleads.agents.scorer import enqueue_stale_scores
     from cindraleads.queue import JobQueue
+    from cindraleads.scoring import ScoringConfig
 
     build, _posts, store = rig
     build(tier="A")
     with store.tx() as conn:
-        conn.execute("UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z'")
+        # Stamped with the running calibration, because that is what "already scored"
+        # now means. The fixture writes the lead row directly, and a lead carrying no
+        # `scoring_version` is stale by definition -- it predates any recorded
+        # calibration, so nothing can vouch that its number matches the current rules.
+        conn.execute(
+            "UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z', scoring_version = ?",
+            (ScoringConfig.load().fingerprint(),),
+        )
 
     assert enqueue_stale_scores(store, JobQueue(store)) == 0
 
@@ -600,3 +608,139 @@ def test_the_card_leads_with_the_heaviest_trigger():
         tier="C",
     )
     assert "T1_AI_SHIP" in digest_row(ordered)["description"]
+
+
+def test_a_calibration_change_makes_every_lead_stale(rig):
+    """The other half of a rule change.
+
+    `enqueue_stale_scores` reconciles on trigger timestamps, and editing a weight or a
+    penalty moves none of them -- so the `single_source` fix landed against 108 leads
+    that all quietly kept their old numbers. A lead whose `scoring_version` differs
+    from the running one is out of date by definition.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+    from cindraleads.scoring import ScoringConfig
+
+    build, _posts, store = rig
+    build(tier="A")
+    cfg = ScoringConfig.load()
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z', scoring_version = ?",
+            (cfg.fingerprint(),),
+        )
+    assert enqueue_stale_scores(store, JobQueue(store), config=cfg) == 0
+
+    from dataclasses import replace
+
+    recalibrated = replace(cfg, penalties={**cfg.penalties, "single_source": -8.0})
+    assert enqueue_stale_scores(store, JobQueue(store), config=recalibrated) == 1
+
+
+def test_a_rescore_is_not_deduped_against_the_job_that_already_ran(rig):
+    """The bug that would have made the whole mechanism a no-op.
+
+    `JobQueue.enqueue` matches `dedupe_key` across every job including completed ones,
+    and a recalibration does not move the trigger timestamp the key was built from.
+    Without the fingerprint in the key the rescore collides with the job that already
+    ran under the old calibration and is silently dropped -- and the reconciler would
+    report success having changed nothing.
+    """
+    from dataclasses import replace
+
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+    from cindraleads.scoring import ScoringConfig
+
+    build, _posts, store = rig
+    build(tier="A")
+    cfg = ScoringConfig.load()
+    queue = JobQueue(store)
+
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z', scoring_version = ?",
+            (cfg.fingerprint(),),
+        )
+    # Drain the original job so its row is `done` and still matchable by dedupe key.
+    for job in queue.claim("w", kinds=["score.company"], lease_seconds=60, limit=10):
+        queue.complete(job.job_id)
+
+    recalibrated = replace(cfg, penalties={**cfg.penalties, "single_source": -8.0})
+    assert enqueue_stale_scores(store, queue, config=recalibrated) == 1
+
+    ready = queue.claim("w2", kinds=["score.company"], lease_seconds=60, limit=10)
+    assert ready, "the rescore was deduped away against the completed job"
+
+
+def test_leads_scored_before_the_column_existed_are_rescored(rig):
+    """NULL means "predates any recorded calibration", which is stale -- nothing can
+    vouch that such a lead's number matches the rules now running."""
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z', scoring_version = NULL"
+        )
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 1
+
+
+def test_new_triggers_are_queued_ahead_of_a_recalibration(rig):
+    """A config edit makes the whole corpus stale at once. At ~18 s a lead that is
+    hours of queue, and a funding round found this morning must not sit behind it."""
+    import json as _json
+    from dataclasses import replace
+    from datetime import timedelta
+
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.models import to_iso, utcnow
+    from cindraleads.queue import JobQueue
+    from cindraleads.scoring import ScoringConfig
+
+    build, _posts, store = rig
+    build(tier="A")
+    cfg = ScoringConfig.load()
+    now = utcnow()
+
+    with store.tx() as conn:
+        # acme.io: scored under the running calibration, nothing new since.
+        conn.execute(
+            "UPDATE leads SET last_updated_at = ?, scoring_version = ?",
+            (to_iso(now), cfg.fingerprint()),
+        )
+        # A second company whose trigger landed *after* its last scoring.
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+            "last_updated_at) VALUES ('fresh.io','Fresh',?,?)",
+            (to_iso(now), to_iso(now)),
+        )
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at, active) VALUES "
+            "('t2','fresh.io','T2_FUNDING',0.9,?,'2099-01-01T00:00:00Z',1)",
+            (to_iso(now),),
+        )
+        conn.execute(
+            "INSERT INTO leads (lead_id, canonical_domain, score, tier, recommended_offer, "
+            "first_seen_at, last_updated_at, pipeline_version, scoring_version) VALUES "
+            "('lead2','fresh.io',50,'B','snapshot_free',?,?,'v1',?)",
+            (to_iso(now - timedelta(days=30)), to_iso(now - timedelta(days=30)), cfg.fingerprint()),
+        )
+
+    recalibrated = replace(cfg, penalties={**cfg.penalties, "single_source": -8.0})
+    assert enqueue_stale_scores(store, JobQueue(store), config=recalibrated) == 2
+
+    order = [
+        _json.loads(row["payload"])["canonical_domain"]
+        for row in store.conn.execute(
+            "SELECT payload FROM jobs WHERE kind='score.company' ORDER BY rowid"
+        )
+    ]
+    assert order[0] == "fresh.io", (
+        f"the company with a genuinely new trigger must be queued first, got {order}"
+    )

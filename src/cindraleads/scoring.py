@@ -19,6 +19,8 @@ is what stops the pipeline re-dispatching the same stale prospect every week.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -29,6 +31,7 @@ from cindraleads.errors import ConfigError
 from cindraleads.models import EmailStatus, EmployeeBand, Offer, Tier, TriggerCode, utcnow
 
 __all__ = [
+    "ARITHMETIC_VERSION",
     "ScoreInput",
     "ScoreResult",
     "ScoringConfig",
@@ -37,6 +40,20 @@ __all__ = [
     "recommended_offer",
     "tier_for",
 ]
+
+# Bump this whenever the arithmetic in this module changes in a way that would give a
+# stored lead a different score -- a new penalty, a changed condition, a reworked
+# component. The config half of the fingerprint is computed automatically; this is the
+# half a hash of the YAML cannot see.
+#
+# Forgetting to bump it means every existing lead keeps a score the current code would
+# not produce, which is the failure this whole mechanism exists to prevent. Treat it
+# like an entry in `RETIREMENT_RULES`: the second half of a rule change, not optional.
+#
+#   1: initial
+#   2: `single_source` asks whether the lead rests on one source, across every
+#      trigger, rather than whether its top trigger does
+ARITHMETIC_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -56,6 +73,32 @@ class ScoringConfig:
     reachability: dict[str, float]
     freshness_zero_at_days: float
     sanctioned_countries: frozenset[str]
+
+    def fingerprint(self) -> str:
+        """Identifies the calibration that produced a score.
+
+        Hashes the *resolved values*, not the file bytes, so reformatting `scoring.yaml`
+        or editing a comment does not force a corpus-wide rescore -- only a change that
+        would actually move a number does. `ARITHMETIC_VERSION` covers the other half,
+        the logic in this module, which no hash of the config can see.
+        """
+        shape = {
+            "arithmetic": ARITHMETIC_VERSION,
+            "triggers": {
+                code: [spec.weight, spec.half_life_days]
+                for code, spec in sorted(self.triggers.items())
+            },
+            "components": dict(sorted(self.components.items())),
+            "penalties": dict(sorted(self.penalties.items())),
+            "tiers": dict(sorted(self.tiers.items())),
+            "icp_fit": {str(k): self.icp_fit[k] for k in sorted(self.icp_fit, key=str)},
+            "surface": dict(sorted(self.surface.items())),
+            "reachability": dict(sorted(self.reachability.items())),
+            "freshness_zero_at_days": self.freshness_zero_at_days,
+            "sanctioned": sorted(self.sanctioned_countries),
+        }
+        blob = json.dumps(shape, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
     @classmethod
     def load(cls, config: Settings | None = None) -> ScoringConfig:
@@ -253,13 +296,21 @@ def _penalties(inp: ScoreInput, cfg: ScoringConfig, now: datetime) -> dict[str, 
     if inp.country and inp.country.upper() in cfg.sanctioned_countries:
         applied["sanctioned_country"] = cfg.penalties.get("sanctioned_country", 0)
 
-    # The top trigger resting on one URL from one source is one page's word for it.
+    # Does this *lead* rest on one party's account of itself?
+    #
+    # It used to ask that of the top trigger alone, and on the first real corpus that
+    # fired on 94% of leads -- a penalty at that incidence has stopped discriminating
+    # and become a constant offset that silently moves the tier floor. 56 of the 57
+    # leads corroborated by two or more independent sources were carrying it anyway,
+    # because their highest-weighted trigger happened to cite a single page.
+    #
+    # Sources, not URLs. Three pages of a company's own site are three URLs and still
+    # one party's word for it, so counting URLs would call that corroboration. This is
+    # the same measure `diagnose.evidence_breadth` reports, deliberately: the number
+    # that justified the change and the rule that implements it must not drift apart.
     if inp.triggers:
-        top = max(
-            inp.triggers,
-            key=lambda t: cfg.triggers.get(t.code, TriggerWeight(0, 0)).weight,
-        )
-        if len(set(top.evidence_urls)) <= 1 and len(set(top.evidence_sources)) <= 1:
+        sources = {source for t in inp.triggers for source in t.evidence_sources}
+        if len(sources) <= 1:
             applied["single_source"] = cfg.penalties.get("single_source", 0)
     return applied
 

@@ -95,6 +95,10 @@ class Scorer:
         cfg = self.config or settings()
         self.config = cfg
         self.scoring = ScoringConfig.load(cfg)
+        # Stamped on every lead so a later calibration change can find the leads it
+        # invalidated. Read once here rather than per lead: it is a hash of config
+        # already in memory, but the Scorer writes it on a path that runs per company.
+        self._scoring_version = self.scoring.fingerprint()
         self.gate = self.gate or ComplianceGate.from_config(cfg)
         base = cfg.resolve(cfg.prompt_dir)
         self._prompt_version = prompt_version(base)
@@ -204,11 +208,29 @@ class Scorer:
         lead_id = lead_id_for(outcome.canonical_domain)
         if not verdict.passed:
             ComplianceGate.quarantine(conn, subject_id=lead_id, verdict=verdict)
-            _upsert_lead(conn, lead_id, outcome, facts, result, verdict, self._prompt_version)
+            _upsert_lead(
+                conn,
+                lead_id,
+                outcome,
+                facts,
+                result,
+                verdict,
+                self._prompt_version,
+                self._scoring_version,
+            )
             log.info("lead_vetoed", lead_id=lead_id, vetoes=verdict.vetoes)
             return StageResult(ok=True, stage="scorer", job_id=job.job_id)
 
-        _upsert_lead(conn, lead_id, outcome, facts, result, verdict, self._prompt_version)
+        _upsert_lead(
+            conn,
+            lead_id,
+            outcome,
+            facts,
+            result,
+            verdict,
+            self._prompt_version,
+            self._scoring_version,
+        )
         log.info(
             "lead_scored",
             lead_id=lead_id,
@@ -351,6 +373,7 @@ def _upsert_lead(
     result: Any,
     verdict: Any,
     prompt_ver: str,
+    scoring_ver: str,
 ) -> None:
     now = to_iso(utcnow())
     angle = outcome.prose.outreach_angle if outcome.prose else ""
@@ -358,8 +381,8 @@ def _upsert_lead(
     conn.execute(
         "INSERT INTO leads (lead_id, canonical_domain, score, score_breakdown, tier, "
         "recommended_offer, outreach_angle, bengali_angle, compliance, first_seen_at, "
-        "last_updated_at, pipeline_version, prompt_version) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "last_updated_at, pipeline_version, prompt_version, scoring_version) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(lead_id) DO UPDATE SET score=excluded.score, "
         "score_breakdown=excluded.score_breakdown, tier=excluded.tier, "
         "recommended_offer=excluded.recommended_offer, "
@@ -369,7 +392,8 @@ def _upsert_lead(
         "THEN excluded.outreach_angle ELSE leads.outreach_angle END, "
         "bengali_angle=COALESCE(excluded.bengali_angle, leads.bengali_angle), "
         "compliance=excluded.compliance, last_updated_at=excluded.last_updated_at, "
-        "pipeline_version=excluded.pipeline_version, prompt_version=excluded.prompt_version",
+        "pipeline_version=excluded.pipeline_version, prompt_version=excluded.prompt_version, "
+        "scoring_version=excluded.scoring_version",
         (
             lead_id,
             outcome.canonical_domain,
@@ -384,6 +408,7 @@ def _upsert_lead(
             now,
             PIPELINE_VERSION,
             prompt_ver,
+            scoring_ver,
         ),
     )
 
@@ -392,7 +417,9 @@ def score_stamp(when: datetime) -> str:
     return to_iso(when)
 
 
-def enqueue_stale_scores(store: Store, queue: Any, *, limit: int = 0) -> int:
+def enqueue_stale_scores(
+    store: Store, queue: Any, *, limit: int = 0, config: ScoringConfig | None = None
+) -> int:
     """Queue a score job for every company whose lead is behind its triggers.
 
     Scoring driven only by the resolve event is not enough, and the first real run
@@ -404,24 +431,47 @@ def enqueue_stale_scores(store: Store, queue: Any, *, limit: int = 0) -> int:
     covers all three, and is the same query the Phase 7 nightly decay recompute needs.
     The dedupe key carries that trigger timestamp, so re-running enqueues nothing while
     a genuinely new trigger does.
+
+    **A stale calibration counts as stale too.** Timestamps cannot see a config edit:
+    narrowing `single_source` changed what every score should be and moved neither a
+    trigger's `observed_at` nor a lead's `last_updated_at`, so 108 leads would have
+    kept numbers the current code does not produce. A lead whose `scoring_version`
+    differs from the running one is out of date by definition, and NULL — a lead
+    written before the column existed — is the same thing.
     """
+    fingerprint = (config or ScoringConfig.load()).fingerprint()
+    now = to_iso(utcnow())
     rows = store.conn.execute(
-        "SELECT c.canonical_domain AS domain, MAX(t.observed_at) AS newest "
+        "SELECT c.canonical_domain AS domain, "
+        "MAX(t.observed_at) AS newest, "
+        "MIN(COALESCE(l.scoring_version, '') = ?) AS calibrated "
         "FROM companies c "
         "JOIN triggers t ON t.canonical_domain = c.canonical_domain "
         "LEFT JOIN leads l ON l.canonical_domain = c.canonical_domain "
         "WHERE t.active = 1 AND t.decays_at > ? "
         "GROUP BY c.canonical_domain "
-        "HAVING l.lead_id IS NULL OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '') "
-        "ORDER BY newest DESC" + (" LIMIT ?" if limit else ""),
-        (to_iso(utcnow()), limit) if limit else (to_iso(utcnow()),),
+        "HAVING l.lead_id IS NULL "
+        "   OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '') "
+        "   OR calibrated = 0 "
+        # Genuinely new triggers first, recalibrations behind them. A config edit makes
+        # the whole corpus stale at once, and at ~18 s a lead that is hours of queue --
+        # long enough that a funding round found this morning would sit behind it.
+        "ORDER BY calibrated DESC, newest DESC" + (" LIMIT ?" if limit else ""),
+        (fingerprint, now, *([limit] if limit else [])),
     ).fetchall()
 
     queued = 0
     with store.tx() as conn:
         for row in rows:
             domain = str(row["domain"])
-            digest = hashlib.sha256(f"{domain}|{row['newest']}".encode()).hexdigest()[:16]
+            # The fingerprint belongs in the key. `enqueue` matches `dedupe_key`
+            # across every job including completed ones, and a recalibration does not
+            # move `newest` -- so without it the rescore collides with the job that
+            # already ran under the old calibration and is silently dropped. The whole
+            # mechanism would then look like it worked and change nothing.
+            digest = hashlib.sha256(f"{domain}|{row['newest']}|{fingerprint}".encode()).hexdigest()[
+                :16
+            ]
             existing = conn.execute(
                 "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (f"score:{digest}",)
             ).fetchone()

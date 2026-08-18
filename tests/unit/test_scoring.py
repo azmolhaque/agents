@@ -180,13 +180,60 @@ def test_suppression_is_a_hard_reject(cfg: ScoringConfig):
     assert score(make(is_suppressed=True), cfg).tier == "REJECT"
 
 
-def test_a_single_sourced_top_trigger_is_penalised(cfg: ScoringConfig):
-    """One page's word for it is weaker than two independent sightings."""
+def test_a_single_sourced_lead_is_penalised(cfg: ScoringConfig):
+    """One party's word for it is weaker than two independent sightings."""
     multi = make(triggers=(observation("T1_AI_SHIP", urls=3),))
     single = make(triggers=(observation("T1_AI_SHIP", urls=1),))
     assert "single_source" in score(single, cfg).penalties
     assert "single_source" not in score(multi, cfg).penalties
     assert score(single, cfg).score < score(multi, cfg).score
+
+
+def test_corroboration_across_triggers_counts(cfg: ScoringConfig):
+    """The rule asks about the lead, not about its highest-weighted trigger.
+
+    A company seen shipping AI on its own site, with a DNS gap in the public record
+    and a funding round in the news, rests on three independent parties. Judging only
+    the top trigger penalised exactly that lead -- 56 of 57 corroborated leads on the
+    first real corpus -- because T1 happened to cite a single page.
+    """
+    thin_top = TriggerObservation(
+        code="T1_AI_SHIP",
+        observed_at=utcnow(),
+        evidence_urls=("https://acme.io/blog",),
+        evidence_sources=("company_site",),
+    )
+    elsewhere = TriggerObservation(
+        code="T2_FUNDING",
+        observed_at=utcnow(),
+        evidence_urls=("https://news.test/round",),
+        evidence_sources=("serpapi_news",),
+    )
+
+    assert "single_source" in score(make(triggers=(thin_top,)), cfg).penalties
+    assert "single_source" not in score(make(triggers=(thin_top, elsewhere)), cfg).penalties
+
+
+def test_many_pages_of_one_site_are_not_corroboration(cfg: ScoringConfig):
+    """The reason it counts sources rather than URLs. Three pages of a company's own
+    site are three URLs and still one party's account of itself -- and keying on URLs
+    would let any site with an /about page exempt itself."""
+    own_site_only = (
+        TriggerObservation(
+            code="T1_AI_SHIP",
+            observed_at=utcnow(),
+            evidence_urls=("https://acme.io/", "https://acme.io/about"),
+            evidence_sources=("company_site", "company_site"),
+        ),
+        TriggerObservation(
+            code="T4_HIRING_AI_ONLY",
+            observed_at=utcnow(),
+            evidence_urls=("https://acme.io/careers",),
+            evidence_sources=("company_site",),
+        ),
+    )
+
+    assert "single_source" in score(make(triggers=own_site_only), cfg).penalties
 
 
 def test_evidence_older_than_180_days_is_penalised(cfg: ScoringConfig):
@@ -317,3 +364,39 @@ def test_a_contactable_lead_outscores_an_unreachable_one(cfg: ScoringConfig):
     )
     assert reachable.score > unknown.score
     assert reachable.breakdown["reachability"] == 100.0
+
+
+# ------------------------------------------------- calibration fingerprinting
+
+
+def test_the_fingerprint_ignores_cosmetic_config_changes(cfg: ScoringConfig):
+    """It hashes resolved values, not file bytes. Reformatting `scoring.yaml` or
+    editing a comment must not force a corpus-wide rescore at ~18 s a lead."""
+    from dataclasses import replace
+
+    assert cfg.fingerprint() == replace(cfg).fingerprint()
+
+
+def test_the_fingerprint_moves_when_a_number_moves(cfg: ScoringConfig):
+    from dataclasses import replace
+
+    original = cfg.fingerprint()
+    assert (
+        replace(cfg, penalties={**cfg.penalties, "single_source": -8.0}).fingerprint() != original
+    )
+    assert replace(cfg, tiers={**cfg.tiers, "C": 35.0}).fingerprint() != original
+    assert replace(cfg, components={**cfg.components, "trigger": 0.5}).fingerprint() != original
+
+
+def test_the_fingerprint_covers_the_arithmetic_not_just_the_config(cfg: ScoringConfig):
+    """A hash of `scoring.yaml` cannot see a change to the penalty logic in this
+    module, which is why `ARITHMETIC_VERSION` exists and has to be bumped by hand."""
+    import cindraleads.scoring as scoring_module
+
+    before = cfg.fingerprint()
+    original = scoring_module.ARITHMETIC_VERSION
+    try:
+        scoring_module.ARITHMETIC_VERSION = original + 1
+        assert cfg.fingerprint() != before
+    finally:
+        scoring_module.ARITHMETIC_VERSION = original
