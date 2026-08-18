@@ -52,6 +52,7 @@ class LeadRow:
     tier: str
     components: dict[str, float]
     penalties: dict[str, float]
+    scoring_version: str = ""
 
     @property
     def penalty_total(self) -> float:
@@ -73,18 +74,31 @@ class ScoreDiagnosis:
     near_misses: list[tuple[LeadRow, float, str]] = field(default_factory=list)
     floor: float = 0.0
 
-    # Evidence breadth, which the `single_source` rule turns out not to measure. It
-    # inspects only the *top* trigger, so a company with three triggers from three
-    # independent sources is still penalised when its highest-weighted one happens to
-    # cite a single page. These count what a lead actually rests on, across every live
-    # trigger, so the difference between the two readings is visible rather than argued.
+    # Evidence breadth: what a lead actually rests on, across every live trigger.
+    #
+    # This found the `single_source` defect -- the rule inspected only the top trigger,
+    # so 56 of 57 corroborated leads were penalised as one page's word for it. Now that
+    # the rule counts every trigger, the same numbers are the check that the fix took:
+    # `penalised_but_corroborated` should fall to zero once the corpus is rescored, and
+    # a number that stays high means either the rescore has not run or the rule
+    # regressed.
     corroborated: int = 0
     penalised_but_corroborated: int = 0
     promoted_if_corroboration_counted: int = 0
 
+    # Leads whose stored score came from a different calibration than the one running.
+    # Without this the report silently describes the past: `cindra reconcile` only
+    # enqueues, so reading `explain` straight afterwards shows every lead exactly as
+    # the old rules left it, and the fix looks like it did nothing.
+    stale_calibration: int = 0
+
     @property
     def dispatchable(self) -> int:
         return sum(count for tier, count in self.tiers.items() if tier != "REJECT")
+
+    @property
+    def is_current(self) -> bool:
+        return self.stale_calibration == 0
 
 
 def _split(
@@ -117,7 +131,7 @@ def read_leads(store: Store, cfg: ScoringConfig) -> list[LeadRow]:
     rows: list[LeadRow] = []
     for row in store.conn.execute(
         "SELECT l.lead_id, l.canonical_domain, l.score, l.tier, l.score_breakdown, "
-        "c.display_name FROM leads l "
+        "l.scoring_version, c.display_name FROM leads l "
         "JOIN companies c ON c.canonical_domain = l.canonical_domain"
     ):
         try:
@@ -134,6 +148,7 @@ def read_leads(store: Store, cfg: ScoringConfig) -> list[LeadRow]:
                 tier=str(row["tier"]),
                 components=components,
                 penalties=penalties,
+                scoring_version=str(row["scoring_version"] or ""),
             )
         )
     return rows
@@ -169,8 +184,11 @@ def diagnose(
         return result
 
     breadth = evidence_breadth(store)
+    fingerprint = cfg.fingerprint()
 
     for lead in leads:
+        if lead.scoring_version != fingerprint:
+            result.stale_calibration += 1
         result.tiers[lead.tier] = result.tiers.get(lead.tier, 0) + 1
         for name, value in lead.components.items():
             result.component_means[name] = result.component_means.get(name, 0.0) + value

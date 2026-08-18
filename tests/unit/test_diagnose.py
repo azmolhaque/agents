@@ -313,3 +313,38 @@ def test_breadth_is_reported_never_applied(store: Any) -> None:
     assert report.promoted_if_corroboration_counted == 1
     row = store.conn.execute("SELECT score, tier FROM leads").fetchone()
     assert (row[0], row[1]) == (0, "REJECT"), "diagnosing must not rescore"
+
+
+# ------------------------------------------------------- reporting its own freshness
+
+
+def test_a_stale_calibration_is_flagged(store: Any) -> None:
+    """`cindra reconcile` only enqueues, so reading the report straight after a
+    calibration change shows the corpus exactly as the old rules left it. Without this
+    the fix looks like it did nothing, and every number below describes a config that
+    is no longer running."""
+    _lead(store, "acme.io", score=45, tier="C", **_strong(), no_contact=-25.0)
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET scoring_version = 'from-an-older-config'")
+
+    report = diagnose(store)
+
+    assert report.stale_calibration == 1
+    assert report.is_current is False
+
+
+def test_a_rescored_corpus_reports_current(store: Any) -> None:
+    _lead(store, "acme.io", score=45, tier="C", **_strong(), no_contact=-25.0)
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET scoring_version = ?", (ScoringConfig.load().fingerprint(),))
+
+    report = diagnose(store)
+
+    assert report.stale_calibration == 0
+    assert report.is_current is True
+
+
+def test_a_lead_predating_the_column_counts_as_stale(store: Any) -> None:
+    _lead(store, "acme.io", score=45, tier="C", **_strong())
+
+    assert diagnose(store).stale_calibration == 1

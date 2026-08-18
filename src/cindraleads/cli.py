@@ -553,8 +553,21 @@ def explain(
         typer.echo("no leads scored yet")
         return
 
-    typer.echo(f"{report.total} lead(s) scored\n")
-    typer.echo("tiers")
+    typer.echo(f"{report.total} lead(s) scored")
+    if not report.is_current:
+        # Loud, and first. `cindra reconcile` only enqueues, so running `explain`
+        # straight after a calibration change reads the corpus exactly as the old
+        # rules left it -- and every number below describes a config that is no
+        # longer running.
+        typer.echo(
+            f"\n  !! {report.stale_calibration} of {report.total} lead(s) were scored by a "
+            f"DIFFERENT calibration than the one\n"
+            f"     running now. Everything below describes the old rules. The worker is "
+            f"re-scoring\n"
+            f"     them (~18 s each); re-run this once `cindra status` shows the score "
+            f"queue drained."
+        )
+    typer.echo("\ntiers")
     for tier in ("A", "B", "C", "REJECT"):
         now = report.tiers.get(tier, 0)
         lifted = report.tiers_unpenalised.get(tier, 0)
@@ -580,19 +593,26 @@ def explain(
         )
 
     if report.penalty_counts.get("single_source"):
-        typer.echo("\nevidence breadth (what `single_source` does not currently measure)")
+        typer.echo("\nevidence breadth (what a lead actually rests on)")
         typer.echo(
             f"  {report.corroborated:>4} lead(s) cite 2+ distinct sources across all their "
             f"live triggers"
         )
-        typer.echo(
-            f"  {report.penalised_but_corroborated:>4} of those carry single_source anyway, "
-            f"because the rule only inspects the top trigger"
-        )
-        typer.echo(
-            f"  {report.promoted_if_corroboration_counted:>4} would change tier if the rule "
-            f"counted every trigger's evidence"
-        )
+        typer.echo(f"  {report.penalised_but_corroborated:>4} of those carry single_source anyway")
+        if report.penalised_but_corroborated:
+            # Zero is the expected reading now that the rule counts every trigger.
+            # Anything else is either an un-rescored corpus or a regression, and those
+            # need different responses -- so say which is more likely rather than
+            # leaving the number to be read as a standing indictment of the rule.
+            cause = (
+                "they have not been re-scored yet"
+                if not report.is_current
+                else "the rule may have regressed -- it should count every trigger's sources"
+            )
+            typer.echo(f"       ({cause})")
+            typer.echo(
+                f"  {report.promoted_if_corroboration_counted:>4} would change tier once they are"
+            )
 
     typer.echo(f"\nclosest to the Tier C floor of {report.floor:.0f}")
     for lead, gap, blocker in report.near_misses:
