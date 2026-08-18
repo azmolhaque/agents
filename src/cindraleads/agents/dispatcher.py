@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -318,8 +319,13 @@ def _card_data(lead: dict[str, Any]) -> CardData:
         triggers=tuple(triggers),
         evidence=tuple((str(e["source_id"]), str(e["url"])) for e in lead["evidence"]),
         description=str(lead["description"] or ""),
-        outreach_angle=str(lead["outreach_angle"] or ""),
-        bengali_angle=lead["bengali_angle"],
+        # Withheld here, not just at generation. The Scorer refuses to *store* an angle
+        # naming our internal taxonomy, but leads scored before that guard existed
+        # already have one, and nothing will re-queue them -- their calibration is
+        # current, so the reconciler sees nothing stale. This is the last point before
+        # Discord and the only one that catches prose written under an older rule.
+        outreach_angle=_publishable(str(lead["outreach_angle"] or ""), lead["lead_id"]),
+        bengali_angle=_publishable(lead["bengali_angle"], lead["lead_id"]),
         surface_notes=tuple(surface),
         compliance_basis=str(compliance.get("basis", "legitimate_interest_b2b")),
         compliance_passed=bool(compliance.get("passed", True)),
@@ -424,6 +430,32 @@ async def send_digest(
 
     log.info("digest_sent", sent=report.sent, pages=report.pages, pending=report.pending)
     return report
+
+
+# Any internal trigger code. Kept in step with the Scorer's copy deliberately rather
+# than shared: this one guards what leaves the building, and it must keep working even
+# if the generation-side rule is loosened.
+_INTERNAL_CODE = re.compile(r"\bT\d{1,2}_[A-Z][A-Z_]+\b")
+
+
+def _publishable(text: str | None, lead_id: Any = "") -> Any:
+    """Prose, or nothing, if it names something only we should see.
+
+    An empty angle on a card is a small loss -- the triggers, evidence and score are
+    all still there and a human can write the sentence themselves. An angle reading
+    "You published T1_AI_SHIP on your public page" is worse than empty: the card is
+    made to be pasted into an email, and that one cannot be.
+    """
+    if not text:
+        return text
+    if _INTERNAL_CODE.search(str(text)):
+        log.warning(
+            "card_prose_withheld",
+            lead_id=str(lead_id),
+            codes=sorted(set(_INTERNAL_CODE.findall(str(text)))),
+        )
+        return ""
+    return text
 
 
 def digest_pages(cards: list[CardData]) -> list[list[dict[str, Any]]]:

@@ -773,3 +773,80 @@ def test_force_requeues_a_company_whose_job_already_ran(rig):
     # --force gets past it.
     assert enqueue_stale_scores(store, queue, force=True) == 1
     assert queue.claim("w2", kinds=["score.company"], lease_seconds=60, limit=10)
+
+
+def test_a_card_never_shows_an_internal_trigger_code(rig):
+    """The last line before Discord.
+
+    The Scorer refuses to *store* an angle naming our taxonomy, but leads scored before
+    that guard existed already have one, and nothing re-queues them -- their
+    calibration is current, so the reconciler sees nothing stale. A real Tier B card
+    reached #cindrasec reading "You published T1_AI_SHIP and T8_HYGIENE_GAP on your
+    public page", and this is the check that would have stopped it.
+    """
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET outreach_angle = ?, bengali_angle = ?",
+            (
+                "You published T1_AI_SHIP and T8_HYGIENE_GAP on your public page.",
+                "আপনারা T1_AI_SHIP প্রকাশ করেছেন।",
+            ),
+        )
+
+    card = build_card(_lead_row(store))
+
+    # Precisely the prose fields, by name. The Triggers field shows codes on purpose --
+    # that half of the card is for the operator, and it is the Angle that gets pasted
+    # into an email. A blanket "no codes anywhere" assertion would forbid the useful
+    # half of the card along with the harmful one.
+    names = {f["name"] for f in card["fields"]}
+    assert not any(n.endswith("Angle") or "\u09ac\u09be\u0982\u09b2\u09be" in n for n in names), (
+        f"a withheld angle should drop its field entirely, got {sorted(names)}"
+    )
+    assert any("Triggers" in n for n in names), "the operator-facing trigger list stays"
+
+
+def test_withholding_the_angle_does_not_withhold_the_lead(rig):
+    """An empty angle is a small loss -- triggers, evidence and score are all still on
+    the card and a human can write the sentence. An angle naming internal codes is
+    worse than empty, because the card exists to be pasted into an email."""
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET outreach_angle = 'You published T1_AI_SHIP.'")
+
+    card = build_card(_lead_row(store))
+
+    assert card["title"], "the card still exists"
+    assert any("Acme" in json.dumps(v) for v in card.values()), "the company is still named"
+    assert any("T1_AI_SHIP" in json.dumps(f) for f in card.get("fields", [])), (
+        "the trigger is still shown in the Triggers field -- that is ours to read"
+    )
+
+
+def test_a_clean_angle_is_left_alone(rig):
+    build, _posts, store = rig
+    build(tier="A")
+    angle = "You announced an AI assistant two weeks ago. I'd like to review it, free."
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET outreach_angle = ?", (angle,))
+
+    assert angle in json.dumps(build_card(_lead_row(store)))
+
+
+def _lead_row(store):  # type: ignore[no-untyped-def]
+    """The lead as the Dispatcher reads it, without needing a live webhook."""
+    from cindraleads.agents.dispatcher import Dispatcher
+
+    reader = Dispatcher(
+        store=store,
+        webhook=DiscordWebhook(
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"id": "x"}))
+            )
+        ),
+        webhooks={"hot": "https://x.test"},
+    )
+    return reader.read_lead("lead1")
