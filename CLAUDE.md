@@ -38,7 +38,7 @@ cindra queue release [--kind K]          # pull deferred jobs forward
 cindra status                            # candidates, companies, live triggers
 cindra maintain [--dry-run] [--no-network]  # nightly: retire, decay, resample, purge
 cindra reconcile                         # enqueue-only: unenriched + stale scores
-cindra explain [--near-misses N]         # why the corpus scores as it does; read-only
+cindra explain [--near-misses N]         # scores, penalties, and yield per query template
 cindra digest [--dry-run] [--limit N]    # batch the Tier C backlog to Discord
 cindra serve [--port 9109]               # /healthz, /metrics, HTML view (localhost)
 cindra feedback <lead_id> good|bad
@@ -202,6 +202,23 @@ Three things that shape the rest of Phase 7:
 Tier C posted one message per lead. The per-lead stage now sends only A and B; `cindra
 digest` reconciles the rest against `dispatch_log` daily, so a missed morning costs a
 day's delay and not a day's leads.
+
+**Discovery is weighted by what a hit *proves*, not by what it announces.** The
+first corpus reached 148 companies at 82% T1_AI_SHIP -- a tic-tac-toe game, a world
+clock, a personal blog -- because unfiltered Show HN sat at weight 95 and the HN
+hiring thread at 72. With a 12-plan budget per run the project sources consumed it
+before the company sources were reached. The question every template weight now
+answers: does a hit here imply payroll or investors? A public ATS board does, a
+funding announcement does, an org-owned repo usually does, a Show HN post does not.
+
+`companies.discovered_by` records the template that found a company first (never
+overwritten -- a re-sighting does not reassign discovery), and `cindra explain` reports
+sendable-per-template. **Before it existed, no query change was checkable.** A weight in
+`icp.yaml` is a guess until that table disagrees with it.
+
+`organizations_only` defaults ON for GitHub. `stack_risk_repos` documented "Restricted
+to organizations" for weeks while calling an unfiltered search, so every personal
+langchain project became a candidate.
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. The Phase 7 acceptance run requires

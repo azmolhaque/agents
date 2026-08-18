@@ -127,7 +127,14 @@ class Resolver:
         match = same_company(domain=domain, name=display_name, country=country, known=known)
         resolved = match.canonical_domain if match else domain
 
-        created = self._upsert_company(conn, resolved, extraction, display_name, country)
+        created = self._upsert_company(
+            conn,
+            resolved,
+            extraction,
+            display_name,
+            country,
+            template_id=str(payload.get("template_id") or ""),
+        )
         trigger_ids = self._write_triggers(
             conn,
             resolved,
@@ -189,6 +196,7 @@ class Resolver:
         extraction: dict[str, Any],
         display_name: str,
         country: str | None,
+        template_id: str = "",
     ) -> bool:
         """Insert or merge. Returns True if the company is new."""
         now = to_iso(utcnow())
@@ -203,9 +211,14 @@ class Resolver:
 
         if existing is None:
             conn.execute(
+                # `discovered_by` is written here and nowhere else. Credit for
+                # finding a company belongs to the template that found it first; the
+                # merge branch below deliberately leaves it alone, so a company seen
+                # again by a second template does not reassign its own discovery.
                 "INSERT INTO companies (canonical_domain, display_name, country, employee_band, "
-                "industry, description, tech_signals, ai_surface, first_seen_at, last_updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "industry, description, tech_signals, ai_surface, discovered_by, "
+                "first_seen_at, last_updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     domain,
                     display_name,
@@ -215,6 +228,7 @@ class Resolver:
                     extraction.get("description"),
                     json.dumps(sorted(set(tech))),
                     json.dumps(sorted(set(surface))),
+                    template_id or None,
                     now,
                     now,
                 ),

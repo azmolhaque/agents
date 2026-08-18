@@ -614,6 +614,21 @@ def explain(
                 f"  {report.promoted_if_corroboration_counted:>4} would change tier once they are"
             )
 
+    if report.by_template:
+        typer.echo("\ndiscovery yield by icp.yaml template")
+        typer.echo(f"  {'template':<24} {'found':>6} {'sendable':>9} {'hit rate':>9} {'mean':>6}")
+        for row in report.by_template:
+            typer.echo(
+                f"  {row.template_id[:24]:<24} {row.companies:>6} {row.sendable:>9} "
+                f"{row.hit_rate:>8.0%} {row.mean_score:>6.1f}"
+            )
+        unknown = next((r for r in report.by_template if r.template_id == "(unknown)"), None)
+        if unknown and unknown.companies:
+            typer.echo(
+                f"  ({unknown.companies} found before provenance was recorded; they will "
+                f"not be attributed retroactively)"
+            )
+
     typer.echo(f"\nclosest to the Tier C floor of {report.floor:.0f}")
     for lead, gap, blocker in report.near_misses:
         typer.echo(

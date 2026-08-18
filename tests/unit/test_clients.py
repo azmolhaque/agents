@@ -347,3 +347,61 @@ def test_different_lookbacks_are_different_keys():
     assert HackerNewsClient.cache_key("ai", since_days=30) != HackerNewsClient.cache_key(
         "ai", since_days=90
     )
+
+
+# --------------------------------------------------- a company, or just a person?
+
+
+def _repo(name: str, owner_type: str, *, homepage: str = "https://acme.io") -> dict:
+    return {
+        "html_url": f"https://github.com/{name}",
+        "full_name": name,
+        "description": "an AI thing",
+        "pushed_at": "2026-08-01T00:00:00Z",
+        "stargazers_count": 120,
+        "language": "Python",
+        "homepage": homepage,
+        "owner": {"type": owner_type, "login": name.split("/")[0]},
+    }
+
+
+async def test_personal_repos_are_dropped_when_organizations_only(monkeypatch):
+    """The filter the docstring claimed and the code never applied.
+
+    `stack_risk_repos` documented "Restricted to organizations" while calling an
+    unfiltered search, so every personal langchain project became a candidate. That is
+    a large part of why the first 148 companies were side projects.
+    """
+    import json as _json
+
+    from cindraleads.sources.clients import GitHubClient
+
+    payload = {"items": [_repo("acmecorp/agent", "Organization"), _repo("hobbyist/toy", "User")]}
+
+    class _Egress:
+        async def fetch(self, source_id, url, **kwargs):
+            return type("R", (), {"body": _json.dumps(payload), "url": url})()
+
+    client = GitHubClient(_Egress())  # type: ignore[arg-type]
+
+    kept = await client.search_repos("langchain", organizations_only=True)
+    assert [h.title for h in kept] == ["acmecorp/agent"]
+
+    everything = await client.search_repos("langchain", organizations_only=False)
+    assert len(everything) == 2, "the filter must be opt-in-able, not unconditional"
+
+
+async def test_stack_risk_repos_actually_restricts_to_organizations():
+    """The specific call whose docstring was wrong."""
+    import json as _json
+
+    from cindraleads.sources.clients import GitHubClient
+
+    payload = {"items": [_repo("acmecorp/agent", "Organization"), _repo("hobbyist/toy", "User")]}
+
+    class _Egress:
+        async def fetch(self, source_id, url, **kwargs):
+            return type("R", (), {"body": _json.dumps(payload), "url": url})()
+
+    hits = await GitHubClient(_Egress()).stack_risk_repos()  # type: ignore[arg-type]
+    assert [h.title for h in hits] == ["acmecorp/agent"]

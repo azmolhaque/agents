@@ -132,7 +132,14 @@ class Harvester:
                 assert self.serpapi is not None
                 return await self.serpapi.search(plan.engine, plan.query)
             assert self.github is not None
-            return await self.github.search_repos(plan.query)
+            # Default ON. A personal repo is a person, and the anti-ICP rule excludes
+            # unaffiliated individuals -- so the company-shaped default is the org
+            # filter, and a template has to opt *out* deliberately. The first corpus
+            # ran without it and filled with side projects.
+            return await self.github.search_repos(
+                plan.query,
+                organizations_only=plan.params.get("organizations_only", "true") != "false",
+            )
         except FetchDenied as exc:
             # Policy said no. Nothing broke, so this is info, not an error.
             log.info("harvester_denied", engine=plan.engine, reason=exc.reason)
@@ -336,6 +343,7 @@ def _payload_json(hit: SourceHit, plan: QueryPlan, target: str) -> str:
             "source_id": hit.source_id,
             "published_at": to_iso(hit.published_at) if hit.published_at else None,
             "targets": list(plan.targets),
+            "template_id": plan.template_id,
             "raw": hit.raw,
         },
         separators=(",", ":"),

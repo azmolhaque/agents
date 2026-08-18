@@ -262,6 +262,11 @@ class QueryPlan(_Model):
 
     query: str
     engine: str = "google"
+    # Which `icp.yaml` template produced this. Carried all the way to
+    # `companies.discovered_by` so query yield is measurable rather than argued:
+    # without it there is no way to tell which template found the funded healthtech
+    # and which found the tic-tac-toe game, and every rewrite is a guess.
+    template_id: str = ""
     params: dict[str, str] = Field(default_factory=dict)
     targets: list[TriggerCode] = Field(default_factory=list)
     rationale: str = ""

@@ -49,103 +49,150 @@ geography:
 # ---------------------------------------------------------------------------
 
 query_templates:
-  # ---- free: Show HN is where a small team announces what it just shipped -----
-  - id: hn_show_ai
-    engine: hn_algolia
-    tags: show_hn
-    query: ""
-    since_days: 30
-    targets: [T1_AI_SHIP]
-    weight: 95
-    rationale: Show HN launches, unfiltered. The single best free T1 source.
+  # Ordered by weight, and the ordering is the fix.
+  #
+  # The first real corpus reached 148 companies, 82% of them carrying only T1_AI_SHIP,
+  # and the names tell the story: Ultimate Tic-Tac-Toe, WorldClock, handwritten.blog.
+  # Discovery was weighted toward sources that announce *projects* -- unfiltered Show
+  # HN at 95, GitHub repo search at 88 -- and away from the ones that surface
+  # *companies*: the HN hiring thread at 72, funding at 62, ATS boards rationed at 60.
+  # With a 12-plan budget per run, the project sources consumed it before the company
+  # sources were reached.
+  #
+  # The reweighting below asks one question of every template: does a hit here imply
+  # the thing on the other end has employees and money? A public ATS board does. A
+  # funding announcement does. A repo owned by an organisation usually does. A Show HN
+  # post does not, and "shipped an AI thing" is not evidence of being a company.
+  #
+  # Show HN is kept, not deleted -- it is genuinely where a small funded team announces
+  # a launch, and it is free. It is simply no longer first in the queue.
 
-  - id: hn_ai_agent
-    engine: hn_algolia
-    query: AI agent OR LLM chatbot OR MCP server
-    since_days: 45
-    targets: [T1_AI_SHIP, T11_STACK_RISK]
-    weight: 85
-    rationale: Teams describing an agent they shipped.
-
-  - id: hn_pentest_pressure
-    engine: hn_algolia
-    query: SOC 2 OR penetration test OR security questionnaire
-    since_days: 60
-    targets: [T10_VENDOR_PRESSURE, T5_COMPLIANCE]
-    weight: 80
-    rationale: >
-      People complaining publicly about being asked for a pentest report. High intent
-      and there is no paid equivalent worth buying.
-
-  # ---- free: public code that imports an agent framework ---------------------
-  - id: gh_mcp_servers
-    engine: github_api
-    query: mcp-server language:python
-    since_days: 120
-    targets: [T1_AI_SHIP, T11_STACK_RISK]
-    weight: 88
-    rationale: An MCP server in public code is a concrete, dated AI surface.
-
-  - id: gh_agent_frameworks
-    engine: github_api
-    query: langchain OR llamaindex OR autogen OR crewai
-    since_days: 180
-    targets: [T11_STACK_RISK]
-    weight: 70
-    rationale: Agent frameworks in org-owned repos.
-
-  - id: gh_ai_startups
-    engine: github_api
-    query: chatbot OR "ai assistant" stars:>10
-    since_days: 90
-    targets: [T1_AI_SHIP]
-    weight: 65
-    rationale: Smaller AI products with some traction.
-
-  # ---- free: HN carries hiring, funding and incidents too --------------------
-  # Added after a coverage audit showed T2/T3/T4/T6/T12 were reachable ONLY through
-  # a rationed source, which quietly undercut decision 7. These are weaker signals
-  # than a targeted paid search, but they are free and they run every hour.
-
+  # ---- company-shaped and free: someone is hiring, so someone is paying ------
   - id: hn_who_is_hiring
     engine: hn_algolia
     query: Ask HN Who is hiring
     since_days: 45
     targets: [T3_HIRING_SEC, T4_HIRING_AI_ONLY]
-    weight: 72
+    weight: 96
     rationale: >
-      HN's monthly hiring thread. Once a company surfaces here its own ATS board is
-      free, so this converts a paid discovery into a free one.
+      Every entry in this thread is a company with payroll -- the strongest free
+      company filter there is. It was at 72 and producing almost nothing because the
+      project templates above it exhausted the plan budget first: T4 fired once in 148
+      companies, T3 twice. Once a company surfaces here its own ATS board is free, so
+      this converts a paid discovery into a free one.
+
+  - id: hn_hiring_ai_roles
+    engine: hn_algolia
+    query: hiring "AI engineer" OR "ML engineer" OR "LLM" remote
+    since_days: 45
+    targets: [T4_HIRING_AI_ONLY, T1_AI_SHIP]
+    weight: 92
+    rationale: >
+      A company paying for AI engineers is shipping AI and has budget, which is the
+      ICP in one query. Narrower than the monthly thread and catches off-cycle posts.
 
   - id: hn_funding
     engine: hn_algolia
     query: raises seed OR "Series A" OR "we raised"
     since_days: 90
     targets: [T2_FUNDING]
-    weight: 62
-    rationale: Funding announcements posted by founders themselves.
+    weight: 90
+    rationale: >
+      Raised money means investors, a board and runway -- and it dates the event, which
+      is what makes a trigger a reason to call this month. T2 fired 9 times in 148
+      companies; it should be one of the commonest triggers, not one of the rarest.
+
+  # ---- company-shaped and free: org-owned code -------------------------------
+  # `organizations_only` is on by default in the harvester, so these return repos owned
+  # by an organisation rather than a person. That filter existed only in a docstring
+  # until it was found missing; every personal langchain project was a candidate.
+
+  - id: gh_mcp_servers
+    engine: github_api
+    query: mcp-server language:python
+    since_days: 120
+    targets: [T1_AI_SHIP, T11_STACK_RISK]
+    weight: 86
+    rationale: An MCP server in org-owned code is a concrete, dated AI surface.
+
+  - id: gh_agent_frameworks
+    engine: github_api
+    query: langchain OR llamaindex OR autogen OR crewai
+    since_days: 180
+    targets: [T11_STACK_RISK]
+    weight: 78
+    rationale: Agent frameworks in org-owned repos.
+
+  - id: gh_ai_products
+    engine: github_api
+    query: chatbot OR "ai assistant" stars:>100
+    since_days: 90
+    targets: [T1_AI_SHIP]
+    weight: 60
+    rationale: >
+      Was `stars:>10`, which is a weekend project with friends. 100 stars on an
+      org-owned repo is a product with users. Renamed from `gh_ai_startups` because
+      the old id described what it was hoped to find, not what it found.
+
+  # ---- free, but a project until proven otherwise ---------------------------
+  # Demoted rather than removed. These do surface real companies; they just surface
+  # ten side projects for each one, and they were consuming the plan budget first.
+
+  - id: hn_show_ai
+    engine: hn_algolia
+    tags: show_hn
+    query: ""
+    since_days: 30
+    targets: [T1_AI_SHIP]
+    weight: 55
+    rationale: >
+      Show HN, unfiltered. Was weight 95 and the single largest source of side
+      projects in the corpus -- a tic-tac-toe game and a world clock both arrived
+      here. Kept because a funded team announcing a launch is a genuine T1, and it
+      costs nothing; demoted because most posts are one person's weekend.
+
+  - id: hn_ai_agent
+    engine: hn_algolia
+    query: AI agent OR LLM chatbot OR MCP server
+    since_days: 45
+    targets: [T1_AI_SHIP, T11_STACK_RISK]
+    weight: 52
+    rationale: Teams describing an agent they shipped. Same caveat as Show HN.
+
+  # ---- free: intent and context ---------------------------------------------
+
+  - id: hn_pentest_pressure
+    engine: hn_algolia
+    query: SOC 2 OR penetration test OR security questionnaire
+    since_days: 60
+    targets: [T10_VENDOR_PRESSURE, T5_COMPLIANCE]
+    weight: 82
+    rationale: >
+      Someone being asked for a pentest report by a customer is a company with
+      customers, and high intent. No paid equivalent worth buying.
 
   - id: hn_incident
     engine: hn_algolia
     query: data breach OR security incident OR exposed database
     since_days: 45
     targets: [T6_INCIDENT]
-    weight: 68
+    weight: 64
     rationale: >
       Disclosed incidents. The company itself is rarely the prospect; its sector peers
       are, and they are reading the same thread.
 
   - id: hn_south_asia
     engine: hn_algolia
-    query: Bangladesh OR Dhaka OR Pakistan OR "Sri Lanka" startup
+    query: Bangladesh OR Dhaka OR Pakistan OR "Sri Lanka" startup funding
     since_days: 120
-    targets: [T12_LOCAL]
-    weight: 50
-    rationale: The BD/South Asia local-trust wedge, without spending a credit.
+    targets: [T12_LOCAL, T2_FUNDING]
+    weight: 58
+    rationale: >
+      The BD/South Asia local-trust wedge. `funding` added to the query: without it
+      this returned discussion threads about the region rather than companies in it.
 
   # ---- rationed: only SerpAPI can do these ----------------------------------
-  # T9 is the highest-weight trigger in the taxonomy (28) and has no free source at
-  # all, so it is the best possible use of a scarce credit.
+
   - id: serp_marketplace_pentest
     engine: serpapi_marketplace
     query: site:upwork.com "penetration test" posted
@@ -158,11 +205,13 @@ query_templates:
     engine: serpapi_jobs
     query: site:boards.greenhouse.io ("AI engineer" OR "ML engineer")
     targets: [T4_HIRING_AI_ONLY, T3_HIRING_SEC]
-    weight: 60
+    weight: 94
     cost: 1
     rationale: >
-      Discovery only. Once the company is known its Greenhouse board is free, so this
-      is worth a credit solely for companies we have never seen.
+      A public Greenhouse board is proof of payroll, and the role proves they are
+      shipping AI. Raised from 60: with two costed plans per run this and the
+      marketplace query are the two worth paying for, and a credit spent confirming a
+      company exists is worth more than one spent finding another launch post.
 
   - id: serp_funding_bd
     engine: serpapi_news

@@ -113,7 +113,10 @@ async def test_a_cached_answer_is_not_replanned_end_to_end(rt):
 
         after = runtime.scout.plan()
 
-        assert len(after) == len(before) - 1
+        # By identity, not by count: there are more templates than the per-run plan
+        # ceiling, so a skipped query frees its slot for the next-highest-weighted
+        # template. The batch stays the same size and that is correct.
+        assert not any(p.template_id == target.template_id for p in after)
         assert not any(p.query == target.query and p.engine == target.engine for p in after)
 
 

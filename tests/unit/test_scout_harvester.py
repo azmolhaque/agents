@@ -167,7 +167,11 @@ def test_a_cached_query_is_not_replanned(scout: Scout, rig, tmp_path: Path):
         ttl_hours=24,
     )
     after = scout.plan()
-    assert len(after) == len(before) - 1
+    # The cached template is gone from the batch. Deliberately not asserted by count:
+    # there are more templates than the per-run plan ceiling, so skipping one simply
+    # lets the next-highest-weighted template take the freed slot -- which is the
+    # intended behaviour and would make a count-based assertion read as a regression.
+    assert not any(p.template_id == target.template_id for p in after)
     assert not any(p.query == target.query and p.engine == target.engine for p in after)
 
 
@@ -418,3 +422,53 @@ def test_an_ordinary_company_url_is_unaffected(rig):
 
     hit = SourceHit(url="https://acme.io/blog/x", title="", snippet="", source_id="x", raw={})
     assert extraction_target(hit) == "https://acme.io/blog/x"
+
+
+# ------------------------------------------------- discovery quality (Phase 7 follow-up)
+
+
+def test_company_shaped_templates_outrank_project_shaped_ones():
+    """The reweighting, as an assertion rather than a comment.
+
+    The first corpus reached 148 companies at 82% T1_AI_SHIP -- a tic-tac-toe game, a
+    world clock, a personal blog -- because unfiltered Show HN sat at weight 95 and the
+    HN hiring thread at 72. With a 12-plan budget per run the project sources were
+    consuming it before the company sources were reached.
+    """
+    from cindraleads.agents.scout import Scout
+    from cindraleads.sources.registry import SourceRegistry
+
+    templates = {t.id: t for t in Scout.from_config(SourceRegistry.from_config()).templates}
+
+    # A hit here implies payroll or investors.
+    company_shaped = ("hn_who_is_hiring", "hn_hiring_ai_roles", "hn_funding")
+    # A hit here implies someone shipped something, which anyone can do.
+    project_shaped = ("hn_show_ai", "hn_ai_agent")
+
+    worst_company = min(templates[t].weight for t in company_shaped)
+    best_project = max(templates[t].weight for t in project_shaped)
+    assert worst_company > best_project, (
+        "a template that only proves someone shipped a thing outranks one that proves "
+        "a company has payroll"
+    )
+
+
+def test_every_template_id_is_unique():
+    """Ids are the provenance key written to `companies.discovered_by`. A duplicate
+    would silently merge two templates' yield and make the report lie."""
+    from cindraleads.agents.scout import Scout
+    from cindraleads.sources.registry import SourceRegistry
+
+    ids = [t.id for t in Scout.from_config(SourceRegistry.from_config()).templates]
+    assert len(ids) == len(set(ids)), sorted({i for i in ids if ids.count(i) > 1})
+
+
+def test_a_plan_carries_the_template_that_made_it():
+    """Without this there is no way to tell which query found the funded healthtech
+    and which found the tic-tac-toe game, and every rewrite is a guess."""
+    from cindraleads.agents.scout import Scout
+    from cindraleads.sources.registry import SourceRegistry
+
+    plans = Scout.from_config(SourceRegistry.from_config()).plan(limit=5)
+    assert plans
+    assert all(p.template_id for p in plans), [p.query for p in plans if not p.template_id]

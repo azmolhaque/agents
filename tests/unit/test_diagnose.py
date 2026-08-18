@@ -348,3 +348,71 @@ def test_a_lead_predating_the_column_counts_as_stale(store: Any) -> None:
     _lead(store, "acme.io", score=45, tier="C", **_strong())
 
     assert diagnose(store).stale_calibration == 1
+
+
+# ------------------------------------------------------ discovery yield by template
+
+
+def _discovered(store: Any, domain: str, template: str | None, *, tier: str, score: int) -> None:
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, discovered_by, "
+            "first_seen_at, last_updated_at) VALUES (?,?,?,?,?)",
+            (domain, domain, template, now, now),
+        )
+        conn.execute(
+            "INSERT INTO leads (lead_id, canonical_domain, score, score_breakdown, tier, "
+            "recommended_offer, first_seen_at, last_updated_at, pipeline_version) "
+            "VALUES (?,?,?,'{}',?,'snapshot_free',?,?,'t')",
+            (uuid.uuid4().hex[:16], domain, score, tier, now, now),
+        )
+
+
+def test_yield_separates_a_good_template_from_a_bad_one(store: Any) -> None:
+    """The number that makes a query rewrite evidence-based instead of a guess."""
+    from cindraleads.diagnose import template_yield
+
+    for n in range(4):
+        _discovered(store, f"hire{n}.io", "hn_who_is_hiring", tier="C", score=45)
+    for n in range(6):
+        _discovered(store, f"toy{n}.io", "hn_show_ai", tier="REJECT", score=10)
+
+    rows = {r.template_id: r for r in template_yield(store)}
+
+    assert rows["hn_who_is_hiring"].sendable == 4
+    assert rows["hn_who_is_hiring"].hit_rate == 1.0
+    assert rows["hn_show_ai"].sendable == 0
+    assert rows["hn_show_ai"].hit_rate == 0.0
+    assert rows["hn_show_ai"].companies == 6
+
+
+def test_companies_found_before_provenance_are_shown_not_dropped(store: Any) -> None:
+    """They are most of the corpus right now. Excluding them would make a handful of
+    new rows look like the whole picture."""
+    from cindraleads.diagnose import template_yield
+
+    _discovered(store, "old.io", None, tier="REJECT", score=10)
+    _discovered(store, "new.io", "hn_funding", tier="C", score=45)
+
+    rows = {r.template_id: r for r in template_yield(store)}
+
+    assert rows["(unknown)"].companies == 1
+    assert rows["hn_funding"].companies == 1
+
+
+def test_an_unscored_company_counts_as_found_but_not_sendable(store: Any) -> None:
+    """Otherwise a template that finds companies the pipeline has not reached yet
+    looks like a template that finds nothing."""
+    from cindraleads.diagnose import template_yield
+
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, discovered_by, "
+            "first_seen_at, last_updated_at) VALUES ('pending.io','Pending','hn_funding',?,?)",
+            (now, now),
+        )
+
+    row = next(r for r in template_yield(store) if r.template_id == "hn_funding")
+    assert (row.companies, row.scored, row.sendable) == (1, 0, 0)

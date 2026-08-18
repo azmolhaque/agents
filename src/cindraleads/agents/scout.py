@@ -51,12 +51,18 @@ class QueryTemplate:
     since_days: int = 30
     tags: str = ""
     rationale: str = ""
+    # GitHub only. Personal repos are excluded by default because a personal repo is a
+    # person; a template sets this to opt back in, which no current one does.
+    include_personal_repos: bool = False
 
     def to_plan(self, *, cache_ttl_hours: int) -> QueryPlan:
         params: dict[str, str] = {"since_days": str(self.since_days)}
         if self.tags:
             params["tags"] = self.tags
+        if self.include_personal_repos:
+            params["organizations_only"] = "false"
         return QueryPlan(
+            template_id=self.id,
             query=self.query,
             engine=self.engine,
             params=params,
@@ -116,6 +122,7 @@ class Scout:
                     query=str(entry.get("query", "")),
                     targets=tuple(entry.get("targets", [])),
                     weight=int(entry.get("weight", 50)),
+                    include_personal_repos=bool(entry.get("include_personal_repos", False)),
                     since_days=int(entry.get("since_days", 30)),
                     tags=str(entry.get("tags", "")),
                     rationale=str(entry.get("rationale", "")),

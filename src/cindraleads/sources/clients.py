@@ -180,8 +180,24 @@ class GitHubClient:
         return cache_key_for(cls.SOURCE_ID, url, params)
 
     async def search_repos(
-        self, query: str, *, sort: str = "updated", limit: int = 30
+        self,
+        query: str,
+        *,
+        sort: str = "updated",
+        limit: int = 30,
+        organizations_only: bool = False,
     ) -> list[SourceHit]:
+        """Repositories matching `query`.
+
+        `organizations_only` is the cheapest "is this a company" filter available, and
+        it is free: the search response already says whether the owner is a User or an
+        Organization. A personal repo is a person, and the anti-ICP rule excludes
+        unaffiliated individuals -- so without this the corpus fills with side
+        projects, which is exactly what the first 148 companies were.
+
+        Applied here rather than in the query string because GitHub's search syntax
+        has no "owner is an org" qualifier; `org:` names one specific organisation.
+        """
         url, params = self.request_for(query, sort=sort, limit=limit)
         result = await self.egress.fetch(self.SOURCE_ID, url, params=params)
         data = _safe_json(result.body, source_id=self.SOURCE_ID, url=result.url)
@@ -189,8 +205,12 @@ class GitHubClient:
             return []
 
         hits: list[SourceHit] = []
+        skipped_personal = 0
         for repo in data.get("items", []):
             owner = repo.get("owner") or {}
+            if organizations_only and str(owner.get("type") or "") != "Organization":
+                skipped_personal += 1
+                continue
             hits.append(
                 SourceHit(
                     url=str(repo.get("html_url") or ""),
@@ -207,6 +227,13 @@ class GitHubClient:
                     },
                 )
             )
+        if skipped_personal:
+            log.info(
+                "github_personal_repos_skipped",
+                skipped=skipped_personal,
+                kept=len(hits),
+                query=query[:80],
+            )
         return hits
 
     async def stack_risk_repos(self, *, since_days: int = 180) -> list[SourceHit]:
@@ -214,10 +241,14 @@ class GitHubClient:
 
         Restricted to organizations. A personal side project is not a B2B prospect,
         and the anti-ICP rule already excludes unaffiliated individuals.
+
+        The restriction used to be only in this docstring: the filter was never
+        written, and every personal repo matching `langchain` became a candidate.
         """
         cutoff = (utcnow() - timedelta(days=since_days)).strftime("%Y-%m-%d")
         return await self.search_repos(
-            f"langchain OR mcp-server OR llamaindex OR autogen pushed:>{cutoff}"
+            f"langchain OR mcp-server OR llamaindex OR autogen pushed:>{cutoff}",
+            organizations_only=True,
         )
 
 

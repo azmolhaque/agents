@@ -34,8 +34,10 @@ from cindraleads.store import Store
 __all__ = [
     "LeadRow",
     "ScoreDiagnosis",
+    "TemplateYield",
     "diagnose",
     "evidence_breadth",
+    "template_yield",
 ]
 
 # Components carry a 0-100 value; anything else in the breakdown dict is a penalty.
@@ -91,6 +93,10 @@ class ScoreDiagnosis:
     # enqueues, so reading `explain` straight afterwards shows every lead exactly as
     # the old rules left it, and the fix looks like it did nothing.
     stale_calibration: int = 0
+
+    # Per-template discovery yield. The answer to "which query finds real companies",
+    # which no amount of scoring analysis can reach.
+    by_template: list[TemplateYield] = field(default_factory=list)
 
     @property
     def dispatchable(self) -> int:
@@ -173,6 +179,53 @@ def evidence_breadth(store: Store) -> dict[str, int]:
     return {str(row["domain"]): int(row["sources"]) for row in rows}
 
 
+@dataclass(frozen=True)
+class TemplateYield:
+    """What one `icp.yaml` query template actually produced."""
+
+    template_id: str
+    companies: int
+    scored: int
+    sendable: int
+    mean_score: float
+
+    @property
+    def hit_rate(self) -> float:
+        return (self.sendable / self.companies) if self.companies else 0.0
+
+
+def template_yield(store: Store) -> list[TemplateYield]:
+    """Companies per discovery template, and how many became leads worth sending.
+
+    The question `icp.yaml` could not answer before `discovered_by` existed: which
+    query finds funded companies and which finds side projects. A template's weight is
+    a guess until this table disagrees with it.
+
+    Companies discovered before the column existed group under `(unknown)` rather than
+    being dropped -- they are most of the corpus right now, and silently excluding them
+    would make a handful of new rows look like the whole picture.
+    """
+    rows = store.conn.execute(
+        "SELECT COALESCE(c.discovered_by, '(unknown)') AS template, "
+        "COUNT(*) AS companies, "
+        "COUNT(l.lead_id) AS scored, "
+        "SUM(CASE WHEN l.tier IN ('A','B','C') THEN 1 ELSE 0 END) AS sendable, "
+        "AVG(COALESCE(l.score, 0)) AS mean_score "
+        "FROM companies c LEFT JOIN leads l ON l.canonical_domain = c.canonical_domain "
+        "GROUP BY template ORDER BY sendable DESC, companies DESC"
+    ).fetchall()
+    return [
+        TemplateYield(
+            template_id=str(row["template"]),
+            companies=int(row["companies"]),
+            scored=int(row["scored"]),
+            sendable=int(row["sendable"] or 0),
+            mean_score=float(row["mean_score"] or 0.0),
+        )
+        for row in rows
+    ]
+
+
 def diagnose(
     store: Store, *, config: ScoringConfig | None = None, near_miss_limit: int = 10
 ) -> ScoreDiagnosis:
@@ -184,6 +237,7 @@ def diagnose(
         return result
 
     breadth = evidence_breadth(store)
+    result.by_template = template_yield(store)
     fingerprint = cfg.fingerprint()
 
     for lead in leads:
