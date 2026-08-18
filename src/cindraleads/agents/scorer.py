@@ -418,7 +418,12 @@ def score_stamp(when: datetime) -> str:
 
 
 def enqueue_stale_scores(
-    store: Store, queue: Any, *, limit: int = 0, config: ScoringConfig | None = None
+    store: Store,
+    queue: Any,
+    *,
+    limit: int = 0,
+    config: ScoringConfig | None = None,
+    force: bool = False,
 ) -> int:
     """Queue a score job for every company whose lead is behind its triggers.
 
@@ -438,6 +443,13 @@ def enqueue_stale_scores(
     kept numbers the current code does not produce. A lead whose `scoring_version`
     differs from the running one is out of date by definition, and NULL — a lead
     written before the column existed — is the same thing.
+
+    `force` bypasses the dedupe key, and exists because of a specific way this wedges:
+    **a job that ran but achieved nothing is indistinguishable from one that worked.**
+    A worker executing a stale build drained a batch of rescores without stamping any
+    calibration, and those `done` rows now hold the keys for the very work they failed
+    to do — so the reconciler skips those companies forever. No query over this data
+    can detect it; it needs a human saying "recompute anyway".
     """
     fingerprint = (config or ScoringConfig.load()).fingerprint()
     now = to_iso(utcnow())
@@ -469,9 +481,12 @@ def enqueue_stale_scores(
             # move `newest` -- so without it the rescore collides with the job that
             # already ran under the old calibration and is silently dropped. The whole
             # mechanism would then look like it worked and change nothing.
-            digest = hashlib.sha256(f"{domain}|{row['newest']}|{fingerprint}".encode()).hexdigest()[
-                :16
-            ]
+            # `force` adds a nonce so the key cannot match the completed job blocking
+            # this one -- see the docstring for why that situation is undetectable.
+            shape = f"{domain}|{row['newest']}|{fingerprint}"
+            if force:
+                shape += f"|force:{now}"
+            digest = hashlib.sha256(shape.encode()).hexdigest()[:16]
             existing = conn.execute(
                 "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (f"score:{digest}",)
             ).fetchone()

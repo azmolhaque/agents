@@ -744,3 +744,32 @@ def test_new_triggers_are_queued_ahead_of_a_recalibration(rig):
     assert order[0] == "fresh.io", (
         f"the company with a genuinely new trigger must be queued first, got {order}"
     )
+
+
+def test_force_requeues_a_company_whose_job_already_ran(rig):
+    """A job that ran but did nothing useful looks exactly like one that worked.
+
+    A worker on a stale build drained a batch of rescores without stamping any
+    calibration. Those `done` rows now hold the dedupe keys for the very work they
+    failed to do, so the reconciler skips those companies forever. Nothing in the data
+    can detect that -- it needs a human saying "recompute anyway".
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="A")
+    queue = JobQueue(store)
+
+    # A stale lead, queued and then drained by a worker that achieved nothing.
+    assert enqueue_stale_scores(store, queue) == 1
+    for job in queue.claim("stale-build", kinds=["score.company"], lease_seconds=60, limit=10):
+        queue.complete(job.job_id)
+
+    # The ordinary reconciler now finds the key already used and enqueues nothing.
+    assert enqueue_stale_scores(store, queue) == 0
+    assert not queue.claim("w", kinds=["score.company"], lease_seconds=60, limit=10)
+
+    # --force gets past it.
+    assert enqueue_stale_scores(store, queue, force=True) == 1
+    assert queue.claim("w2", kinds=["score.company"], lease_seconds=60, limit=10)
