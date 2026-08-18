@@ -531,6 +531,69 @@ def pipeline(
 
 
 @app.command()
+def explain(
+    near_misses: Annotated[int, typer.Option(help="How many marginal leads to list.")] = 10,
+) -> None:
+    """Why the corpus scores the way it does. Reads only; changes nothing.
+
+    A wall of REJECTs is either bad calibration or a weak corpus, and the tier counts
+    cannot tell those apart -- they look identical. The counterfactual can: if lifting
+    one penalty moves forty leads over a tier line, that penalty is miscalibrated for
+    how this corpus forms; if the component means are floor-level, the answer is
+    upstream in discovery and no tuning will help.
+    """
+    from cindraleads.diagnose import diagnose
+    from cindraleads.scoring import ScoringConfig
+
+    store = _open_store()
+    scoring_cfg = ScoringConfig.load()
+    report = diagnose(store, config=scoring_cfg, near_miss_limit=near_misses)
+
+    if not report.total:
+        typer.echo("no leads scored yet")
+        return
+
+    typer.echo(f"{report.total} lead(s) scored\n")
+    typer.echo("tiers")
+    for tier in ("A", "B", "C", "REJECT"):
+        now = report.tiers.get(tier, 0)
+        lifted = report.tiers_unpenalised.get(tier, 0)
+        arrow = f"   ->{lifted:>5} with no penalties at all" if lifted != now else ""
+        typer.echo(f"  {tier:>8}: {now:>5}{arrow}")
+    typer.echo(f"  {'sendable':>8}: {report.dispatchable} (anything above REJECT)")
+
+    typer.echo("\ncomponents (mean of 100, and how many leads score zero)")
+    for name, mean in sorted(report.component_means.items(), key=lambda kv: kv[1]):
+        weight = scoring_cfg.components.get(name, 0.0)
+        zeros = report.component_zero_counts.get(name, 0)
+        typer.echo(f"  {name:>14}: {mean:5.1f}   weight {weight:>4.0%}   zero on {zeros} lead(s)")
+
+    typer.echo("\npenalties (how often, what it costs, and who it holds back)")
+    if not report.penalty_counts:
+        typer.echo("  none applied")
+    for name, count in sorted(report.penalty_counts.items(), key=lambda kv: -kv[1]):
+        share = 100.0 * count / report.total
+        promoted = report.promoted_by_lifting.get(name, 0)
+        typer.echo(
+            f"  {name:>16}: {count:>4} lead(s) ({share:4.0f}%)  "
+            f"lifting it alone promotes {promoted}"
+        )
+
+    typer.echo(f"\nclosest to the Tier C floor of {report.floor:.0f}")
+    for lead, gap, blocker in report.near_misses:
+        typer.echo(
+            f"  {lead.score:>3}  {gap:5.1f} short  {lead.display_name[:26]:<26} "
+            f"{lead.domain[:24]:<24} {blocker}"
+        )
+
+    typer.echo(
+        "\nRead it this way: if 'lifting it alone promotes' is large, the penalty is\n"
+        "miscalibrated for this corpus. If the component means are floor-level, the\n"
+        "problem is upstream in discovery and no penalty tuning will reach it."
+    )
+
+
+@app.command()
 def reconcile() -> None:
     """Queue the work the event flow missed. Enqueue only -- drains nothing.
 

@@ -38,6 +38,7 @@ cindra queue release [--kind K]          # pull deferred jobs forward
 cindra status                            # candidates, companies, live triggers
 cindra maintain [--dry-run] [--no-network]  # nightly: retire, decay, resample, purge
 cindra reconcile                         # enqueue-only: unenriched + stale scores
+cindra explain [--near-misses N]         # why the corpus scores as it does; read-only
 cindra digest [--dry-run] [--limit N]    # batch the Tier C backlog to Discord
 cindra serve [--port 9109]               # /healthz, /metrics, HTML view (localhost)
 cindra feedback <lead_id> good|bad
