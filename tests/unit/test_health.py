@@ -344,3 +344,71 @@ def test_every_timer_unit_has_a_heartbeat_budget() -> None:
     monitored = set(HEARTBEAT_UNITS)
 
     assert timers <= monitored, f"timers with no heartbeat budget: {sorted(timers - monitored)}"
+
+
+def _unit_subcommands() -> set[str]:
+    """Every `cindra <subcommand>` a systemd unit invokes."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    found: set[str] = set()
+    for unit in (repo / "deploy/systemd").glob("*.service"):
+        for line in unit.read_text().splitlines():
+            if not line.startswith("ExecStart="):
+                continue
+            parts = line.split("=", 1)[1].lstrip("-").split()
+            for index, token in enumerate(parts):
+                if token.endswith("/cindra") and index + 1 < len(parts):
+                    found.add(parts[index + 1])
+    return found
+
+
+def test_every_unattended_command_migrates_itself() -> None:
+    """A command a systemd unit runs has nobody to read its error message.
+
+    `git pull` shipping a migration must not be able to stop a timer dead. The symptom
+    would be "no such column" from whichever query touched the new field first, days
+    later, surfacing as "no new companies" -- a long way from the cause. Interactive
+    commands are exempt: a human is right there reading the output.
+
+    Written as a test rather than a convention because the gap was real -- `harvest`
+    was the one entry point that did not self-migrate, and it became unattended the
+    moment `cindraleads-harvest.timer` shipped.
+    """
+    import ast
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    tree = ast.parse((repo / "src/cindraleads/cli.py").read_text())
+
+    migrating: set[str] = set()
+    defined: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        # Typer maps `def foo_bar` to `foo-bar` unless the decorator names it.
+        name = node.name.replace("_", "-")
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call) and decorator.args:
+                first = decorator.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    name = first.value
+        defined.add(name)
+        for call in ast.walk(node):
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id == "_open_store"
+                and any(
+                    kw.arg == "migrate" and getattr(kw.value, "value", False) is True
+                    for kw in call.keywords
+                )
+            ):
+                migrating.add(name)
+
+    unattended = _unit_subcommands()
+    assert unattended, "no ExecStart lines found; did the unit files move?"
+    assert unattended <= defined, f"units invoke unknown commands: {sorted(unattended - defined)}"
+    assert unattended <= migrating, (
+        f"these run under systemd but do not self-migrate: {sorted(unattended - migrating)}"
+    )

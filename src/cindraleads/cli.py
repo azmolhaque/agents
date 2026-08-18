@@ -354,7 +354,11 @@ def harvest(
     """
     cfg = settings()
     cfg.ensure_dirs()
-    store = _open_store()
+    # Self-migrates like every other unattended entry point. This one runs hourly under
+    # `cindraleads-harvest.timer`, so a `git pull` that ships a migration would stop
+    # discovery dead with nobody reading the error -- and the symptom would surface as
+    # "no new companies", days later, a long way from the cause.
+    store = _open_store(migrate=True)
 
     async def _run() -> None:
         async with Runtime(store=store, config=cfg) as runtime:
