@@ -23,6 +23,7 @@ from cindraleads.health import (
 )
 from cindraleads.metrics import (
     HEARTBEAT_UNITS,
+    OPTIONAL_UNITS,
     last_heartbeat,
     record_heartbeat,
     render_prometheus,
@@ -117,9 +118,45 @@ def test_a_never_run_unit_is_flagged_not_silent(store: Any) -> None:
 
     for unit in HEARTBEAT_UNITS:
         check = next(c for c in report.checks if c.name == f"heartbeat:{unit}")
+        if unit in OPTIONAL_UNITS:
+            continue
         assert check.status == "degraded"
         assert "never recorded a run" in check.detail
     assert report.status == "degraded"
+
+
+def test_an_optional_unit_that_was_never_installed_is_not_a_fault(store: Any) -> None:
+    """Declining the feedback bot is a supported configuration -- the CLI is the other
+    feedback path. Reporting it degraded forever teaches whoever reads this endpoint
+    that degraded means nothing, which is how a real fault gets missed."""
+    report = assess(store, thermal=_Governor())
+
+    for unit in OPTIONAL_UNITS:
+        check = next(c for c in report.checks if c.name == f"heartbeat:{unit}")
+        assert check.status == "ok"
+        assert "optional" in check.detail
+
+
+def test_an_optional_unit_that_stopped_is_degraded_and_never_critical(store: Any) -> None:
+    """The bot dying loses reactions while the pipeline keeps producing leads. A probe
+    that returned 503 for it would restart a worker that is doing its job.
+
+    Driven through `_check_heartbeats` rather than `assess` because no single clock
+    offset makes an optional unit stale while leaving the worker's 15-minute budget
+    intact -- and the worker going critical is what this test must not be measuring.
+    """
+    from cindraleads.health import HealthReport, _check_heartbeats
+
+    unit = sorted(OPTIONAL_UNITS)[0]
+    _all_units_fresh(store)
+    stale = utcnow() + timedelta(hours=HEARTBEAT_UNITS[unit] + 1)
+
+    report = HealthReport()
+    _check_heartbeats(report, store, now=stale, uptime_seconds=10 * 24 * 3600.0)
+
+    check = next(c for c in report.checks if c.name == f"heartbeat:{unit}")
+    assert check.status == "degraded"
+    assert "over its" in check.detail
 
 
 def test_a_stale_unit_is_critical(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -423,6 +460,21 @@ def test_every_timer_unit_has_a_heartbeat_budget() -> None:
     monitored = set(HEARTBEAT_UNITS)
 
     assert timers <= monitored, f"timers with no heartbeat budget: {sorted(timers - monitored)}"
+
+
+def test_no_pipeline_unit_can_be_marked_optional() -> None:
+    """`OPTIONAL_UNITS` silences the never-run alarm and downgrades staleness. Applied
+    to anything that drains the queue or writes a lead, it would turn the one check
+    that distinguishes idle from stopped back off."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    timers = {p.stem.replace("cindraleads-", "") for p in (repo / "deploy/systemd").glob("*.timer")}
+    pipeline = timers | {"worker"}
+
+    assert not (pipeline & OPTIONAL_UNITS), (
+        f"pipeline units marked optional: {pipeline & OPTIONAL_UNITS}"
+    )
 
 
 def _unit_subcommands() -> set[str]:

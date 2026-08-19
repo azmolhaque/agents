@@ -183,6 +183,19 @@ if [ "$INSTALL_UNITS" = "1" ]; then
   sudo systemctl enable --now cindraleads-harvest.timer cindraleads-reconcile.timer \
        cindraleads-digest.timer cindraleads-maintenance.timer
   ok "units installed and enabled"
+
+  # The feedback bot is copied but only started if it can actually connect. Enabling it
+  # without a token would give a unit that restart-loops every 30 s forever, which is a
+  # worse state than not having it: the pipeline is fine either way, and a permanently
+  # failing unit is exactly the kind of noise that gets `systemctl status` ignored.
+  if grep -qE '^DISCORD_BOT_TOKEN=.+' .env 2>/dev/null; then
+    sudo systemctl enable --now cindraleads-feedback
+    ok "feedback bot enabled (reactions -> feedback table)"
+  else
+    warn "DISCORD_BOT_TOKEN not set; feedback bot installed but not started"
+    echo "        set it in .env, then: sudo systemctl enable --now cindraleads-feedback"
+    echo "        until then, 'cindra feedback <lead_id> good|bad' is the feedback path"
+  fi
   systemctl list-timers 'cindraleads-*' --no-pager || true
 else
   warn "not installing systemd units. To run unattended:"

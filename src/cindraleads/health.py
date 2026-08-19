@@ -39,6 +39,7 @@ from cindraleads.config import Settings, settings
 from cindraleads.logging import get_logger
 from cindraleads.metrics import (
     HEARTBEAT_UNITS,
+    OPTIONAL_UNITS,
     heartbeats,
     render_prometheus,
     snapshot,
@@ -158,6 +159,15 @@ def _check_heartbeats(
             # Never run. On a fresh install that is expected, which is why it is
             # degraded rather than critical -- but it must not be silent, because it
             # is also what a timer that was never enabled looks like.
+            #
+            # An optional unit is the exception: declining the feedback bot is a
+            # supported configuration, and reporting it degraded forever would teach
+            # whoever reads this endpoint that degraded means nothing.
+            if unit in OPTIONAL_UNITS:
+                report.add(
+                    Check(f"heartbeat:{unit}", "ok", f"{unit} is optional and not installed")
+                )
+                continue
             report.add(
                 Check(
                     f"heartbeat:{unit}",
@@ -191,10 +201,13 @@ def _check_heartbeats(
                 )
             )
         elif age_hours > max_silence_hours:
+            # An optional unit going silent is worth saying and not worth a 503: the
+            # feedback bot dying loses reactions while the pipeline keeps producing
+            # leads, and a probe that failed on it would restart a healthy worker.
             report.add(
                 Check(
                     f"heartbeat:{unit}",
-                    "critical",
+                    "degraded" if unit in OPTIONAL_UNITS else "critical",
                     f"{unit} last ran {age_hours:.1f}h ago, over its {max_silence_hours}h limit",
                     value=age_hours,
                 )

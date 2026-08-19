@@ -87,8 +87,16 @@ disallow_untyped_defs = false
 # Optional extras. Each has a documented runtime fallback, so the import is guarded
 # and the module must typecheck on a machine that skipped the extra.
 [[tool.mypy.overrides]]
-module = ["rapidfuzz.*", "selectolax.*"]
+module = ["rapidfuzz.*", "selectolax.*", "discord.*"]
 ignore_missing_imports = true
+
+# The gateway bot's three event handlers are registered through `@client.event`, which
+# is untyped once discord.py itself is unresolvable. Narrowed to this one module rather
+# than disabling the check globally: everything the bot decides lives in
+# `feedback/store.py`, which stays under strict typing.
+[[tool.mypy.overrides]]
+module = ["cindraleads.feedback.bot"]
+disable_error_code = ["untyped-decorator"]
 
 # ---------------------------------------------------------------- pytest
 

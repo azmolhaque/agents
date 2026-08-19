@@ -286,3 +286,97 @@ def test_no_outage_here_produces_a_dead_letter(store: Any, queue: JobQueue) -> N
         queue.fail(job_id, "transient outage")
 
     assert store.conn.execute("SELECT COUNT(*) FROM dead_letter").fetchone()[0] == 0
+
+
+# ------------------------------------------------- PHASE 8: the bot is not the pipeline
+
+
+def test_the_pipeline_drains_with_the_feedback_bot_absent(store: Any, queue: JobQueue) -> None:
+    """PLAN.md Phase 8: "killing the bot service leaves the pipeline fully operational
+    (degraded feedback only)".
+
+    The bot holds no queue lease and no model. This asserts the structural version of
+    that claim -- nothing in the worker's path imports it, so it cannot be in the way
+    even while dead.
+
+    The import check runs in a subprocess deliberately. `sys.modules` is process-global,
+    so asserting against this one would only prove that no *earlier test* had imported
+    the bot -- it passed alone and failed in the full suite, measuring the test session
+    rather than the pipeline.
+    """
+    import subprocess
+    import sys
+
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from cindraleads.runtime import Runtime; "
+            "sys.exit(1 if 'cindraleads.feedback.bot' in sys.modules else 0)",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    assert probe.returncode == 0, "importing the pipeline must not import the gateway client"
+
+    for kind in ("harvest.query", "extract.candidate", "score.company"):
+        job_id = queue.enqueue(kind, {"x": 1})
+        claimed = queue.claim("w", kinds=[kind], lease_seconds=60, limit=1)
+        assert [job.job_id for job in claimed] == [job_id]
+        queue.complete(job_id)
+
+    assert queue.stats().get("ready", 0) == 0
+
+
+def test_a_dead_feedback_bot_never_takes_healthz_to_503(store: Any) -> None:
+    """A probe that returned 503 for a Discord outage would restart the worker into a
+    problem the worker cannot fix, and the pipeline it restarted was working."""
+    import json
+
+    from cindraleads.metrics import HEARTBEAT_UNITS, OPTIONAL_UNITS, record_heartbeat, source_mtime
+
+    unit = sorted(OPTIONAL_UNITS)[0]
+    for other in HEARTBEAT_UNITS:
+        if other in OPTIONAL_UNITS:
+            continue
+        record_heartbeat(store, other, source_mtime=source_mtime() if other == "worker" else None)
+
+    # The bot's heartbeat is backdated rather than the clock advanced: every other
+    # unit has a *shorter* silence budget than the bot, so moving `now` far enough to
+    # kill the bot kills the worker first and the test would pass on the wrong outage.
+    aged = to_iso(utcnow() - timedelta(hours=HEARTBEAT_UNITS[unit] + 1))
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO metrics (name, value, labels, recorded_at) VALUES ('heartbeat',1,?,?)",
+            # Compact separators: the lookup is a LIKE against this blob and
+            # `{"unit": "feedback"` with a space would silently never match.
+            (json.dumps({"unit": unit, "ok": True}, separators=(",", ":")), aged),
+        )
+
+    report = assess(store, thermal=_Governor("nominal", "none"))
+
+    check = next(c for c in report.checks if c.name == f"heartbeat:{unit}")
+    assert check.status == "degraded"
+    assert report.status != "critical"
+
+
+def test_feedback_written_while_the_bot_is_down_is_not_lost(store: Any) -> None:
+    """The CLI is the other path into the same table, through the same function. A bot
+    outage costs the *convenience* of reacting, not the ability to record a verdict."""
+    from cindraleads.feedback import record_verdict
+
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+            "last_updated_at) VALUES ('a.com','A',?,?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO leads (lead_id, canonical_domain, score, tier, recommended_offer, "
+            "first_seen_at, last_updated_at, pipeline_version) "
+            "VALUES ('lead-1','a.com',60,'B','snapshot_free',?,?,'test')",
+            (now, now),
+        )
+
+    assert record_verdict(store, lead_id="lead-1", verdict="good", source="cli").recorded

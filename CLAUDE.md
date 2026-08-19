@@ -41,7 +41,10 @@ cindra reconcile                         # enqueue-only: unenriched + stale scor
 cindra explain [--near-misses N]         # scores, penalties, and yield per query template
 cindra digest [--dry-run] [--limit N]    # batch the Tier C backlog to Discord
 cindra serve [--port 9109]               # /healthz, /metrics, HTML view (localhost)
-cindra feedback <lead_id> good|bad
+cindra feedback <lead_id> good|bad        # manual verdict, same write path as the bot
+cindra feedback-bot                       # Discord gateway client (optional unit)
+cindra precision-report [--write]         # of what we sent, how much was worth sending
+cindra critic [--write]                   # proposals. Applies none of them.
 ```
 
 ## Conventions
@@ -258,6 +261,41 @@ sits on disk, draining jobs and reporting healthy. Deploying is
 `/healthz` reports the gap as `worker:build` -- the worker stamps `source_mtime` on its
 heartbeat and health compares it against the newest `.py` on disk. Timers are exempt:
 each firing is a fresh process.
+
+**Phase 8 code complete; the loop has no real reactions in it yet.** A gateway bot
+(`cindraleads-feedback.service`, optional) turns Discord reactions into `feedback` rows,
+`cindra precision-report` measures them, and `cindra critic` argues with the config.
+
+Four things shape it:
+
+- **The join is the whole mechanism.** A reaction carries a message id and nothing else
+  -- Discord has never heard of a lead. `dispatch_log.discord_message_id` is the only
+  bridge, which is why the Dispatcher POSTs with `?wait=true`. A card sent before that
+  column was populated can never be reacted to, and the code says so rather than
+  guessing at the most recent lead.
+- **The bot and `cindra feedback` share one write path.** They did not at first, and
+  the CLI inserted unconditionally: marking a lead `good` then `bad` by hand left both
+  rows, and the pessimistic resolution in `precision_report` made the correction
+  unreachable rather than authoritative. One verdict per person per *question* --
+  `contacted` does not overwrite `good`, because they answer different ones.
+- **`OPTIONAL_UNITS` exists so a declined bot is not permanently degraded.** Never
+  having run one is normal and reported `ok`; having run it and stopped is degraded and
+  never critical, because a probe that 503'd on a Discord outage would restart a worker
+  that is working. Nothing that drains the queue may be listed there -- a test asserts
+  it.
+- **The Critic proposes and applies nothing, checked by content.** A test hashes
+  `config/*.yaml` before and after a full run, so a future "just apply the obvious ones"
+  flag fails regardless of how it is spelled. The reason is not caution about bugs: a
+  scoring change that applied itself would be one nobody read, measured against a corpus
+  scored under the rules it just replaced.
+
+**Precision is scoped to dispatched leads; the Critic is not.** `precision_report`
+answers "of what we sent, how much was worth sending" and joins through `dispatch_log`
+inside a window. The Critic argues about weights, and a verdict typed at the CLI on a
+lead that never cleared the floor is exactly the signal it needs -- so it counts every
+judged lead. Reporting `judged` from one population while arguing from the other
+produced a report claiming nothing was judged directly above a proposal citing eighteen
+judged leads.
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. The Phase 7 acceptance run requires

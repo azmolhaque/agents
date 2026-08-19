@@ -1,0 +1,44 @@
+[Unit]
+Description=CindraLeads Discord feedback bot (reactions -> feedback table)
+Documentation=file:///home/pi/cindraleads/docs/RUNBOOK.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/cindraleads
+EnvironmentFile=/home/pi/cindraleads/.env
+ExecStart=/home/pi/cindraleads/.venv/bin/cindra feedback-bot
+
+# Its own unit, deliberately. A gateway connection drops on any domestic line, and a
+# reconnect loop living inside the worker would mean a Discord outage stalling lead
+# production. Killing this service costs reactions and nothing else -- the chaos suite
+# asserts the pipeline still drains without it.
+Restart=always
+RestartSec=30
+
+# EX_CONFIG. A dropped gateway connection is worth retrying forever; a missing token or
+# a missing `[feedback]` extra is not, and retrying it every 30 seconds would bury the
+# one line that says why in a journal nobody scrolls back through.
+RestartPreventExitStatus=78
+
+# Not Type=notify: discord.py owns the connect loop and has no hook that reliably means
+# "the gateway is up". The heartbeat it writes to SQLite every five minutes is the
+# liveness signal, and /healthz reads that -- an sd_notify READY here would only assert
+# that the process started, which Restart=always already handles.
+
+# No thermal governor and no model. This process talks to one host and writes small
+# rows, so the budget is small on purpose: if it ever needs more, something is wrong.
+MemoryMax=256M
+CPUQuota=15%
+
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pi/cindraleads/var
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

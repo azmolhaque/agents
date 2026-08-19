@@ -36,6 +36,7 @@ from cindraleads.store import Store
 
 __all__ = [
     "HEARTBEAT_UNITS",
+    "OPTIONAL_UNITS",
     "Heartbeat",
     "heartbeats",
     "last_heartbeat",
@@ -68,7 +69,19 @@ HEARTBEAT_UNITS: dict[str, float] = {
     "reconcile": 12.0,
     "digest": 36.0,
     "maintenance": 36.0,
+    "feedback": 1.0,
 }
+
+# Units that are a choice rather than part of the pipeline. Never having run one is
+# normal and reported as such; having run it and then stopped is still a fault.
+#
+# The feedback bot is the only one: it needs a bot token and a guild invite, and a Pi
+# running without it is fully functional with the CLI as the feedback path. Without
+# this distinction every install that declined the bot would sit permanently degraded,
+# which is precisely how an endpoint gets ignored -- and then a real fault with it.
+#
+# Nothing that drains the queue or writes a lead may be listed here.
+OPTIONAL_UNITS: frozenset[str] = frozenset({"feedback"})
 
 
 @dataclass(frozen=True)

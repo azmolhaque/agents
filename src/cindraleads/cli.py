@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import contextlib
 import json
 import os
 import signal
 import sqlite3
 import time
-import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
@@ -55,6 +55,11 @@ app.add_typer(selftest_app, name="selftest")
 log = get_logger()
 
 SELFTEST_KIND = "selftest.sideeffect"
+
+# sysexits.h EX_CONFIG. Paired with `RestartPreventExitStatus=78` in the units, so a
+# process that cannot possibly succeed -- no token, no optional extra -- stops instead
+# of restart-looping and burying the reason in a scrolling journal.
+EX_CONFIG = 78
 
 # How often the worker records that it is alive. Well under the 15 minute silence
 # budget in `HEARTBEAT_UNITS`, and far above the 50 ms poll interval.
@@ -154,27 +159,24 @@ def feedback(
 ) -> None:
     """Record feedback on a dispatched lead.
 
-    The Phase 8 gateway bot writes the same rows from Discord reactions; this is the
-    manual path, and the seam the reaction handler is tested against.
+    The Phase 8 gateway bot writes the same rows from Discord reactions, through the
+    same function -- so correcting yourself costs one row here exactly as it does
+    there. Before that was shared, the CLI inserted unconditionally and a `good`
+    followed by a `bad` left both.
     """
-    allowed = {"good", "bad", "contacted", "not_interested"}
-    if verdict not in allowed:
-        raise typer.BadParameter(f"verdict must be one of {sorted(allowed)}")
+    from cindraleads.feedback import VERDICTS, record_verdict
+
+    if verdict not in VERDICTS:
+        raise typer.BadParameter(f"verdict must be one of {sorted(VERDICTS)}")
     store = _open_store()
-    with store.tx() as conn:
-        conn.execute(
-            "INSERT INTO feedback (feedback_id, lead_id, verdict, source, actor, note, "
-            "created_at) VALUES (?,?,?,?,?,?,?)",
-            (
-                uuid.uuid4().hex,
-                lead_id,
-                verdict,
-                "cli",
-                os.environ.get("USER"),
-                note,
-                to_iso(utcnow()),
-            ),
-        )
+    record_verdict(
+        store,
+        lead_id=lead_id,
+        verdict=verdict,
+        source="cli",
+        actor=os.environ.get("USER"),
+        note=note,
+    )
     typer.echo(f"recorded {verdict} for {lead_id}")
 
 
@@ -1011,6 +1013,112 @@ PIPELINE_KINDS = (
 
 def _needs_runtime(kinds: list[str]) -> bool:
     return any(kind in kinds for kind in PIPELINE_KINDS)
+
+
+# ---------------------------------------------------------------------- feedback
+
+
+@app.command("feedback-bot")
+def feedback_bot() -> None:
+    """Run the Discord gateway client that turns reactions into feedback rows.
+
+    A long-lived process with no queue lease and no model. Killing it costs reactions
+    and nothing else; `cindra feedback` remains the manual path.
+    """
+    from cindraleads.feedback.bot import run_bot
+
+    cfg = settings()
+    configure_logging(log_dir=cfg.resolve(cfg.log_dir), level=cfg.log_level, console=False)
+    signal.signal(signal.SIGTERM, _request_shutdown)
+    signal.signal(signal.SIGINT, _request_shutdown)
+    store = _open_store(migrate=True)
+    try:
+        with contextlib.suppress(KeyboardInterrupt):  # the SIGINT path
+            asyncio.run(run_bot(store))
+    except CindraError as exc:
+        # A missing token or a missing extra is a configuration error, not a crash, and
+        # it must not print a traceback every 30 seconds forever. Exit 78 (EX_CONFIG);
+        # the unit's `RestartPreventExitStatus=78` stops the restart loop on it, so
+        # `systemctl status` shows one legible reason instead of a scrolling stack.
+        typer.echo(f"cannot start the feedback bot: {exc}", err=True)
+        raise typer.Exit(EX_CONFIG) from None
+
+
+@app.command("precision-report")
+def precision_report_cmd(
+    days: Annotated[float, typer.Option(help="Window, in days.")] = 7.0,
+    pending: Annotated[int, typer.Option(help="How many unjudged leads to list.")] = 10,
+    write: Annotated[bool, typer.Option(help="Also write reports/precision_YYYY-WW.md.")] = False,
+) -> None:
+    """Precision over the leads someone actually judged, plus what is still unjudged.
+
+    `judged` prints beside `precision` and never under it. 100% over two leads is not
+    evidence of anything, and a report showing only the ratio reads as though it were.
+    """
+    from cindraleads.feedback import precision_report, unjudged_leads
+
+    store = _open_store()
+    report = precision_report(store, days=days)
+    pending_rows = unjudged_leads(store, days=days, limit=pending) if pending else []
+
+    lines = [
+        f"# Precision, last {days:g} days",
+        "",
+        f"dispatched:  {report.dispatched}",
+        f"judged:      {report.judged}  ({report.coverage:.0%} of dispatched)",
+        f"good / bad:  {report.good} / {report.bad}",
+        "precision:   "
+        + (
+            f"{report.precision:.0%}  (over {report.judged} judged leads)"
+            if report.precision is not None
+            else "n/a -- nothing judged yet"
+        ),
+    ]
+    if report.by_tier:
+        lines += ["", "by tier:"]
+        lines += [
+            f"  {tier}: {good} good / {bad} bad" for tier, (good, bad) in report.by_tier.items()
+        ]
+    if pending_rows:
+        lines += ["", f"unjudged ({len(pending_rows)} of {report.dispatched - report.judged}):"]
+        lines += [
+            f"  {row['lead_id']}  {row['tier']}  {row['score']:>3}  {row['display_name']}"
+            for row in pending_rows
+        ]
+
+    body = "\n".join(lines)
+    typer.echo(body)
+
+    if write:
+        iso = utcnow().isocalendar()
+        path = Path("reports") / f"precision_{iso.year}-W{iso.week:02d}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body + "\n", encoding="utf-8")
+        typer.echo(f"\nwrote {path}")
+
+
+@app.command()
+def critic(
+    write: Annotated[bool, typer.Option(help="Also write reports/critic_YYYY-WW.md.")] = False,
+) -> None:
+    """Propose scoring and query-plan changes. Applies none of them.
+
+    Every proposal is a diff you type yourself. That is not caution about bugs: a
+    scoring change that applied itself would be one nobody read, measured against a
+    corpus scored under the rules it just replaced.
+    """
+    from cindraleads.agents.critic import critique, render_markdown
+
+    store = _open_store()
+    body = render_markdown(critique(store))
+    typer.echo(body)
+
+    if write:
+        iso = utcnow().isocalendar()
+        path = Path("reports") / f"critic_{iso.year}-W{iso.week:02d}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        typer.echo(f"wrote {path}")
 
 
 @app.command()

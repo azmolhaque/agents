@@ -212,10 +212,22 @@ cindra status
 sudo systemctl start cindraleads-worker cindraleads-health
 ```
 
-A restore cannot cause duplicate cards: `dispatch_log` restores with the database, and
-the idempotency key is `(lead_id, sorted(triggers), score // 10)`. Leads dispatched
-after the snapshot will re-send — that is the correct behaviour, since from the
-database's point of view they never went out.
+A restore cannot cause duplicate cards *for anything in the snapshot*: `dispatch_log`
+restores with the database, and the idempotency key is
+`(lead_id, sorted(triggers), score // 10)`. Leads dispatched **after** the snapshot will
+re-send — from the database's point of view they never went out, while from Discord's
+they are already on screen. That gap is the only real cost of a restore, so measure it
+before you take one:
+
+```bash
+./scripts/restore_drill.sh                        # newest backup
+./scripts/restore_drill.sh var/backups/<file>.gz  # a specific one
+```
+
+The drill restores into a scratch directory, migrates it, and prints how many
+`dispatch_log` rows the live database has that the snapshot does not — the number of
+cards that would be posted twice. It never touches `var/cindraleads.db`. Run it before
+you need it; the answer you want at 3am is a number, not a rehearsal.
 
 ---
 
@@ -244,6 +256,7 @@ copies is usually enough.
 | `reconcile.timer` | 30 min | Queues unenriched companies and stale scores. |
 | `digest.timer` | 08:30 | Posts the Tier C backlog. |
 | `maintenance.timer` | 03:20 | Retire, decay, resample, purge, backup. |
+| `feedback.service` | always, optional | Discord reactions → the `feedback` table. |
 
 **Timers only ever enqueue; the worker drains.** A timer that also drained would race
 the worker for the same jobs and, worse, load a second copy of the model on a box
@@ -256,6 +269,57 @@ sized for two.
 - **Watchdog kills.** `WatchdogSec=180`; the loop pets it every iteration including
   empty polls, so a kill means genuinely wedged — usually a socket read with no
   timeout. The journal shows the last job it claimed.
+
+---
+
+## 4b. The feedback bot
+
+Optional. Everything below degrades to `cindra feedback <lead_id> good|bad`, which
+writes the same rows through the same function.
+
+```bash
+# .env, 0600, redacted in logs like the webhooks
+DISCORD_BOT_TOKEN=...
+
+sudo systemctl enable --now cindraleads-feedback
+journalctl -u cindraleads-feedback -f
+```
+
+The bot needs the **Server Members** and **Message Content** intents left *off* and
+only needs to be invited with read access to the lead channels. It requests
+`guilds + guild_reactions` and nothing else, so it cannot read your messages.
+
+React to a card: ✅/👍 good · ❌/👎 bad · 📧 contacted · 🚫 not interested. Removing the
+reaction retracts it. Reacting ✅ then ❌ leaves one verdict, not two.
+
+```bash
+cindra precision-report               # of what we sent, how much was worth sending
+cindra precision-report --write       # also reports/precision_YYYY-WW.md
+cindra critic                         # proposals. It applies none of them.
+cindra critic --write
+```
+
+**`cindra critic` never edits a config file** — a test hashes `config/*.yaml` before and
+after a full run. Applying a proposal is three steps and all three are yours: edit the
+file, bump `ARITHMETIC_VERSION` in `scoring.py` if the arithmetic moved, then
+`cindra reconcile --force`. Skip the last one and the corpus keeps its old scores while
+the change reports success.
+
+### If the bot is down
+
+`/healthz` says `degraded`, never `critical` — the pipeline is unaffected and a probe
+that returned 503 here would restart a worker that is doing its job. Two shapes:
+
+- **`heartbeat:feedback` says "optional and not installed".** It has never run. That is
+  a supported configuration, not a fault.
+- **`heartbeat:feedback` says "over its 1.0h limit".** It ran and stopped. Check
+  `journalctl -u cindraleads-feedback`. Exit code **78** means a configuration problem
+  (no token, or the `[feedback]` extra is not installed) and systemd deliberately will
+  *not* retry it — fix the cause and `systemctl start` it.
+
+Reactions left while it was down are lost: Discord does not replay them, and the bot
+reads no history on connect. `cindra precision-report` lists the unjudged leads, so the
+recovery is to re-react to the ones that matter or record them at the CLI.
 
 ---
 
