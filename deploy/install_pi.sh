@@ -189,6 +189,11 @@ if [ "$INSTALL_UNITS" = "1" ]; then
   # worse state than not having it: the pipeline is fine either way, and a permanently
   # failing unit is exactly the kind of noise that gets `systemctl status` ignored.
   if grep -qE '^DISCORD_BOT_TOKEN=.+' .env 2>/dev/null; then
+    # The moment we enable the unit, the extra it needs stops being optional.
+    # `make install` leaves discord.py out on purpose -- a Pi that declined the bot
+    # should not carry it -- so enabling without this started a service whose only
+    # possible outcome was exit 78 on a missing import.
+    .venv/bin/pip install --quiet -e ".[feedback]"
     sudo systemctl enable --now cindraleads-feedback
     ok "feedback bot enabled (reactions -> feedback table)"
   else

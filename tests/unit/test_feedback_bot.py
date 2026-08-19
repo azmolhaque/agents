@@ -131,3 +131,16 @@ def test_the_unit_stops_restarting_on_the_exit_code_the_cli_uses() -> None:
 
 def test_the_unit_runs_the_command_that_exists() -> None:
     assert "cindra feedback-bot" in UNIT.read_text(encoding="utf-8")
+
+
+def test_the_installer_installs_the_extra_wherever_it_enables_the_unit() -> None:
+    """`make install` leaves discord.py out on purpose, so enabling the unit without
+    also installing `[feedback]` starts a service whose only possible outcome is exit
+    78 on a missing import. It did exactly that once."""
+    script = (REPO_ROOT / "deploy/install_pi.sh").read_text(encoding="utf-8")
+
+    if "enable --now cindraleads-feedback" not in script:
+        return  # the installer does not enable it; nothing to guarantee
+    assert '".[feedback]"' in script, (
+        "install_pi.sh enables the feedback unit without installing discord.py"
+    )
