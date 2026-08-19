@@ -314,7 +314,14 @@ def _check_own_build(report: HealthReport) -> None:
 
 def _check_queue(report: HealthReport) -> None:
     metrics = report.metrics
-    dead = int(metrics.get("queue_dead", 0) + metrics.get("dead_letter_total", 0))
+    # `max`, not `+`. Burying a job writes both sides -- a `dead_letter` row carrying
+    # the payload and reason, and `jobs.status='dead'` marking the job -- so adding them
+    # counted every dead job twice and the endpoint reported 10 for 5. That put the warn
+    # threshold at 3 real jobs and critical at 13, which is not what those numbers say.
+    #
+    # `max` rather than picking one, because a divergence between the two is itself a
+    # fault worth surfacing rather than hiding behind whichever side we happened to read.
+    dead = int(max(metrics.get("queue_dead", 0), metrics.get("dead_letter_total", 0)))
     if dead >= DEAD_LETTER_CRITICAL:
         status: Status = "critical"
     elif dead >= DEAD_LETTER_WARN:

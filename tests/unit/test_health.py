@@ -272,6 +272,32 @@ def test_a_dead_letter_pile_escalates(store: Any) -> None:
     assert next(c for c in report.checks if c.name == "queue:dead").status == "critical"
 
 
+def test_a_dead_job_is_counted_once_not_twice(store: Any) -> None:
+    """Burying a job writes both sides: a `dead_letter` row carrying the payload and
+    reason, and `jobs.status='dead'` marking the job. Adding them double-counted every
+    dead job -- the endpoint reported 10 for 5 real ones, which put the warn threshold
+    at 3 and critical at 13 rather than where those numbers say they are.
+
+    Driven through `fail()` rather than by inserting rows, because writing only the
+    `dead_letter` side is exactly the shape that hid the bug: the old sum happened to
+    be right whenever a test forgot the other half.
+    """
+    from cindraleads.queue import JobQueue
+
+    queue = JobQueue(store)
+    _all_units_fresh(store)
+    for n in range(3):
+        job_id = queue.enqueue(f"k{n}", max_attempts=1)
+        queue.claim("w", kinds=[f"k{n}"])
+        assert queue.fail(job_id, "boom") == "dead"
+
+    report = assess(store, thermal=_Governor())
+    check = next(c for c in report.checks if c.name == "queue:dead")
+
+    assert check.value == 3.0, "three buried jobs must not report as six"
+    assert "3 job(s)" in check.detail
+
+
 def test_every_check_runs_even_after_one_fails(store: Any) -> None:
     """No short-circuiting: "the disk is full" and "the disk is full and harvest is
     dead" are one fix and two, and the endpoint has to distinguish them."""
