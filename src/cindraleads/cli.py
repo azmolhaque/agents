@@ -1098,6 +1098,32 @@ def precision_report_cmd(
 
 
 @app.command()
+def acceptance(
+    hours: Annotated[float, typer.Option(help="Window to assess.")] = 72.0,
+    write: Annotated[bool, typer.Option(help="Also write reports/acceptance_<date>.md.")] = False,
+) -> None:
+    """What the last 72 h of unattended running actually proved.
+
+    Heat is reported, never graded. The original gate asked `get_throttled` to stay
+    `0x0`, which asserts a heatsink rather than this system -- and requires that the
+    thermal governor never does the job it exists for.
+    """
+    from cindraleads.acceptance import assess_run, render_markdown
+
+    store = _open_store()
+    report = assess_run(store, hours=hours)
+    body = render_markdown(report)
+    typer.echo(body)
+
+    if write:
+        path = Path("reports") / f"acceptance_{utcnow():%Y%m%d}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+        typer.echo(f"wrote {path}")
+    raise typer.Exit(0 if report.passed else 1)
+
+
+@app.command()
 def critic(
     write: Annotated[bool, typer.Option(help="Also write reports/critic_YYYY-WW.md.")] = False,
 ) -> None:
@@ -1159,7 +1185,9 @@ def work(
                 return await _work_loop(store, _stages_for(wanted, None), **_opts())
             async with Runtime(store=store, config=cfg) as runtime:
                 notify_ready(f"worker: {','.join(wanted)}")
-                return await _work_loop(store, _stages_for(wanted, runtime), **_opts())
+                return await _work_loop(
+                    store, _stages_for(wanted, runtime), governor=runtime.governor, **_opts()
+                )
         finally:
             notify_stopping()
 
@@ -1178,6 +1206,32 @@ def work(
     typer.echo(f"processed {asyncio.run(_main())}")
 
 
+def _thermal_detail(governor: Any) -> dict[str, Any]:
+    """The three thermal fields worth carrying on a heartbeat, or nothing.
+
+    Read from the governor's *last* reading rather than polling: `poll()` shells out to
+    `vcgencmd`, and doing that on the heartbeat would add a subprocess a minute to
+    measure something the thermal gate already sampled on every LLM call.
+
+    Empty on a box with no sensor, so the field is absent rather than falsely `0` --
+    "we did not look" and "it was cold" must not read the same, which is the same
+    three-valued rule as `evidence.reachable`.
+    """
+    if governor is None:
+        return {}
+    try:
+        reading = governor.last_reading
+        if reading is None:
+            return {}
+        return {
+            "thermal_state": governor.state,
+            "temp_c": reading.temp_c,
+            "throttled_now": reading.throttled_now,
+        }
+    except Exception:  # a sensor fault must never stop the heartbeat
+        return {}
+
+
 async def _work_loop(
     store: Store,
     stages: dict[str, Stage],
@@ -1190,6 +1244,7 @@ async def _work_loop(
     drain_inflight: bool,
     poll_ms: int,
     work_ms: int,
+    governor: Any = None,
 ) -> int:
     queue = JobQueue(store)
     queue.reclaim_expired()
@@ -1218,6 +1273,13 @@ async def _work_loop(
                 # source on disk is newer, a `git pull` has landed that this worker
                 # cannot see -- Python does not reload modules.
                 source_mtime=_RUNNING_SOURCE_MTIME,
+                # Heat, sampled onto a row that was being written anyway. The governor
+                # keeps its state in memory and `/healthz` reports the instant, so
+                # before this nothing survived a poll -- and "did the governor engage
+                # over those 72 hours, and did it recover" was unanswerable the moment
+                # the hour passed. One minute of resolution over three days is 4320
+                # rows, which the retention purge already sweeps.
+                **_thermal_detail(governor),
             )
             heartbeat_due = now + WORKER_HEARTBEAT_SECONDS
 

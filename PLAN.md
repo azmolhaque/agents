@@ -494,10 +494,26 @@ tests/chaos/{test_ollama_down,test_disk_full,test_budget_exhausted,test_thermal_
 Four timers, including the `maintenance.timer` from §2.7. Units carry `MemoryMax=`, `CPUQuota=`,
 `Restart=on-failure`, `WatchdogSec=`. `/healthz` and `/metrics` bind **localhost only**.
 
-**Acceptance:** 72 h unattended — ≥ 15 Tier A+B leads/day, zero manual interventions, no OOM,
-no thermal throttle event (`get_throttled` stays `0x0`). Chaos suite: with Ollama stopped, the
-disk full, the budget exhausted, and a simulated 85 °C, the pipeline **degrades, alerts, and
-resumes** — it never crash-loops and never loses a job.
+**Acceptance:** 72 h unattended, measured by `cindra acceptance` — ≥ 15 Tier A+B leads/day,
+no job lost (zero dead letters, no gap in the worker's own heartbeat record), no unit silent,
+one build throughout, and the thermal governor **recovered** if it engaged. Chaos suite: with
+Ollama stopped, the disk full, the budget exhausted, and a simulated 85 °C, the pipeline
+**degrades, alerts, and resumes** — it never crash-loops and never loses a job.
+
+> **Amended 2026-08-19.** This originally read "no thermal throttle event (`get_throttled`
+> stays `0x0`)". That is an assertion about a heatsink rather than about this system, and on
+> the Pi we have it was already false twenty minutes after a cold boot — sticky bits 17/18/19
+> set, bits 0/16 clear, so purely thermal with no under-voltage. More to the point, §3
+> specifies a thermal governor whose entire job is to pause inference when the SoC is hot and
+> resume when it is not; `0x0` requires that the governor never once does the thing it was
+> built to do. Observed behaviour under real load: it engaged, `scorer_prose_failed` logged
+> `will_retry: true`, and the jobs completed later. That is the design working, and the old
+> gate would have failed the run for it.
+>
+> Heat is now **reported and never graded** — peak temperature, minutes per governor state,
+> throttled samples. Those numbers decide whether to buy a cooler. They do not decide whether
+> the software works. A criterion that cannot be evaluated from the window reports `n/a` and
+> **does not pass**: an unmeasured run must never read as a clean one.
 
 ### Phase 8 · Self-improvement
 

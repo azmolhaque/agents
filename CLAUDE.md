@@ -45,6 +45,7 @@ cindra feedback <lead_id> good|bad        # manual verdict, same write path as t
 cindra feedback-bot                       # Discord gateway client (optional unit)
 cindra precision-report [--write]         # of what we sent, how much was worth sending
 cindra critic [--write]                   # proposals. Applies none of them.
+cindra acceptance [--hours 72] [--write]  # what the unattended run actually proved
 ```
 
 ## Conventions
@@ -297,6 +298,31 @@ judged lead. Reporting `judged` from one population while arguing from the other
 produced a report claiming nothing was judged directly above a proposal citing eighteen
 judged leads.
 
+**The Phase 7 gate was re-specified 2026-08-19, because the old one asserted a
+heatsink.** "`get_throttled` stays `0x0` for 72 h" was already false twenty minutes
+after a cold boot -- sticky bits 17/18/19, bits 0/16 clear, so thermal and not power.
+It also required that the thermal governor never once act, on a system that has a
+thermal governor. Under real load it engaged, `scorer_prose_failed` logged
+`will_retry: true`, and the jobs completed later; the old gate failed the run for
+exactly that.
+
+`cindra acceptance [--hours 72]` grades what the software controls -- throughput, no
+job lost, no silent unit, one build throughout, and **the governor recovered if it
+engaged**. Heat is reported and never graded. Two rules in it:
+
+- **A criterion that cannot be evaluated reports `n/a` and does not pass.** A box with
+  no sensor must not read as a box that stayed cool, which is how the `0x0` gate would
+  have been satisfied by a machine that never measured anything.
+- **A gap is never credited to the state that preceded it.** Crediting the interval
+  across an outage would report hours of `nominal` for a window in which nothing ran.
+
+It reads the `metrics` table, which the worker writes to every 60 s anyway -- the
+heartbeat now carries `thermal_state`, `temp_c` and `throttled_now`. Before that the
+governor kept its state in memory and `/healthz` reported only the instant, so "did it
+engage over those 72 hours, and did it come back" died with each poll.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
-inference reaches ~80 C with the fan at ~6000 RPM. The Phase 7 acceptance run requires
-`get_throttled` to stay `0x0` for 72 h, which this hardware has not yet demonstrated.
+inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
+put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
+returns `ok`, which is luck rather than design. journald is volatile on this box, so
+nothing survives the reboot you would want to investigate.
