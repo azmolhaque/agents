@@ -537,3 +537,69 @@ async def test_a_platform_url_is_refused_before_the_fetch(rig):
     assert rows(store, "SELECT status FROM candidates")[0]["status"] == "skipped"
     assert rows(store, "SELECT * FROM domain_fetch_log") == [], "no request was made"
     assert rows(store, f"SELECT 1 FROM jobs WHERE kind='{EXTRACT_KIND}' AND status='pending'") == []
+
+
+# ------------------------------------------------- discovery attribution end to end
+
+
+async def test_the_template_that_found_a_company_survives_to_the_company_row(rig):
+    """`companies.discovered_by` was NULL for every company ever recorded.
+
+    The Harvester puts `template_id` on the extract job and the Resolver reads it off
+    the *resolve* job -- and the Extractor sat silently between them and did not forward
+    it, so the Resolver's `payload.get("template_id")` was always empty. Both ends were
+    tested in isolation and both passed; nothing tested the seam.
+
+    The cost was that `cindra explain`'s per-template yield table could never populate,
+    and its whole reason for existing is that a weight in `icp.yaml` is a guess until
+    that table disagrees with it. With no attribution it could not disagree with
+    anything -- 201 companies, all `(unknown)`.
+
+    So this test drives extract *and* resolve, and asserts on the company row rather
+    than on either payload. A seam is only covered by a test that crosses it.
+    """
+    extractor, resolver, _backend, store = rig()
+    seed_candidate(store, "c1", "https://acmehealth.io/")
+    queue = JobQueue(store)
+    with store.tx() as conn:
+        queue.enqueue(
+            EXTRACT_KIND,
+            {
+                "candidate_id": "c1",
+                "url": "https://acmehealth.io/",
+                "template_id": "hn_who_is_hiring",
+            },
+            conn=conn,
+        )
+
+    await drive(
+        store,
+        {EXTRACT_KIND: extractor, RESOLVE_KIND: resolver},
+        [EXTRACT_KIND, RESOLVE_KIND],
+    )
+
+    found = rows(store, "SELECT canonical_domain, discovered_by FROM companies")
+    assert found, "the pipeline produced no company"
+    assert found[0]["discovered_by"] == "hn_who_is_hiring"
+
+
+async def test_a_company_found_without_a_template_records_no_false_credit(rig):
+    """Inbound mail and hand-seeded candidates have no template. NULL is the honest
+    answer and `cindra explain` groups it as `(unknown)`; inventing a template here
+    would put fabricated rows in the one table that decides query weights."""
+    extractor, resolver, _backend, store = rig()
+    seed_candidate(store, "c1", "https://acmehealth.io/")
+    queue = JobQueue(store)
+    with store.tx() as conn:
+        queue.enqueue(
+            EXTRACT_KIND, {"candidate_id": "c1", "url": "https://acmehealth.io/"}, conn=conn
+        )
+
+    await drive(
+        store,
+        {EXTRACT_KIND: extractor, RESOLVE_KIND: resolver},
+        [EXTRACT_KIND, RESOLVE_KIND],
+    )
+
+    found = rows(store, "SELECT discovered_by FROM companies")
+    assert found and found[0]["discovered_by"] is None

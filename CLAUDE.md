@@ -251,6 +251,17 @@ overwritten -- a re-sighting does not reassign discovery), and `cindra explain` 
 sendable-per-template. **Before it existed, no query change was checkable.** A weight in
 `icp.yaml` is a guess until that table disagrees with it.
 
+**`discovered_by` was NULL for every company ever recorded, and nothing noticed for
+days.** The Harvester puts `template_id` on the extract job; the Resolver reads it out
+of the *candidate's stored payload* to write the column. The Extractor sat between them
+and forwarded neither. Both ends had tests and both passed -- nothing crossed the seam,
+which is the only place the bug could live. `cindra explain` reported `(unknown) 201`
+and read as "these predate the column" rather than "this never works".
+
+The lesson is the one this project keeps relearning: **a field threaded through three
+stages needs a test that drives all three.** Same shape as `digest_pages` and
+`extend_lease` -- built, tested in isolation, never actually wired.
+
 `organizations_only` defaults ON for GitHub. `stack_risk_repos` documented "Restricted
 to organizations" for weeks while calling an unfiltered search, so every personal
 langchain project became a candidate.

@@ -348,6 +348,19 @@ class Extractor:
             "evidence_ids": evidence_ids,
             "trigger_codes": trigger_codes,
             "prompt_version": self._prompt_version,
+            # Forwarded, not dropped. The Harvester puts `template_id` on the extract
+            # job and the Resolver reads it out of *this* payload to write
+            # `companies.discovered_by` -- and this stage sat silently between them, so
+            # the column was NULL for every company ever recorded and `cindra explain`'s
+            # per-template yield table could never populate. The whole point of that
+            # table is that a weight in `icp.yaml` is a guess until it disagrees; with
+            # no attribution it could not disagree with anything.
+            #
+            # It goes in the stored candidate payload rather than the follow-on job
+            # because that is where the Resolver reads from, and because discovery
+            # provenance should survive a re-resolve rather than living only in a
+            # transient job row.
+            "template_id": job.payload.get("template_id") or "",
         }
         conn.execute(
             "UPDATE candidates SET content_sha256 = ?, raw_payload = ?, status = ? "
