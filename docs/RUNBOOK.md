@@ -132,6 +132,31 @@ cindra harvest --dry-run
 source). The hourly timer exists to catch each window the moment it reopens, which is
 why running harvest by hand rarely finds anything.
 
+### `grep: var/log/cindraleads.jsonl: binary file matches`
+
+grep found your lines and refused to print them because the file contains NUL bytes.
+`grep -a` reads it as text and is the answer to the immediate question.
+
+**But do not stop there.** The logger opens in append mode and JSON-encodes to ASCII,
+so it cannot write a NUL. Runs of NULs in an ext4 file mean an unclean shutdown: the
+file's size was extended, delayed allocation had not yet flushed the data blocks, and
+the power went. Count them and count the reboots:
+
+```bash
+grep -c $'\0' var/log/cindraleads.jsonl
+journalctl --list-boots | tail -5
+```
+
+The log is the cheap casualty. **The same event can corrupt the database**, which is
+the whole reason the installer warns about running from microSD:
+
+```bash
+sqlite3 var/cindraleads.db "PRAGMA integrity_check;"
+```
+
+Anything but `ok` — restore from `var/backups/`, after `./scripts/restore_drill.sh`
+tells you how many cards would be re-sent.
+
 ---
 
 ## 2. Routine operations
