@@ -1206,6 +1206,54 @@ def work(
     typer.echo(f"processed {asyncio.run(_main())}")
 
 
+# The longest a single stage may run before we stop believing in it. Generous against
+# the measured worst case -- a 64 s p50 page, plus a thermal pause -- because the cost
+# of cutting a slow job short is a lost lead and the cost of waiting is a slow lead.
+MAX_STAGE_SECONDS = 900.0
+
+
+async def _prepare_renewing_lease(
+    stage: Stage, job: Job, queue: JobQueue, *, lease: int, watchdog: Watchdog
+) -> Any:
+    """Run `prepare()`, renewing the lease and petting the watchdog while it runs.
+
+    Phase 0 built `extend_lease`, tested it, and nothing ever called it. The bill came
+    due as dead-lettered `score.company` jobs: decode on this Pi is 3.7 tok/s, so an
+    LLM stage can outlive any fixed lease, and once it does the job is reclaimed *while
+    still being worked on* -- the original worker then hits `LeaseLost` at commit and
+    throws away work it had actually finished.
+
+    The watchdog is petted here for the same reason, and this is the part that needs a
+    bound: a stage stuck in a socket read with no timeout would otherwise renew its
+    lease and pet its watchdog forever, which is precisely the wedge both mechanisms
+    exist to catch. `MAX_STAGE_SECONDS` is the line. Past it the stage is cancelled and
+    the job fails honestly rather than being held open by a worker that will never
+    finish it.
+    """
+    task = asyncio.ensure_future(stage.prepare(job))
+    # A third of the lease: short enough that a renewal is never the last one before
+    # expiry, long enough not to write to the same lock the stages need.
+    interval = max(5.0, lease / 3)
+    deadline = time.monotonic() + MAX_STAGE_SECONDS
+
+    while True:
+        # Never wait past the deadline: sleeping a full interval first would let a
+        # wedged stage run up to one renewal period beyond the bound it just broke.
+        remaining = deadline - time.monotonic()
+        done, _ = await asyncio.wait({task}, timeout=max(0.0, min(interval, remaining)))
+        if done:
+            return task.result()
+        if time.monotonic() >= deadline:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            raise CindraError(
+                f"stage {job.kind} exceeded {MAX_STAGE_SECONDS:.0f}s and was cancelled"
+            )
+        queue.extend_lease(job.job_id, seconds=lease)
+        watchdog.pet()
+
+
 def _thermal_detail(governor: Any) -> dict[str, Any]:
     """The three thermal fields worth carrying on a heartbeat, or nothing.
 
@@ -1315,7 +1363,9 @@ async def _work_loop(
             # Phase 1, outside any transaction. A harvest fetch can take 30 s, and
             # BEGIN IMMEDIATE holds the single write lock for its whole duration --
             # doing the network work here keeps every other worker running.
-            outcome = await stage.prepare(job)
+            outcome = await _prepare_renewing_lease(
+                stage, job, queue, lease=lease, watchdog=watchdog
+            )
         except (CindraError, OSError, ValueError) as exc:
             queue.fail(job.job_id, f"{type(exc).__name__}: {exc}")
             log.error("stage_prepare_failed", job_id=job.job_id, stage=job.kind, error=str(exc))

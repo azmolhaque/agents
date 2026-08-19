@@ -34,7 +34,7 @@ CREATE TABLE companies (
     funding             TEXT,
     first_seen_at       TEXT NOT NULL,
     last_updated_at     TEXT NOT NULL
-);
+, enriched_at TEXT, discovered_by TEXT);
 CREATE VIRTUAL TABLE companies_fts USING fts5 (
     canonical_domain UNINDEXED,
     display_name,
@@ -144,7 +144,7 @@ CREATE TABLE jobs (
     last_error       TEXT,
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
-);
+, reclaims INTEGER NOT NULL DEFAULT 0, max_reclaims INTEGER NOT NULL DEFAULT 10);
 CREATE TABLE leads (
     lead_id            TEXT PRIMARY KEY,
     canonical_domain   TEXT NOT NULL REFERENCES companies (canonical_domain) ON DELETE CASCADE,
@@ -161,7 +161,7 @@ CREATE TABLE leads (
     pipeline_version   TEXT NOT NULL,
     prompt_version     TEXT NOT NULL DEFAULT '',
     archived           INTEGER NOT NULL DEFAULT 0
-);
+, scoring_version TEXT);
 CREATE TABLE metrics (
     metric_id  INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
@@ -214,6 +214,8 @@ CREATE TABLE triggers (
 CREATE UNIQUE INDEX api_budget_day ON api_budget (provider, day);
 CREATE INDEX candidates_status ON candidates (status);
 CREATE INDEX companies_country ON companies (country);
+CREATE INDEX companies_discovered_by ON companies (discovered_by);
+CREATE INDEX companies_enriched ON companies (enriched_at);
 CREATE INDEX contacts_domain ON contacts (canonical_domain);
 CREATE INDEX contacts_email ON contacts (email);
 CREATE UNIQUE INDEX dispatch_idem ON dispatch_log (idempotency_key);
@@ -229,6 +231,7 @@ CREATE INDEX jobs_claim ON jobs (status, available_at, priority, created_at);
 CREATE UNIQUE INDEX jobs_dedupe ON jobs (dedupe_key) WHERE dedupe_key IS NOT NULL;
 CREATE INDEX jobs_lease ON jobs (status, lease_expires_at);
 CREATE UNIQUE INDEX leads_domain ON leads (canonical_domain);
+CREATE INDEX leads_scoring_version ON leads (scoring_version);
 CREATE INDEX leads_tier ON leads (tier, archived);
 CREATE INDEX metrics_name_time ON metrics (name, recorded_at);
 CREATE INDEX raw_documents_expiry ON raw_documents (expires_at);

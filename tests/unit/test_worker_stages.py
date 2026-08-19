@@ -217,3 +217,69 @@ def test_every_sync_handler_is_reachable_through_the_stage_adapter():
     that fails at runtime as 'no handler registered'."""
     stages = _stages_for(list(HANDLERS), None)
     assert set(stages) == set(HANDLERS)
+
+
+# ------------------------------------------------- a slow stage keeps its own lease
+
+
+class _SlowStage:
+    """A stage whose `prepare` outlives the lease, as an LLM call on this Pi does."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    async def prepare(self, job: Job) -> Any:
+        import asyncio
+
+        await asyncio.sleep(self.seconds)
+        return {"ok": True}
+
+    def commit(self, job: Job, outcome: Any, conn: sqlite3.Connection) -> StageResult:
+        return StageResult(ok=True, stage=job.kind, job_id=job.job_id)
+
+
+async def test_a_stage_slower_than_its_lease_is_not_reclaimed_out_from_under_itself(
+    store: Store,
+) -> None:
+    """Decode on the Pi is 3.7 tok/s, so a scoring stage routinely outlives a fixed
+    lease. Before the worker renewed it, the job was reclaimed *while still being
+    worked on*: the original worker then hit `LeaseLost` at commit and threw away work
+    it had actually finished, and the reclaim charged the job an attempt for it.
+    """
+    queue = JobQueue(store)
+    job_id = queue.enqueue("slow.kind")
+
+    opts = {**OPTS, "lease": 1}  # renewals fall due every ~5 s floor, well inside it
+    processed = await _work_loop(store, {"slow.kind": _SlowStage(0.3)}, kinds=["slow.kind"], **opts)
+
+    assert processed == 1
+    job = queue.get(job_id)
+    assert job is not None and job.status == "done"
+    assert job.reclaims == 0
+
+
+async def test_a_stage_that_never_returns_is_cancelled_rather_than_renewed_forever(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bound on the fix. Renewing the lease and petting the watchdog while a stage
+    runs would otherwise mean a stage wedged in a socket read with no timeout keeps
+    both alive indefinitely -- defeating the two mechanisms that exist to catch exactly
+    that. Past the deadline the job fails honestly instead.
+    """
+    from cindraleads import cli
+
+    monkeypatch.setattr(cli, "MAX_STAGE_SECONDS", 0.2)
+    queue = JobQueue(store)
+    job_id = queue.enqueue("slow.kind", max_attempts=1)
+
+    processed = await _work_loop(
+        store, {"slow.kind": _SlowStage(30.0)}, kinds=["slow.kind"], **{**OPTS, "lease": 1}
+    )
+
+    assert processed == 0
+    job = queue.get(job_id)
+    assert job is not None and job.status == "dead"
+    reason = store.conn.execute(
+        "SELECT last_error FROM dead_letter WHERE job_id=?", (job_id,)
+    ).fetchone()["last_error"]
+    assert "exceeded" in reason and "cancelled" in reason

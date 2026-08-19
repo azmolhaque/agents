@@ -298,6 +298,27 @@ judged lead. Reporting `judged` from one population while arguing from the other
 produced a report claiming nothing was judged directly above a proposal citing eighteen
 judged leads.
 
+**An interruption is not a failure, and the queue used to charge them to one counter.**
+`attempts` was incremented at *claim* time, so a worker killed mid-job looked exactly
+like a stage that raised. Three deploys during a slow LLM call dead-lettered a
+`score.company` job that had never once failed -- found by `cindra acceptance` on its
+first real run, below `/healthz`'s dead-letter warn threshold of 5 and therefore
+invisible until something asked "did this run lose work".
+
+`attempts` now counts stage failures only and is charged in `fail()`; `reclaims`
+counts orphaned leases and is charged in `reclaim_expired()`, with its own higher
+ceiling. **Every claim still ends in exactly one of done, `attempts+1` or
+`reclaims+1`** -- that accounting is why the claim-time increment existed, and it is
+preserved rather than dropped. The ceilings differ because the evidence does: three
+stage failures say the job is broken, three interruptions say we deployed three times.
+
+**`extend_lease` shipped in Phase 0, was tested, and nothing ever called it** -- the
+same shape as `digest_pages`. The worker now renews the lease and pets the watchdog
+while `prepare()` runs, which is what stops a slow stage being reclaimed out from under
+itself. That needs a bound or it defeats both mechanisms: a stage wedged in a socket
+read would renew forever. `MAX_STAGE_SECONDS` is the line, and past it the stage is
+cancelled and the job fails honestly.
+
 **The Phase 7 gate was re-specified 2026-08-19, because the old one asserted a
 heatsink.** "`get_throttled` stays `0x0` for 72 h" was already false twenty minutes
 after a cold boot -- sticky bits 17/18/19, bits 0/16 clear, so thermal and not power.

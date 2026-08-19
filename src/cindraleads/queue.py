@@ -41,7 +41,8 @@ from cindraleads.store import Store
 __all__ = ["JobQueue"]
 
 _COLUMNS = (
-    "job_id, kind, payload, status, priority, attempts, max_attempts, dedupe_key, "
+    "job_id, kind, payload, status, priority, attempts, max_attempts, "
+    "reclaims, max_reclaims, dedupe_key, "
     "worker_id, lease_expires_at, available_at, last_error, created_at, updated_at"
 )
 
@@ -55,6 +56,8 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         priority=int(row["priority"]),
         attempts=int(row["attempts"]),
         max_attempts=int(row["max_attempts"]),
+        reclaims=int(row["reclaims"]),
+        max_reclaims=int(row["max_reclaims"]),
         dedupe_key=row["dedupe_key"],
         worker_id=row["worker_id"],
         lease_expires_at=from_iso(row["lease_expires_at"]) if row["lease_expires_at"] else None,
@@ -88,6 +91,7 @@ class JobQueue:
         priority: int = 100,
         dedupe_key: str | None = None,
         max_attempts: int = 3,
+        max_reclaims: int = 10,
         delay_seconds: float = 0.0,
         conn: sqlite3.Connection | None = None,
     ) -> str:
@@ -106,14 +110,15 @@ class JobQueue:
                     return str(existing["job_id"])
             active.execute(
                 "INSERT INTO jobs (job_id, kind, payload, status, priority, attempts, "
-                "max_attempts, dedupe_key, available_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?)",
+                "max_attempts, max_reclaims, dedupe_key, available_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, 'pending', ?, 0, ?, ?, ?, ?, ?, ?)",
                 (
                     job_id,
                     kind,
                     json.dumps(payload or {}, separators=(",", ":")),
                     priority,
                     max_attempts,
+                    max_reclaims,
                     dedupe_key,
                     to_iso(available_at),
                     to_iso(now),
@@ -160,9 +165,16 @@ class JobQueue:
             params.extend(kinds)
         params.append(limit)
 
+        # Note what is *not* here: `attempts=attempts+1`. A claim is not an attempt.
+        # It used to be, because a SIGKILL'd worker never reaches `fail()` and the
+        # attempt would otherwise go uncounted -- but that made an interruption
+        # indistinguishable from a stage error, and three deploys during a slow LLM
+        # call dead-lettered a job that had never failed. `reclaim_expired` now charges
+        # those to `reclaims`, so every claim still ends in exactly one of done,
+        # attempts+1 or reclaims+1 and nothing escapes the accounting.
         sql = (
             "UPDATE jobs SET status='in_flight', worker_id=?, lease_expires_at=?, "
-            "attempts=attempts+1, updated_at=? "
+            "updated_at=? "
             "WHERE job_id IN ("
             "  SELECT job_id FROM jobs"
             "  WHERE status='pending' AND available_at <= ?"
@@ -206,10 +218,11 @@ class JobQueue:
         retry_in_seconds: float | None = None,
         conn: sqlite3.Connection | None = None,
     ) -> str:
-        """Record a failure. Returns the resulting status.
+        """Record a failure — the stage ran and errored. Returns the resulting status.
 
-        Past ``max_attempts`` the job is moved to ``dead_letter`` rather than retried
-        forever — one broken source must never turn into a crash loop.
+        This is the *only* place ``attempts`` is charged. Past ``max_attempts`` the job
+        moves to ``dead_letter`` rather than retrying forever: one broken source must
+        never turn into a crash loop.
         """
         now = utcnow()
         with self._scope(conn) as active:
@@ -220,34 +233,31 @@ class JobQueue:
             if row is None:
                 raise LeaseLost(f"job {job_id} does not exist")
 
-            if int(row["attempts"]) >= int(row["max_attempts"]):
+            # Charged here rather than at claim time, so the count means "times a stage
+            # ran and failed". The ceiling behaviour is unchanged: three failures still
+            # bury the job, because the increment moved and the comparison moved with it.
+            attempts = int(row["attempts"]) + 1
+            if attempts >= int(row["max_attempts"]):
                 active.execute(
                     "INSERT OR REPLACE INTO dead_letter "
                     "(job_id, kind, payload, attempts, last_error, died_at) "
                     "VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        job_id,
-                        row["kind"],
-                        row["payload"],
-                        int(row["attempts"]),
-                        error[:2000],
-                        to_iso(now),
-                    ),
+                    (job_id, row["kind"], row["payload"], attempts, error[:2000], to_iso(now)),
                 )
                 active.execute(
-                    "UPDATE jobs SET status='dead', worker_id=NULL, lease_expires_at=NULL, "
-                    "last_error=?, updated_at=? WHERE job_id=?",
-                    (error[:2000], to_iso(now), job_id),
+                    "UPDATE jobs SET status='dead', attempts=?, worker_id=NULL, "
+                    "lease_expires_at=NULL, last_error=?, updated_at=? WHERE job_id=?",
+                    (attempts, error[:2000], to_iso(now), job_id),
                 )
                 return "dead"
 
-            backoff = (
-                retry_in_seconds if retry_in_seconds is not None else 2 ** int(row["attempts"])
-            )
+            backoff = retry_in_seconds if retry_in_seconds is not None else 2**attempts
             active.execute(
-                "UPDATE jobs SET status='pending', worker_id=NULL, lease_expires_at=NULL, "
-                "last_error=?, available_at=?, updated_at=? WHERE job_id=?",
+                "UPDATE jobs SET status='pending', attempts=?, worker_id=NULL, "
+                "lease_expires_at=NULL, last_error=?, available_at=?, updated_at=? "
+                "WHERE job_id=?",
                 (
+                    attempts,
                     error[:2000],
                     to_iso(now + timedelta(seconds=backoff)),
                     to_iso(now),
@@ -270,13 +280,21 @@ class JobQueue:
         reclaimed = 0
         with self._scope(conn) as active:
             expired = active.execute(
-                "SELECT job_id, kind, payload, attempts, max_attempts, last_error "
+                "SELECT job_id, kind, payload, attempts, reclaims, max_reclaims, last_error "
                 "FROM jobs WHERE status='in_flight' AND lease_expires_at < ?",
                 (now,),
             ).fetchall()
             for row in expired:
                 job_id = str(row["job_id"])
-                if int(row["attempts"]) >= int(row["max_attempts"]):
+                # `reclaims`, not `attempts`. The stage never reported anything, so we
+                # have no evidence about the job -- only that we lost the worker holding
+                # it. The ceiling is higher for exactly that reason: three stage failures
+                # say the job is broken, three interruptions say we deployed three times.
+                # It is still a ceiling, because a job that reliably wedges or kills the
+                # worker must not retry forever, which is what the claim-time increment
+                # used to protect against.
+                reclaims = int(row["reclaims"]) + 1
+                if reclaims >= int(row["max_reclaims"]):
                     active.execute(
                         "INSERT OR REPLACE INTO dead_letter "
                         "(job_id, kind, payload, attempts, last_error, died_at) "
@@ -286,20 +304,24 @@ class JobQueue:
                             row["kind"],
                             row["payload"],
                             int(row["attempts"]),
-                            row["last_error"] or "lease expired past max_attempts",
+                            # Names the counter that buried it. "lease expired past
+                            # max_attempts" sent us looking for a stage error that had
+                            # never happened.
+                            f"orphaned {reclaims}x without ever failing; "
+                            f"last stage error: {row['last_error'] or 'none'}",
                             now,
                         ),
                     )
                     active.execute(
-                        "UPDATE jobs SET status='dead', worker_id=NULL, "
+                        "UPDATE jobs SET status='dead', reclaims=?, worker_id=NULL, "
                         "lease_expires_at=NULL, updated_at=? WHERE job_id=?",
-                        (now, job_id),
+                        (reclaims, now, job_id),
                     )
                 else:
                     active.execute(
-                        "UPDATE jobs SET status='pending', worker_id=NULL, "
+                        "UPDATE jobs SET status='pending', reclaims=?, worker_id=NULL, "
                         "lease_expires_at=NULL, available_at=?, updated_at=? WHERE job_id=?",
-                        (now, now, job_id),
+                        (reclaims, now, now, job_id),
                     )
                 reclaimed += 1
         return reclaimed

@@ -368,8 +368,14 @@ class Job(_Model):
     payload: dict[str, Any] = Field(default_factory=dict)
     status: JobStatus = "pending"
     priority: int = 100
+    # Two counters, because an interruption is not a failure. `attempts` is charged
+    # only when a stage ran and errored; `reclaims` when a lease was orphaned by a
+    # worker that died or was restarted mid-job. Conflating them let three deploys
+    # bury a job that had never failed.
     attempts: int = 0
     max_attempts: int = 3
+    reclaims: int = 0
+    max_reclaims: int = 10
     dedupe_key: str | None = None
     worker_id: str | None = None
     lease_expires_at: datetime | None = None
