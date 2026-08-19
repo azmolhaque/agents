@@ -14,9 +14,15 @@ import httpx
 import pytest
 
 from cindraleads.agents.enricher import ENRICH_KIND, SCORE_KIND, Enricher, enqueue_unenriched
-from cindraleads.contacts import classify_email, extract_contacts, persona_for
+from cindraleads.contacts import (
+    classify_email,
+    emails_from_markup,
+    extract_contacts,
+    persona_for,
+    security_txt_contact,
+)
 from cindraleads.dns_hygiene import DnsProbe, hygiene_gaps, lookup_hygiene
-from cindraleads.models import DnsHygiene, Job
+from cindraleads.models import DnsHygiene, Job, to_iso, utcnow
 from cindraleads.queue import JobQueue
 from cindraleads.sources import DocumentCache, EgressClient, SourceBreakers, SourceRegistry
 from cindraleads.store import Store
@@ -587,8 +593,12 @@ async def test_a_real_security_txt_is_still_recognised(rig, tmp_path: Path):
     )
     site = Enricher(store=store, egress=egress, enabled_sources=frozenset({"site"}))
 
-    _text, security_txt = await site._site("acme.io")
-    assert security_txt is True
+    found = await site._site("acme.io")
+    assert found.security_txt is True
+    # The `Contact:` line comes back with it. We were paying for this fetch and reading
+    # one boolean out of the body -- RFC 9116 makes the field mandatory, so on any real
+    # security.txt it is a free address the company nominated for this exact subject.
+    assert "security@acme.io" in found.emails
 
 
 def test_the_security_txt_validator_tells_a_policy_from_a_page():
@@ -602,3 +612,131 @@ def test_the_security_txt_validator_tells_a_policy_from_a_page():
     # No Contact field at all: RFC 9116 makes it mandatory, so absence is decisive.
     assert not _is_security_txt("Expires: 2027-01-01T00:00:00Z\n")
     assert not _is_security_txt("")
+
+
+# ------------------------------------------- where the contacts actually were
+
+
+def test_an_address_behind_a_button_is_found():
+    """The 89% miss, in one line of HTML.
+
+    `extract_text` keeps what a visitor sees and drops attributes. A contact page whose
+    address is a "Get in touch" button publishes the address in the `href` and shows
+    none of it as prose -- so every such company came back with no contact at all, and
+    `reachability` scored zero on 173 of 195 leads.
+    """
+    html = '<a class="btn" href="mailto:hello@acme.io">Get in touch</a>'
+
+    assert emails_from_markup(html) == ["hello@acme.io"]
+
+
+def test_mailto_query_parameters_are_not_part_of_the_address():
+    html = '<a href="mailto:sales@acme.io?subject=Hi%20there&cc=x@acme.io">Email</a>'
+
+    assert emails_from_markup(html) == ["sales@acme.io"]
+
+
+def test_an_obfuscated_address_is_still_left_alone():
+    """The politeness rule does not bend for this change. Writing `hello [at] acme.io`
+    is a request not to be harvested; a `mailto:` link is the opposite -- the company
+    made it clickable. Only the second is collected."""
+    html = "<p>Write to hello [at] acme.io or hello (at) acme.io</p>"
+
+    assert emails_from_markup(html) == []
+    assert extract_contacts(html, source_url="u", company_domain="acme.io") == []
+
+
+def test_the_same_address_in_markup_and_prose_is_one_contact():
+    found = extract_contacts(
+        "Reach us at hello@acme.io",
+        source_url="https://acme.io/",
+        company_domain="acme.io",
+        domain_has_mx=True,
+        extra_emails=["hello@acme.io"],
+    )
+
+    assert [c.email for c in found] == ["hello@acme.io"]
+
+
+def test_an_address_from_markup_faces_the_same_compliance_rules():
+    """One code path decides which addresses may reach a card, because "may we contact
+    this" is a compliance question and must not have two answers. A free-mail address in
+    a `mailto:` is still a person, and a foreign domain is still not this company."""
+    found = extract_contacts(
+        "",
+        source_url="https://acme.io/",
+        company_domain="acme.io",
+        domain_has_mx=True,
+        extra_emails=["founder@gmail.com", "hi@someoneelse.io", "hello@acme.io"],
+    )
+
+    assert [c.email for c in found] == ["hello@acme.io"]
+
+
+def test_the_security_txt_contact_is_read():
+    body = (
+        "# our policy\n"
+        "Contact: mailto:security@acme.io\n"
+        "Expires: 2027-01-01T00:00:00Z\n"
+        "Contact: https://acme.io/report\n"
+    )
+
+    assert security_txt_contact(body) == "security@acme.io"
+
+
+def test_a_security_txt_without_an_email_contact_yields_nothing():
+    """`Contact:` may be a URL, and RFC 9116 allows that. A form is not an address."""
+    assert security_txt_contact("Contact: https://acme.io/report\n") is None
+    assert security_txt_contact("") is None
+
+
+def test_forced_reconciliation_re_enriches_a_company_already_enriched(store, tmp_path):
+    """Improving the Enricher is half a change; the other half is re-running it.
+
+    `enriched_at` records that we looked, not what we were able to see. Teaching the
+    stage to read `mailto:` attributes did nothing for the 201 companies already marked
+    enriched -- they would have kept `reachability = 0` until the 30-day sweep reached
+    them. Same shape as `RETIREMENT_RULES`.
+    """
+    queue = JobQueue(store)
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, enriched_at, "
+            "first_seen_at, last_updated_at) VALUES ('acme.io','Acme',?,?,?)",
+            (now, now, now),
+        )
+
+    assert enqueue_unenriched(store, queue) == 0, "freshly enriched, nothing to do"
+    assert enqueue_unenriched(store, queue, force=True) == 1
+
+
+def test_forcing_twice_in_a_day_is_not_swallowed_by_the_dedupe_bucket(store):
+    """The key is day-bucketed, so under `--force` today's completed job is precisely
+    what would block the re-enrichment. A nonce makes it unmatchable, as scoring does."""
+    queue = JobQueue(store)
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, enriched_at, "
+            "first_seen_at, last_updated_at) VALUES ('acme.io','Acme',?,?,?)",
+            (now, now, now),
+        )
+
+    assert enqueue_unenriched(store, queue, force=True) == 1
+    assert enqueue_unenriched(store, queue, force=True) == 1
+
+
+def test_an_unforced_reconcile_still_skips_a_fresh_company(store):
+    """`--force` is the override, not the behaviour. Re-enrichment spends real fetches
+    against the 6-per-domain budget, so the nightly pass must stay conservative."""
+    queue = JobQueue(store)
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, enriched_at, "
+            "first_seen_at, last_updated_at) VALUES ('acme.io','Acme',?,?,?)",
+            (now, now, now),
+        )
+
+    assert enqueue_unenriched(store, queue) == 0

@@ -35,7 +35,13 @@ from typing import Any
 import httpx
 
 from cindraleads.config import Settings, settings
-from cindraleads.contacts import DiscoveredContact, extract_contacts, persona_for
+from cindraleads.contacts import (
+    DiscoveredContact,
+    emails_from_markup,
+    extract_contacts,
+    persona_for,
+    security_txt_contact,
+)
 from cindraleads.dns_hygiene import DnsProbe, hygiene_gaps, lookup_hygiene, mail_auth_weakness
 from cindraleads.errors import CindraError
 from cindraleads.logging import get_logger
@@ -66,13 +72,45 @@ SPRAWL_TOTAL = 25
 SPRAWL_GROWTH = 8
 SPRAWL_WINDOW_DAYS = 30
 
-# Pages that may carry a human contact. security.txt is deliberately not among them:
-# it is fetched separately because its answer is a published *fact* decided by content,
-# not another page of prose to scan for an email address.
-CONTENT_PATHS = ("/", "/about", "/contact", "/team")
+# Pages that may carry a human contact, in the order they are worth spending budget on.
+# `/contact` before `/about` and `/team`: it is the page most likely to carry an address
+# and the SPA check below stops the loop early on sites that mirror one shell, so the
+# order decides what we actually get to see.
+#
+# security.txt is fetched separately because its answer is a published *fact* decided by
+# content -- but its `Contact:` line is read too, since RFC 9116 makes it mandatory and
+# it names the mailbox the company chose for exactly this conversation.
+CONTENT_PATHS = ("/", "/contact", "/about", "/team")
 SECURITY_TXT_PATH = "/.well-known/security.txt"
 
 TRIGGER_DECAY_DAYS = {"T7_SURFACE_SPRAWL": 60, "T8_HYGIENE_GAP": 60}
+
+
+@dataclass(frozen=True)
+class SecurityTxt:
+    """Whether one is published, and the mailbox it nominates.
+
+    `present` is three-valued for the reason in `_security_txt`: absent and unknown are
+    different answers. `contact` is only ever set when `present` is True.
+    """
+
+    present: bool | None = None
+    contact: str | None = None
+
+
+@dataclass(frozen=True)
+class SiteFindings:
+    """What the company's own pages yielded.
+
+    Prose and addresses are separate fields because they come from different halves of
+    the same document -- `extract_text` keeps what a reader sees and drops attributes,
+    which is where `mailto:` lives. Returning only the first is why contact discovery
+    ran at 11%.
+    """
+
+    text: str = ""
+    emails: tuple[str, ...] = ()
+    security_txt: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -145,7 +183,8 @@ class Enricher:
 
         sprawl = gathered[0] if isinstance(gathered[0], tuple) else None
         total, growth = sprawl if sprawl else (None, None)
-        page_text, security_txt = gathered[1] if isinstance(gathered[1], tuple) else ("", None)
+        site = gathered[1] if isinstance(gathered[1], SiteFindings) else SiteFindings()
+        security_txt = site.security_txt
         hiring_codes, hiring_url = gathered[2] if isinstance(gathered[2], tuple) else ((), None)
         age = gathered[3] if isinstance(gathered[3], int) else None
 
@@ -156,10 +195,11 @@ class Enricher:
         )
         contacts = tuple(
             extract_contacts(
-                page_text,
+                site.text,
                 source_url=f"https://{domain}/",
                 company_domain=domain,
                 domain_has_mx=hygiene.mx_present if hygiene else None,
+                extra_emails=site.emails,
             )
         )
 
@@ -197,17 +237,23 @@ class Enricher:
         except (FetchDenied, httpx.HTTPError, OSError, CindraError):
             return None
 
-    async def _site(self, domain: str) -> tuple[str, bool | None]:
+    async def _site(self, domain: str) -> SiteFindings:
         """The company's own pages, within the per-domain politeness budget.
 
         Stops at the first `FetchDenied`: the budget is 6 per rolling 24 h and the
         Extractor has usually spent one already. Burning the rest here would starve
         tomorrow's re-check of the evidence URL.
+
+        Returns the prose *and* the `mailto:` addresses, because they are not the same
+        thing and only reading the first is why 89% of the corpus looked unreachable.
+        `extract_text` keeps what a visitor sees; an address behind a "Get in touch"
+        button lives in an attribute and never appears in the text at all.
         """
         if "site" not in self.enabled_sources:
-            return "", None
+            return SiteFindings()
 
         collected: list[str] = []
+        emails: list[str] = []
         seen: set[str] = set()
 
         for path in CONTENT_PATHS:
@@ -216,7 +262,7 @@ class Enricher:
             except FetchDenied:
                 # Out of budget for today. Keep what we have and skip security.txt
                 # too -- there is nothing left to spend on it.
-                return "\n".join(collected), None
+                return SiteFindings(text="\n".join(collected), emails=tuple(emails))
             except (httpx.HTTPError, OSError, CindraError):
                 continue
 
@@ -230,10 +276,20 @@ class Enricher:
                 break
             seen.add(digest)
             collected.append(extract_text(result.body, max_chars=8000))
+            # From the raw body, before the text extractor discards attributes. Even
+            # the mirrored-SPA case gets one pass, which is often where the address is:
+            # an app shell with a footer `mailto:` renders no prose worth reading and
+            # still publishes a contact.
+            emails.extend(emails_from_markup(result.body))
 
-        return "\n".join(collected), await self._security_txt(domain)
+        found = await self._security_txt(domain)
+        return SiteFindings(
+            text="\n".join(collected),
+            emails=(*emails, *([found.contact] if found.contact else [])),
+            security_txt=found.present,
+        )
 
-    async def _security_txt(self, domain: str) -> bool | None:
+    async def _security_txt(self, domain: str) -> SecurityTxt:
         """Three-valued, and decided by content rather than by status code.
 
         **200 is not evidence that a security.txt exists.** An SPA answers 200 with
@@ -244,16 +300,25 @@ class Enricher:
         True only for something that parses as one, False only for a definite 404,
         and None for everything else: an app shell, a 403, an exhausted budget. Same
         rule as `evidence.reachable` -- absent and unknown are different answers.
+
+        The `Contact:` line comes back with it. We were already paying for this fetch
+        and throwing the body away after reading one boolean out of it -- and RFC 9116
+        makes that field mandatory, so on any real security.txt it is a free address,
+        nominated by the company for security correspondence specifically.
         """
         try:
             result = await self.egress.fetch("company_site", f"https://{domain}{SECURITY_TXT_PATH}")
         except FetchDenied:
-            return None
+            return SecurityTxt()
         except (httpx.HTTPError, OSError, CindraError) as exc:
             status = getattr(getattr(exc, "response", None), "status_code", None)
             # A 404 is a real, publishable fact. A 403 is "you may not see it".
-            return False if status == 404 else None
-        return True if _is_security_txt(result.body) else None
+            return SecurityTxt(present=False if status == 404 else None)
+        if not _is_security_txt(result.body):
+            return SecurityTxt()
+        # Only from a file that actually parses as a security.txt. An app shell that
+        # happens to contain an address is not a published security contact.
+        return SecurityTxt(present=True, contact=security_txt_contact(result.body))
 
     async def _boards(self, board_token: str) -> tuple[tuple[str, ...], str | None]:
         """Whichever ATS the company uses. This is what makes decision 7 work.
@@ -452,27 +517,49 @@ def _trigger(conn: sqlite3.Connection, domain: str, code: str, evidence_id: str,
     return trigger_id
 
 
-def enqueue_unenriched(store: Store, queue: Any, *, stale_after_days: int = 30) -> int:
+def enqueue_unenriched(
+    store: Store, queue: Any, *, stale_after_days: int = 30, force: bool = False
+) -> int:
     """Queue enrichment for companies never enriched, or enriched long ago.
 
     Reconciling rather than reacting, for the same reason scoring does: the Resolver
     only enqueues for companies it resolves *now*, which strands everything that
     existed before this stage did. Subdomain counts and DMARC policies also change,
     so a month-old enrichment is worth redoing.
+
+    **`force` exists because improving the Enricher is half a change.** `enriched_at`
+    records that we looked, not what we were capable of seeing at the time: teaching the
+    stage to read `mailto:` attributes did nothing for the 201 companies already marked
+    enriched, which would have kept `reachability = 0` until the 30-day sweep reached
+    them. Same shape as `RETIREMENT_RULES` -- editing a rule leaves the rows the old one
+    wrote, and something has to re-run it over them.
     """
-    cutoff = to_iso(utcnow() - timedelta(days=stale_after_days))
+    now = utcnow()
+    params: list[Any] = []
+    where = "1=1"
+    if not force:
+        where = "enriched_at IS NULL OR enriched_at < ?"
+        params.append(to_iso(now - timedelta(days=stale_after_days)))
     rows = store.conn.execute(
-        "SELECT canonical_domain FROM companies "
-        "WHERE enriched_at IS NULL OR enriched_at < ? ORDER BY last_updated_at DESC",
-        (cutoff,),
+        f"SELECT canonical_domain FROM companies WHERE {where} ORDER BY last_updated_at DESC",
+        params,
     ).fetchall()
 
     queued = 0
     with store.tx() as conn:
         for row in rows:
             domain = str(row["canonical_domain"])
-            # Day-bucketed so a re-run today is a no-op but tomorrow's is not.
-            key = f"enrich:{domain}:{utcnow():%Y-%m-%d}"
+            # Day-bucketed so a re-run today is a no-op but tomorrow's is not. Under
+            # `force` the bucket is the problem rather than the protection -- today's
+            # completed job is exactly what would swallow the re-enrichment -- so a
+            # timestamp nonce makes the key unmatchable, as `enqueue_stale_scores` does.
+            key = f"enrich:{domain}:{now:%Y-%m-%d}"
+            if force:
+                # A uuid, not a timestamp. `to_iso` has millisecond resolution and two
+                # forced runs inside the same millisecond would collide -- the second
+                # silently swallowed by the first, which is the exact failure `--force`
+                # exists to escape.
+                key += f"|force:{uuid.uuid4().hex}"
             existing = conn.execute(
                 "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (key,)
             ).fetchone()

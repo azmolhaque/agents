@@ -19,6 +19,7 @@ collect them in the first place, so the gate is a backstop rather than the only 
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from cindraleads.compliance import PERSONAL_EMAIL_DOMAINS
@@ -29,8 +30,10 @@ __all__ = [
     "ROLE_LOCAL_PARTS",
     "DiscoveredContact",
     "classify_email",
+    "emails_from_markup",
     "extract_contacts",
     "persona_for",
+    "security_txt_contact",
 ]
 
 log = get_logger("cindraleads.contacts")
@@ -43,6 +46,22 @@ _EMAIL = re.compile(r"\b([A-Za-z0-9._%+-]{1,64})@([A-Za-z0-9.-]{1,255}\.[A-Za-z]
 # obfuscation is the polite reading: if a company wrote "hello [at] acme.io" they did
 # not want it harvested, so we do not un-obfuscate it.
 _OBFUSCATED = re.compile(r"\b[\w.+-]+\s*(?:\[at\]|\(at\)|\s+at\s+)\s*[\w.-]+\.\w{2,}\b", re.I)
+
+# The address in `href="mailto:..."`. **This is where most contacts actually are**, and
+# the reason the enricher found them for only 23 of 201 companies: `extract_text` keeps
+# visible prose and throws attributes away, so a page whose contact is a button reading
+# "Get in touch" published an address we then discarded before ever looking.
+#
+# `?subject=...` and `&cc=...` are stripped, and so is any surrounding whitespace or
+# URL-encoding of the delimiter. Nothing here un-obfuscates anything: a `mailto:` link
+# is a company publishing a clickable address, which is the opposite of hiding one.
+_MAILTO = re.compile(r"""mailto:\s*([A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24})""")
+
+# RFC 9116 makes `Contact:` mandatory in a security.txt, and it is frequently an email.
+# We already fetch the file to decide whether one exists and then throw the body away --
+# so this costs no request at all. It is also the *most* relevant address we can find:
+# it is the mailbox the company nominated for exactly this conversation.
+_SECURITY_TXT_CONTACT = re.compile(r"^\s*contact:\s*(?:mailto:)?\s*(\S+@\S+?)\s*$", re.I | re.M)
 
 ROLE_LOCAL_PARTS: frozenset[str] = frozenset(
     {
@@ -175,6 +194,47 @@ def persona_for(role_title: str | None) -> str | None:
     return "generic"
 
 
+def emails_from_markup(html: str) -> list[str]:
+    """Addresses published as `mailto:` links, in document order.
+
+    Reads the raw body, not the extracted prose. That is the whole point: a contact
+    page whose address is behind a "Get in touch" button puts the address in an
+    attribute, and `extract_text` keeps only what a reader sees. Every such company
+    looked contactless.
+
+    No un-obfuscation happens here and none should: a `mailto:` link is an address the
+    company made clickable. `hello [at] acme.io` stays untouched, as it always has.
+    """
+    if not html:
+        return []
+    seen: set[str] = set()
+    found: list[str] = []
+    for match in _MAILTO.finditer(html):
+        email = match.group(1).lower().rstrip(".,;")
+        if email not in seen:
+            seen.add(email)
+            found.append(email)
+    return found
+
+
+def security_txt_contact(body: str) -> str | None:
+    """The address a company nominated for security correspondence, or None.
+
+    RFC 9116 requires `Contact:`, and it is often `mailto:security@…`. We already fetch
+    this file to decide whether one exists, so reading the field costs nothing — and it
+    is the single most relevant mailbox we can find, because it is the one the company
+    chose to publish for precisely this conversation.
+
+    Returns the first match only. A security.txt listing three contacts is offering
+    alternatives, not three people to write to, and section 12's data minimisation says
+    take one.
+    """
+    if not body:
+        return None
+    match = _SECURITY_TXT_CONTACT.search(body)
+    return match.group(1).lower() if match else None
+
+
 def extract_contacts(
     text: str,
     *,
@@ -182,6 +242,7 @@ def extract_contacts(
     company_domain: str,
     domain_has_mx: bool | None = None,
     limit: int = 3,
+    extra_emails: Sequence[str] = (),
 ) -> list[DiscoveredContact]:
     """Pull business addresses out of a page we already fetched.
 
@@ -189,18 +250,25 @@ def extract_contacts(
     addresses are deliberately left alone: writing "hello [at] acme.io" is a request
     not to be harvested, and honouring it costs us one contact and keeps the promise.
 
+    `extra_emails` are addresses found somewhere other than prose -- `mailto:` hrefs and
+    the `Contact:` line of a security.txt. They are classified and ranked by exactly the
+    same rules rather than by a second code path, because "which addresses may reach a
+    lead card" is a compliance question and must have one answer.
+
     Capped at `limit`, preferring the most useful. Section 12's data-minimisation rule
     is not satisfied by storing every address on a company's contact page.
     """
-    if not text:
+    if not text and not extra_emails:
         return []
     if _OBFUSCATED.search(text):
         log.debug("contacts_obfuscated_present", url=source_url)
 
     seen: set[str] = set()
     found: list[DiscoveredContact] = []
-    for match in _EMAIL.finditer(text):
-        email = f"{match.group(1)}@{match.group(2)}".lower()
+    candidates = [e.lower() for e in extra_emails]
+    candidates += [f"{m.group(1)}@{m.group(2)}".lower() for m in _EMAIL.finditer(text)]
+
+    for email in candidates:
         if email in seen:
             continue
         seen.add(email)

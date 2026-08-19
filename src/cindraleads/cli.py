@@ -653,7 +653,9 @@ def explain(
 def reconcile(
     force: Annotated[
         bool,
-        typer.Option(help="Re-queue scoring even where a job already ran. See the docstring."),
+        typer.Option(
+            help="Re-queue enrichment and scoring even where a job already ran. See the docstring."
+        ),
     ] = False,
 ) -> None:
     """Queue the work the event flow missed. Enqueue only -- drains nothing.
@@ -667,11 +669,16 @@ def reconcile(
     heals a stage added later, a restore from backup, and a crash between stages --
     none of which any event would replay.
 
-    `--force` re-queues scoring even for companies whose job already ran. Needed after
-    a worker drained jobs while executing a stale build: those jobs completed without
-    doing their work, and their dedupe keys now block the retry. The data cannot tell
-    a job that worked from one that did not, so this is the human override -- and it
-    costs ~18 s of Pi inference per company, so it is not the default.
+    `--force` re-queues **enrichment and scoring** even for companies whose job already
+    ran. Needed after a worker drained jobs while executing a stale build: those jobs
+    completed without doing their work, and their dedupe keys now block the retry. It is
+    equally needed after the Enricher gets *better* -- `enriched_at` records that we
+    looked, not what we could see at the time, so teaching it to read `mailto:`
+    attributes reached none of the companies already marked enriched.
+
+    The data cannot tell a job that worked from one that did not, so this is the human
+    override. It is not the default: rescoring costs ~18 s of Pi inference per company,
+    and re-enrichment spends real fetches against the 6-per-domain daily budget.
     """
     cfg = settings()
     cfg.ensure_dirs()
@@ -680,7 +687,7 @@ def reconcile(
 
     async def _run() -> None:
         async with Runtime(store=store, config=cfg) as runtime:
-            fresh = enqueue_unenriched(store, runtime.queue)
+            fresh = enqueue_unenriched(store, runtime.queue, force=force)
             stale = enqueue_stale_scores(store, runtime.queue, force=force)
         typer.echo(
             f"queued {fresh} for enrichment, {stale} for (re)scoring"

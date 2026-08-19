@@ -309,6 +309,29 @@ judged lead. Reporting `judged` from one population while arguing from the other
 produced a report claiming nothing was judged directly above a proposal citing eighteen
 judged leads.
 
+**Most contacts were in the markup, and `extract_text` throws markup away.** The
+Enricher found contacts for 23 of 201 companies, so `reachability` -- 15% of the score --
+was zero on 173 of 195 leads and ten of them sat 0.8 points under the Tier C floor. The
+cause was not that the addresses were absent: a page whose contact is a "Get in touch"
+button publishes it in `href="mailto:..."`, and the text extractor keeps only what a
+visitor sees. `emails_from_markup` reads the raw body; the obfuscation rule is untouched,
+because `hello [at] acme.io` is a request not to be harvested and a `mailto:` link is the
+opposite.
+
+The security.txt `Contact:` line is read for the same reason -- we already fetched the
+file to decide whether one exists and discarded the body. RFC 9116 makes the field
+mandatory, so it is a free address, and the most relevant one available: the mailbox the
+company nominated for security correspondence.
+
+**RDAP is deliberately not a contact source.** Registrant records are redacted post-GDPR
+and the abuse contact belongs to the registrar, not the prospect -- presenting it as a
+company contact would be wrong rather than merely useless.
+
+**Improving the Enricher is half a change.** `enriched_at` records that we looked, not
+what we could see at the time, so none of this reaches the 201 companies already marked
+enriched until the 30-day sweep. `cindra reconcile --force` now re-queues enrichment as
+well as scoring. Same shape as `RETIREMENT_RULES`.
+
 **An interruption is not a failure, and the queue used to charge them to one counter.**
 `attempts` was incremented at *claim* time, so a worker killed mid-job looked exactly
 like a stage that raised. Three deploys during a slow LLM call dead-lettered a

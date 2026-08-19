@@ -21,6 +21,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -499,7 +500,11 @@ def enqueue_stale_scores(
             # this one -- see the docstring for why that situation is undetectable.
             shape = f"{domain}|{row['newest']}|{fingerprint}"
             if force:
-                shape += f"|force:{now}"
+                # A uuid, not `now`. `to_iso` has millisecond resolution, so two forced
+                # runs in the same millisecond produced the same key and the second was
+                # swallowed by the first -- the precise failure `--force` exists to
+                # escape.
+                shape += f"|force:{uuid.uuid4().hex}"
             digest = hashlib.sha256(shape.encode()).hexdigest()[:16]
             existing = conn.execute(
                 "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (f"score:{digest}",)
