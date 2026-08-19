@@ -161,6 +161,23 @@ sudo systemctl restart systemd-journald
 Capped at 200 MB deliberately: this is a write-amplifying log on a wear-limited card,
 and an uncapped journal on microSD trades one failure mode for another.
 
+**Verify it took, because on this Pi it did not:**
+
+```bash
+journalctl --header | grep -m1 'File path'
+```
+
+`/var/log/journal/...` is persistent. `/run/log/journal/...` means something with higher
+precedence is still forcing `Storage=volatile` — `systemd-analyze cat-config
+systemd/journald.conf` shows both values in that case. Renaming the drop-in so it sorts
+last (`zz-cindraleads.conf`) is worth one attempt; past that, stop.
+
+**And know what it actually costs, which is less than it sounds.** A volatile journal
+loses only the *systemd* layer across a reboot: unit starts and stops, OOM kills,
+watchdog kills. Every pipeline event — stage failures, thermal pauses, dispatches,
+gateway connections — is in `var/log/cindraleads.jsonl`, an ordinary file on disk that
+survives. `cindra acceptance` reads the `metrics` table in SQLite and is unaffected.
+
 The log is the cheap casualty. **The same event can corrupt the database**, which is
 the whole reason the installer warns about running from microSD:
 
