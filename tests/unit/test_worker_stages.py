@@ -283,3 +283,77 @@ async def test_a_stage_that_never_returns_is_cancelled_rather_than_renewed_forev
         "SELECT last_error FROM dead_letter WHERE job_id=?", (job_id,)
     ).fetchone()["last_error"]
     assert "exceeded" in reason and "cancelled" in reason
+
+
+# ------------------------------------ the two deadlines, only one of which is ours
+
+
+def test_the_renewal_interval_never_outlasts_the_watchdog() -> None:
+    """The bug that crash-looped the worker twelve times.
+
+    The interval was `lease / 3`. The unit runs `--lease 600`, so that is 200 seconds --
+    and `WatchdogSec=180` means systemd sends SIGABRT at 180. Every stage slower than
+    three minutes sat inside `asyncio.wait` for 200 s without petting and was killed by
+    the watchdog while it was working correctly.
+
+    Half the pet interval, not the whole of it: `Watchdog.pet()` rate-limits itself, so
+    waking at exactly the interval lets jitter push a ping past its own gate, and the
+    next chance is the deadline.
+    """
+    from cindraleads.cli import _renewal_interval
+    from cindraleads.sdnotify import Watchdog
+
+    watchdog = Watchdog(interval_seconds=90.0)  # WatchdogSec=180
+
+    assert _renewal_interval(600, watchdog) == 45.0
+    assert _renewal_interval(600, watchdog) < watchdog.interval
+
+
+def test_a_short_lease_still_wins_over_the_watchdog_bound() -> None:
+    """Whichever deadline is nearer decides. A 30 s lease must renew every 10 s even
+    though the watchdog would tolerate 45."""
+    from cindraleads.cli import _renewal_interval
+    from cindraleads.sdnotify import Watchdog
+
+    assert _renewal_interval(30, Watchdog(interval_seconds=90.0)) == 10.0
+
+
+def test_without_a_watchdog_the_lease_alone_decides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run by hand or in a test there is no `WATCHDOG_USEC`, and inventing a bound
+    would make the worker write to the queue three times as often for nothing."""
+    from cindraleads.cli import _renewal_interval
+    from cindraleads.sdnotify import Watchdog
+
+    inert = Watchdog(interval_seconds=0.0)
+    assert not inert.enabled
+    assert _renewal_interval(600, inert) == 200.0
+
+
+async def test_a_slow_stage_keeps_the_heartbeat_alive(store: Store) -> None:
+    """A stage slower than `HEARTBEAT_GAP_SECONDS` must not read as a dead worker.
+
+    The main loop writes the heartbeat every 60 s and does not get to run while a stage
+    does, so a legitimately slow scoring job would appear in `cindra acceptance` as a
+    gap in the worker's record -- the exact signal that means "the worker died and came
+    back". The renewal loop writes one on every tick for the same reason it pets the
+    watchdog.
+    """
+    from cindraleads.metrics import HEARTBEAT_METRIC
+
+    queue = JobQueue(store)
+    queue.enqueue("slow.kind")
+
+    before = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM metrics WHERE name = ?", (HEARTBEAT_METRIC,)
+    ).fetchone()["n"]
+
+    # lease 3 -> renewals every second, so a 2.5 s stage ticks at least twice
+    await _work_loop(
+        store, {"slow.kind": _SlowStage(2.5)}, kinds=["slow.kind"], **{**OPTS, "lease": 3}
+    )
+
+    after = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM metrics WHERE name = ?", (HEARTBEAT_METRIC,)
+    ).fetchone()["n"]
+    # start + at least one mid-stage tick + the exit beat
+    assert after - before >= 3

@@ -323,6 +323,20 @@ ceiling. **Every claim still ends in exactly one of done, `attempts+1` or
 preserved rather than dropped. The ceilings differ because the evidence does: three
 stage failures say the job is broken, three interruptions say we deployed three times.
 
+**Two deadlines run during a stage and only one of them is ours.** The lease is ours;
+the watchdog is systemd's, and it is the one that bites. `WatchdogSec=180` means the
+worker must ping every 90 s. The renewal interval was `lease / 3`, which at the unit's
+`--lease 600` is 200 s -- so every stage slower than three minutes sat inside
+`asyncio.wait` without petting and took SIGABRT at 180. Twelve crash-loop restarts,
+presenting as low throughput and worker gaps rather than as arithmetic.
+`_renewal_interval` now takes the nearer of the two and halves the watchdog's, because
+`Watchdog.pet()` rate-limits itself and waking exactly on the interval lets jitter push
+a ping past its own gate.
+
+The renewal loop also writes the heartbeat. The main loop writes it every 60 s and does
+not run while a stage does, so a stage slower than `HEARTBEAT_GAP_SECONDS` would be
+reported by `cindra acceptance` as a gap -- the signal that means the worker died.
+
 **`extend_lease` shipped in Phase 0, was tested, and nothing ever called it** -- the
 same shape as `digest_pages`. The worker now renews the lease and pets the watchdog
 while `prepare()` runs, which is what stops a slow stage being reclaimed out from under

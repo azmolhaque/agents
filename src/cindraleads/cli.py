@@ -1212,8 +1212,39 @@ def work(
 MAX_STAGE_SECONDS = 900.0
 
 
+def _renewal_interval(lease: int, watchdog: Watchdog) -> float:
+    """How long to sleep between renewals while a stage runs.
+
+    Two deadlines have to be respected and only one of them is ours. The lease is a
+    third of `lease`, short enough that a renewal is never the last one before expiry.
+    **The watchdog is the one that bites**, and it belongs to systemd: `WatchdogSec=180`
+    means `watchdog.interval` is 90 s and the kill lands at 180.
+
+    Getting this wrong crash-looped the worker twelve times. The interval was
+    `lease / 3`, which at the unit's `--lease 600` is 200 seconds -- so on any stage
+    slower than three minutes the loop sat inside `asyncio.wait` for 200 s, never petted,
+    and systemd sent SIGABRT at 180. Every slow scoring job killed the process that was
+    running it, which then looked like a thermal problem and a corpus problem rather
+    than an arithmetic one.
+
+    Half the pet interval, not the whole of it: `Watchdog.pet()` rate-limits itself, so
+    waking at exactly 90 s means jitter can push a ping past its own gate and the next
+    chance is 180 s away, which is the deadline.
+    """
+    bound = lease / 3
+    if watchdog.enabled:
+        bound = min(bound, watchdog.interval / 2)
+    return max(1.0, bound)
+
+
 async def _prepare_renewing_lease(
-    stage: Stage, job: Job, queue: JobQueue, *, lease: int, watchdog: Watchdog
+    stage: Stage,
+    job: Job,
+    queue: JobQueue,
+    *,
+    lease: int,
+    watchdog: Watchdog,
+    on_tick: Callable[[], None] | None = None,
 ) -> Any:
     """Run `prepare()`, renewing the lease and petting the watchdog while it runs.
 
@@ -1231,9 +1262,7 @@ async def _prepare_renewing_lease(
     finish it.
     """
     task = asyncio.ensure_future(stage.prepare(job))
-    # A third of the lease: short enough that a renewal is never the last one before
-    # expiry, long enough not to write to the same lock the stages need.
-    interval = max(5.0, lease / 3)
+    interval = _renewal_interval(lease, watchdog)
     deadline = time.monotonic() + MAX_STAGE_SECONDS
 
     while True:
@@ -1252,6 +1281,14 @@ async def _prepare_renewing_lease(
             )
         queue.extend_lease(job.job_id, seconds=lease)
         watchdog.pet()
+        # The heartbeat too, for the same reason as the other two: the main loop writes
+        # it every 60 s and does not get to run while a stage does. A stage legitimately
+        # taking longer than `HEARTBEAT_GAP_SECONDS` would otherwise be reported by
+        # `cindra acceptance` as a gap in the worker's record -- the signal that means
+        # "the worker was dead and came back" -- for a worker that was working the whole
+        # time.
+        if on_tick is not None:
+            on_tick()
 
 
 def _thermal_detail(governor: Any) -> dict[str, Any]:
@@ -1305,30 +1342,38 @@ async def _work_loop(
     heartbeat_due = 0.0
 
     processed = 0
+
+    def _beat() -> None:
+        """The liveness record the health endpoint reads.
+
+        Cheap, but not free -- one INSERT per loop on an empty queue polling every
+        50 ms would be 20 writes a second against the same lock the stages need,
+        which is why the caller rate-limits it.
+        """
+        record_heartbeat(
+            store,
+            "worker",
+            worker_id=worker_id,
+            processed=processed,
+            # The build this process is *running*, captured once at import. If the
+            # source on disk is newer, a `git pull` has landed that this worker
+            # cannot see -- Python does not reload modules.
+            source_mtime=_RUNNING_SOURCE_MTIME,
+            # Heat, sampled onto a row that was being written anyway. The governor
+            # keeps its state in memory and `/healthz` reports the instant, so
+            # before this nothing survived a poll -- and "did the governor engage
+            # over those 72 hours, and did it recover" was unanswerable the moment
+            # the hour passed. One minute of resolution over three days is 4320
+            # rows, which the retention purge already sweeps.
+            **_thermal_detail(governor),
+        )
+
     while not _shutdown:
         watchdog.pet()
         now = time.monotonic()
+
         if now >= heartbeat_due:
-            # The liveness record the health endpoint reads. Cheap, but not free -- one
-            # INSERT per loop on an empty queue polling every 50 ms would be 20 writes
-            # a second against the same lock the stages need.
-            record_heartbeat(
-                store,
-                "worker",
-                worker_id=worker_id,
-                processed=processed,
-                # The build this process is *running*, captured once at import. If the
-                # source on disk is newer, a `git pull` has landed that this worker
-                # cannot see -- Python does not reload modules.
-                source_mtime=_RUNNING_SOURCE_MTIME,
-                # Heat, sampled onto a row that was being written anyway. The governor
-                # keeps its state in memory and `/healthz` reports the instant, so
-                # before this nothing survived a poll -- and "did the governor engage
-                # over those 72 hours, and did it recover" was unanswerable the moment
-                # the hour passed. One minute of resolution over three days is 4320
-                # rows, which the retention purge already sweeps.
-                **_thermal_detail(governor),
-            )
+            _beat()
             heartbeat_due = now + WORKER_HEARTBEAT_SECONDS
 
         if max_jobs and processed >= max_jobs:
@@ -1364,7 +1409,7 @@ async def _work_loop(
             # BEGIN IMMEDIATE holds the single write lock for its whole duration --
             # doing the network work here keeps every other worker running.
             outcome = await _prepare_renewing_lease(
-                stage, job, queue, lease=lease, watchdog=watchdog
+                stage, job, queue, lease=lease, watchdog=watchdog, on_tick=_beat
             )
         except (CindraError, OSError, ValueError) as exc:
             queue.fail(job.job_id, f"{type(exc).__name__}: {exc}")
