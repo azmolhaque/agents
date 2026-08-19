@@ -270,6 +270,58 @@ you need it; the answer you want at 3am is a number, not a rehearsal.
 
 ---
 
+## 3b. Moving off microSD
+
+SQLite WAL on a microSD is the documented corruption path, and this box has already
+shown the mechanism is live: two unclean shutdowns put 13k NUL bytes in the JSONL log.
+`PRAGMA integrity_check` still returns `ok`, which is luck rather than design.
+
+```bash
+./scripts/move_to_nvme.sh --check --target /mnt/nvme   # touches nothing
+./scripts/move_to_nvme.sh --target /mnt/nvme
+```
+
+It refuses early rather than half-moving: no NVMe device, no mount, target not on
+NVMe, not enough space — each stops before anything is copied. It also **stops every
+unit before it copies**, because copying a live WAL database gives you a file that
+opens fine and is missing the last transactions, silently.
+
+**It never deletes the microSD copy.** The old tree stays complete and current until
+you remove it by hand, so the way back is always to re-run `install_pi.sh` from there.
+
+Two things it deliberately does not do for you:
+
+- **The venv is rebuilt, not copied.** A virtualenv bakes absolute paths into its
+  shebangs and `pyvenv.cfg`; a copied one runs the old interpreter from the old path,
+  and *works*, which is worse than an obvious break. `make install` at the destination.
+- **The fstab entry is yours.** A mount that does not survive a reboot is the worst
+  possible failure here: the units come up, find no database at the configured path,
+  and create an empty one. The script warns if `/etc/fstab` has no entry and prints the
+  line to add.
+
+Verification is by row count at both ends, not by rsync's exit status — rsync reports
+what it transferred, and the question is what arrived and opens.
+
+### Just the data, without moving the repo
+
+`DB_PATH`, `LOG_DIR` and `CACHE_DIR` are already `.env` settings, so if you only want
+the write-heavy parts off the card and the code left where it is:
+
+```bash
+sudo systemctl stop cindraleads-worker cindraleads-health cindraleads-feedback
+rsync -a var/ /mnt/nvme/cindraleads-var/
+# .env
+DB_PATH=/mnt/nvme/cindraleads-var/cindraleads.db
+LOG_DIR=/mnt/nvme/cindraleads-var/log
+CACHE_DIR=/mnt/nvme/cindraleads-var/cache
+sudo systemctl start cindraleads-worker cindraleads-health cindraleads-feedback
+```
+
+That addresses the actual corruption risk — the source tree is read-mostly and
+reinstallable from git — and needs no venv rebuild and no unit changes.
+
+---
+
 ## 4. Install
 
 ```bash
