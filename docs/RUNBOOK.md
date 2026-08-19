@@ -147,6 +147,20 @@ grep -c $'\0' var/log/cindraleads.jsonl
 journalctl --list-boots | tail -5
 ```
 
+**If `--list-boots` shows only one boot, that is not "one reboot" — it is a journal
+that does not survive reboots**, and after any incident you will have no journal for
+the boot that mattered. `/var/log/journal` has to exist for journald to persist:
+
+```bash
+sudo mkdir -p /var/log/journal
+printf '[Journal]\nStorage=persistent\nSystemMaxUse=200M\n' \
+  | sudo tee /etc/systemd/journald.conf.d/cindraleads.conf
+sudo systemctl restart systemd-journald
+```
+
+Capped at 200 MB deliberately: this is a write-amplifying log on a wear-limited card,
+and an uncapped journal on microSD trades one failure mode for another.
+
 The log is the cheap casualty. **The same event can corrupt the database**, which is
 the whole reason the installer warns about running from microSD:
 
