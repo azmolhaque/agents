@@ -496,7 +496,7 @@ def test_every_unattended_command_migrates_itself() -> None:
 # ------------------------------------------------- is the worker running this code?
 
 
-def test_a_worker_behind_the_source_is_flagged(store: Any) -> None:
+def test_a_worker_behind_the_source_is_flagged(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     """The silent failure that cost several rounds of "the fix did not work".
 
     `git pull` rewrites the source; the long-running worker keeps the modules it
@@ -504,9 +504,11 @@ def test_a_worker_behind_the_source_is_flagged(store: Any) -> None:
     and reports itself perfectly healthy. A scoring change was deployed four times
     before anyone noticed the process applying it was four builds old.
     """
-    import time as _time
-
-    record_heartbeat(store, "worker", source_mtime=_time.time() - 3600)
+    # Both sides pinned. Reading the real source mtime made this depend on how long
+    # ago the working tree was last edited: it passed right after a change and failed
+    # an hour later, which is the same wall-clock flakiness the uptime tests fix.
+    monkeypatch.setattr("cindraleads.health.source_mtime", lambda: 2_000_000.0)
+    record_heartbeat(store, "worker", source_mtime=1_000_000.0)
 
     report = assess(store, thermal=_Governor())
     check = next(c for c in report.checks if c.name == "worker:build")
@@ -515,8 +517,9 @@ def test_a_worker_behind_the_source_is_flagged(store: Any) -> None:
     assert "systemctl restart cindraleads-worker" in check.detail
 
 
-def test_a_worker_on_the_current_build_is_ok(store: Any) -> None:
-    record_heartbeat(store, "worker", source_mtime=source_mtime())
+def test_a_worker_on_the_current_build_is_ok(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("cindraleads.health.source_mtime", lambda: 2_000_000.0)
+    record_heartbeat(store, "worker", source_mtime=2_000_000.0)
 
     check = next(c for c in assess(store, thermal=_Governor()).checks if c.name == "worker:build")
     assert check.status == "ok"

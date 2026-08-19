@@ -203,6 +203,37 @@ Tier C posted one message per lead. The per-lead stage now sends only A and B; `
 digest` reconciles the rest against `dispatch_log` daily, so a missed morning costs a
 day's delay and not a day's leads.
 
+**Scoring recalibrated 2026-08-18, measured before and after on 169 real leads.**
+Sendable 7 -> 60, hit rate 5% -> 34%, mean score 6.8 -> 31.8, Tier B 0 -> 8. Two
+defects, both found by `cindra explain` and neither visible from the tier counts alone:
+
+- `single_source` inspected only the *top* trigger, so 56 of 57 leads corroborated by
+  two or more independent sources carried it anyway -- 96% incidence, which is a
+  constant offset rather than a discriminator. It now asks whether the *lead* rests on
+  one source, counting **sources not URLs** (three pages of a company's own site are
+  one party's word for it). Now 50% incidence, and the report confirms **0 of 84**
+  corroborated leads still carry it.
+- `no_contact` (-25) charged the same fact as the `reachability` component (0-15), so
+  one fact cost 40 points of a 100-point scale with a Tier C floor of 40. Removed; the
+  gradient carries it alone. `enrichment_ran` went with it, which loses the
+  unknown-versus-absent distinction in reachability -- "we looked and found nobody" and
+  "we have not looked" both score 0. A real gap, unmade rather than wrong.
+
+**A scoring change is only half done until the corpus is rescored.** Leads carry a
+`scoring_version` (config hash + hand-bumped `ARITHMETIC_VERSION`), `enqueue_stale_scores`
+treats a mismatch as stale, and the fingerprint is in the dedupe key -- without that the
+rescore collides with the job that already ran and the mechanism reports success having
+changed nothing. `cindra reconcile --force` exists for the case a job *ran* but achieved
+nothing, which no query can detect.
+
+**Prose is prospect-facing and gets guarded twice.** The first Tier B card ever
+dispatched read "You published T1_AI_SHIP and T8_HYGIENE_GAP on your public page": the
+prompt was handed the raw code and nothing knew what it meant. Every trigger now has a
+`means` phrase in `scoring.yaml` (outside the fingerprint -- it changes prose, never
+numbers), and any `T\d+_[A-Z_]+` surviving into an angle is discarded at generation
+*and* withheld at dispatch. The second guard matters because leads scored under an older
+build keep their bad angle and nothing re-queues them.
+
 **Discovery is weighted by what a hit *proves*, not by what it announces.** The
 first corpus reached 148 companies at 82% T1_AI_SHIP -- a tic-tac-toe game, a world
 clock, a personal blog -- because unfiltered Show HN sat at weight 95 and the HN
