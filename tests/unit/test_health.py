@@ -592,3 +592,41 @@ def test_no_worker_heartbeat_means_no_build_check(store: Any) -> None:
     different words makes the report harder to read, not more informative."""
     report = assess(store, thermal=_Governor())
     assert not any(c.name == "worker:build" for c in report.checks)
+
+
+def test_the_endpoint_reports_when_it_is_itself_behind_the_source(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`worker:build` watched the worker and nothing watched the watcher.
+
+    A stale worker still does correct old work. A stale endpoint reports a system that
+    no longer exists -- and it does so by *omitting* checks added since it started,
+    which reads as no problem. That happened: `enable --now` does not restart a running
+    unit, so the endpoint kept a `HEARTBEAT_UNITS` with no `feedback` in it and simply
+    left the check out of the report.
+    """
+    from cindraleads import health as health_mod
+
+    # Both sides pinned. Reading real mtimes here makes the test pass or fail depending
+    # on when the working tree was last touched.
+    monkeypatch.setattr(health_mod, "_RUNNING_SOURCE_MTIME", 1_000_000.0)
+    monkeypatch.setattr(health_mod, "source_mtime", lambda: 1_003_600.0)
+
+    report = assess(store, thermal=_Governor())
+
+    check = next(c for c in report.checks if c.name == "health:build")
+    assert check.status == "degraded"
+    assert "restart cindraleads-health" in check.detail
+    assert report.status != "critical"
+
+
+def test_an_up_to_date_endpoint_says_so(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    from cindraleads import health as health_mod
+
+    monkeypatch.setattr(health_mod, "_RUNNING_SOURCE_MTIME", 1_000_000.0)
+    monkeypatch.setattr(health_mod, "source_mtime", lambda: 1_000_000.0)
+
+    report = assess(store, thermal=_Governor())
+
+    check = next(c for c in report.checks if c.name == "health:build")
+    assert check.status == "ok"

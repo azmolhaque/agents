@@ -75,6 +75,12 @@ DEAD_LETTER_CRITICAL = 25
 
 _RANK: dict[Status, int] = {"ok": 0, "degraded": 1, "critical": 2}
 
+# Read once, at import, so it describes the code *this process* loaded rather than
+# whatever is on disk by the time a request arrives. Same reason the worker stamps its
+# own on the heartbeat: a value read per-request would always equal the disk and the
+# check would be a tautology that passes forever.
+_RUNNING_SOURCE_MTIME = source_mtime()
+
 
 @dataclass(frozen=True)
 class Check:
@@ -130,6 +136,7 @@ def assess(
 
     _check_heartbeats(report, store, now=at, uptime_seconds=uptime_seconds())
     _check_worker_build(report, store)
+    _check_own_build(report)
     _check_queue(report)
     _check_disk(report, disk_path or cfg.resolve(cfg.db_path).parent)
     _check_thermal(report, thermal)
@@ -271,6 +278,38 @@ def _check_worker_build(report: HealthReport, store: Store) -> None:
         )
     else:
         report.add(Check("worker:build", "ok", "worker is running the code on disk"))
+
+
+def _check_own_build(report: HealthReport) -> None:
+    """Is the *reporter* running the code on disk?
+
+    `worker:build` watched the worker and nothing watched the watcher, which is the
+    worse of the two failures: a stale worker still does correct old work, while a
+    stale health endpoint reports a system that no longer exists. It happened the day
+    the feedback bot shipped -- `enable --now` does not restart an already-running
+    unit, so the endpoint kept a `HEARTBEAT_UNITS` that had never heard of `feedback`
+    and simply omitted the check. **A missing check reads as no problem**, which is the
+    one failure mode this file exists to prevent.
+
+    Degraded, never critical: the endpoint answering with old rules is still answering,
+    and a probe that 503'd here would restart the process a human is mid-way through
+    reading.
+    """
+    on_disk = source_mtime()
+    if on_disk > _RUNNING_SOURCE_MTIME + 1.0:  # a second of slack for timestamp jitter
+        behind = timedelta(seconds=int(on_disk - _RUNNING_SOURCE_MTIME))
+        report.add(
+            Check(
+                "health:build",
+                "degraded",
+                f"source on disk is {behind} newer than this endpoint; checks added "
+                f"since then are missing from this report entirely. Restart: "
+                f"systemctl restart cindraleads-health",
+                value=on_disk - _RUNNING_SOURCE_MTIME,
+            )
+        )
+    else:
+        report.add(Check("health:build", "ok", "endpoint is running the code on disk"))
 
 
 def _check_queue(report: HealthReport) -> None:
