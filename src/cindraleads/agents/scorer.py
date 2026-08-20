@@ -24,6 +24,7 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from cindraleads import PIPELINE_VERSION
@@ -99,6 +100,30 @@ def _prose_budget(country: str | None) -> int:
     return PROSE_MAX_TOKENS_BENGALI if str(country or "").upper() == "BD" else PROSE_MAX_TOKENS
 
 
+def prose_version(base: Path | None = None) -> str:
+    """Identity of the machinery that writes an angle: the prompts *and* the budget.
+
+    Raising `PROSE_MAX_TOKENS_BENGALI` fixed the cause of a blank angle and healed
+    nothing that already had one, because nothing could find those leads again. The
+    arithmetic had not changed, so `scoring_version` matched; no trigger had moved, so
+    `last_updated_at` was current; the score job had completed successfully, because a
+    failed prose call is not a failed score. Three Tier B cards sat in Discord with a
+    dash where the angle belongs and no query in the system disagreed with that.
+
+    `prompt_version` alone would not have caught it either -- the fix was a constant in
+    this file, not a prompt edit. So the stamp on a lead covers both, and
+    `enqueue_stale_scores` re-queues an angle-less lead exactly when this differs from
+    what wrote it. Same shape as `RETIREMENT_RULES`: changing the rule is half a change,
+    the other half is re-running it over what the old rule produced.
+
+    A lead that *has* an angle is never re-queued by this. Prose costs ~18 s of decode
+    and an existing angle is not improved by a budget change.
+    """
+    digest = hashlib.sha256(prompt_version(base).encode())
+    digest.update(f"|{PROSE_MAX_TOKENS}|{PROSE_MAX_TOKENS_BENGALI}".encode())
+    return digest.hexdigest()[:16]
+
+
 @dataclass(frozen=True)
 class ScoreOutcome:
     canonical_domain: str
@@ -128,7 +153,12 @@ class Scorer:
         self._scoring_version = self.scoring.fingerprint()
         self.gate = self.gate or ComplianceGate.from_config(cfg)
         base = cfg.resolve(cfg.prompt_dir)
-        self._prompt_version = prompt_version(base)
+        # The *prose* version, not the bare prompt hash. What this column means on a
+        # lead is "which build wrote this angle" -- and the budget that decides whether
+        # an angle can finish is part of that build. `prompt_version` keeps its plain
+        # meaning on a candidate, where the Extractor stamps it and the golden fixtures
+        # depend on it.
+        self._prompt_version = prose_version(base)
         try:
             self._angle_prompt: str | None = load_prompt("outreach_angle", base=base)
         except ConfigError:
@@ -494,11 +524,20 @@ def enqueue_stale_scores(
     can detect it; it needs a human saying "recompute anyway".
     """
     fingerprint = (config or ScoringConfig.load()).fingerprint()
+    prose_ver = prose_version()
     now = to_iso(utcnow())
     rows = store.conn.execute(
         "SELECT c.canonical_domain AS domain, "
         "MAX(t.observed_at) AS newest, "
-        "MIN(COALESCE(l.scoring_version, '') = ?) AS calibrated "
+        "MIN(COALESCE(l.scoring_version, '') = ?) AS calibrated, "
+        # Angle-less *and* written by an older prose build. Both halves are load
+        # bearing: without the first this re-decodes angles that are already fine,
+        # and without the second a lead the model can never write an angle for --
+        # one whose prose leaks trigger codes -- is re-queued on every reconcile
+        # forever. The scorer stamps this column even when the prose call fails, so
+        # a lead that stays blank under the new build stops asking after one attempt.
+        "MIN(COALESCE(l.outreach_angle, '') != '' "
+        "    OR COALESCE(l.prompt_version, '') = ?) AS prosed "
         "FROM companies c "
         "JOIN triggers t ON t.canonical_domain = c.canonical_domain "
         "LEFT JOIN leads l ON l.canonical_domain = c.canonical_domain "
@@ -507,11 +546,21 @@ def enqueue_stale_scores(
         "HAVING l.lead_id IS NULL "
         "   OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '') "
         "   OR calibrated = 0 "
-        # Genuinely new triggers first, recalibrations behind them. A config edit makes
-        # the whole corpus stale at once, and at ~18 s a lead that is hours of queue --
-        # long enough that a funding round found this morning would sit behind it.
-        "ORDER BY calibrated DESC, newest DESC" + (" LIMIT ?" if limit else ""),
-        (fingerprint, now, *([limit] if limit else [])),
+        "   OR prosed = 0 "
+        # Genuinely new triggers first, recalibrations behind them, angle repairs last.
+        # A config edit makes the whole corpus stale at once, and at ~18 s a lead that
+        # is hours of queue -- long enough that a funding round found this morning
+        # would sit behind it. An angle repair is the least urgent of the three: the
+        # lead already dispatched, and what is being fixed is the copy on the card.
+        #
+        # Ranked by a row's *most* urgent reason, not by each flag in turn. A row can
+        # be selected for several at once, and ordering on the flags alone let an
+        # incidental one decide: a company with a funding round found this morning
+        # also had no angle yet, so `prosed` sorted it behind a pure recalibration.
+        "ORDER BY (l.lead_id IS NULL "
+        "          OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '')) DESC, "
+        "         calibrated DESC, prosed DESC, newest DESC" + (" LIMIT ?" if limit else ""),
+        (fingerprint, prose_ver, now, *([limit] if limit else [])),
     ).fetchall()
 
     queued = 0
@@ -525,7 +574,11 @@ def enqueue_stale_scores(
             # mechanism would then look like it worked and change nothing.
             # `force` adds a nonce so the key cannot match the completed job blocking
             # this one -- see the docstring for why that situation is undetectable.
-            shape = f"{domain}|{row['newest']}|{fingerprint}"
+            # The prose version is in the key for the same reason the fingerprint is:
+            # an angle repair moves neither `newest` nor the calibration, so without it
+            # the job collides with the completed one that produced the blank angle and
+            # is silently dropped -- the mechanism reporting success having done nothing.
+            shape = f"{domain}|{row['newest']}|{fingerprint}|{prose_ver}"
             if force:
                 # A uuid, not `now`. `to_iso` has millisecond resolution, so two forced
                 # runs in the same millisecond produced the same key and the second was

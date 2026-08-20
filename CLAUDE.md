@@ -238,6 +238,23 @@ numbers), and any `T\d+_[A-Z_]+` surviving into an angle is discarded at generat
 *and* withheld at dispatch. The second guard matters because leads scored under an older
 build keep their bad angle and nothing re-queues them.
 
+**The decode budget for prose is sized by language, and it is part of the prose
+version.** `LeadProse` allows 1080 characters and 400 tokens covered that in English;
+Bengali is several tokens per *character* in this tokenizer, so a BD lead ran out
+mid-string and produced JSON ending in the middle of a value. Three Tier B cards reached
+Discord with a dash where the angle belongs.
+
+Raising the budget was half the change. Nothing could find those three leads again: the
+arithmetic had not moved so `scoring_version` matched, no trigger had moved so
+`last_updated_at` was current, and the score job had completed successfully -- **a failed
+prose call is not a failed score.** `prompt_version` would not have caught it either,
+because the fix was a constant in `scorer.py` and that hash covers prompt files.
+`prose_version()` now hashes both, the Scorer stamps it on every lead it writes, and
+`enqueue_stale_scores` re-queues a lead that is angle-less **and** stamped by an older
+build. Both halves are load bearing: without the first it re-decodes angles that are
+already fine, and without the second a lead whose prose leaks trigger codes -- discarded
+on purpose, and the same prompt will do it again -- asks forever.
+
 **Discovery is weighted by what a hit *proves*, not by what it announces.** The
 first corpus reached 148 companies at 82% T1_AI_SHIP -- a tic-tac-toe game, a world
 clock, a personal blog -- because unfiltered Show HN sat at weight 95 and the HN

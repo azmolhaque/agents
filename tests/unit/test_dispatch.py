@@ -514,6 +514,111 @@ def test_a_company_with_no_live_trigger_is_not_scored(rig):
 # --------------------------------------------------------------- prose recovery
 
 
+def _blank_angle(store, prompt_version: str = "old-build") -> None:
+    from cindraleads.scoring import ScoringConfig
+
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET outreach_angle = '', last_updated_at = '2099-01-01T00:00:00Z', "
+            "scoring_version = ?, prompt_version = ?",
+            (ScoringConfig.load().fingerprint(), prompt_version),
+        )
+
+
+def test_an_angle_less_lead_is_re_queued_after_the_prose_build_changes(rig):
+    """The half of the Bengali budget fix that the budget fix did not do.
+
+    Three Tier B cards reached Discord with a dash where the angle belongs, because
+    the model ran out of decode mid-string. Raising the budget stopped it happening
+    again and healed none of them: the arithmetic had not changed, no trigger had
+    moved, and the score job had completed successfully -- a failed prose call is not
+    a failed score. No query in the system disagreed with those leads.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="B")
+    _blank_angle(store)
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 1
+
+
+def test_a_lead_that_has_an_angle_is_not_re_decoded(rig):
+    """Prose is ~18 s of decode and a budget change does not improve an angle that
+    already exists. Re-queueing the whole corpus for one blank card would cost an hour
+    of the queue to fix three leads."""
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+    from cindraleads.scoring import ScoringConfig
+
+    build, _posts, store = rig
+    build(tier="B")  # the fixture's lead carries an angle
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z', "
+            "scoring_version = ?, prompt_version = 'old-build'",
+            (ScoringConfig.load().fingerprint(),),
+        )
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 0
+
+
+def test_a_lead_the_model_cannot_write_an_angle_for_stops_asking(rig):
+    """The bound on the clause above, and it is the reason the clause has two halves.
+
+    Some leads stay blank under the new build too -- prose that leaks trigger codes is
+    discarded deliberately and the same prompt produces it again. Keyed on emptiness
+    alone, those would be re-queued on every reconcile forever, which on this box is a
+    permanent tax on a lead that can never be fixed. The Scorer stamps the prose
+    version even when the call fails, so one attempt per build is all they get.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores, prose_version
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="B")
+    _blank_angle(store, prompt_version=prose_version())
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 0
+
+
+def test_the_repair_job_does_not_collide_with_the_job_that_produced_the_blank(rig, monkeypatch):
+    """`enqueue` matches `dedupe_key` across completed jobs too. An angle repair moves
+    neither the newest trigger nor the calibration, so without the prose version in the
+    key the next build's repair is swallowed by the completed job whose failure it
+    exists to undo -- and the reconciler reports success having queued nothing."""
+    from cindraleads.agents import scorer
+    from cindraleads.queue import JobQueue
+
+    build, _posts, store = rig
+    build(tier="B")
+    _blank_angle(store)
+    queue = JobQueue(store)
+
+    assert scorer.enqueue_stale_scores(store, queue) == 1
+    with store.tx() as conn:  # as if the repair had run and still produced nothing
+        conn.execute("UPDATE jobs SET status = 'done' WHERE kind = 'score.company'")
+    # Same build: one attempt is all it gets, which is what stops the churn.
+    assert scorer.enqueue_stale_scores(store, queue) == 0
+    # A further change to the prose machinery asks again, and the completed row above
+    # does not block it.
+    monkeypatch.setattr(scorer, "PROSE_MAX_TOKENS_BENGALI", 2000)
+    assert scorer.enqueue_stale_scores(store, queue) == 1
+
+
+def test_the_prose_version_moves_when_the_decode_budget_moves(monkeypatch):
+    """`prompt_version` would not have caught the Bengali fix: it hashes prompt files
+    and the fix was a constant in `scorer.py`. If this stops covering the budget, an
+    angle-less lead becomes unfindable again in exactly the way it was."""
+    from cindraleads.agents import scorer
+
+    before = scorer.prose_version()
+    monkeypatch.setattr(scorer, "PROSE_MAX_TOKENS_BENGALI", 999)
+
+    assert scorer.prose_version() != before
+
+
 def test_a_thermal_pause_defers_prose_instead_of_losing_it(rig):
     """What the first real scoring run cost: 32 of 32 leads finalised with no angle.
 
