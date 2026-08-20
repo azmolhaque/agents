@@ -52,6 +52,11 @@ LEADS_PER_DAY_TARGET = 15
 # a gap: one slow transaction must not read as an outage.
 HEARTBEAT_GAP_SECONDS = 300.0
 
+# How long the governor may still be in a degraded state at the end of the window before
+# that counts as "did not recover". Generous on purpose: the failure worth catching is a
+# box wedged hot indefinitely, not one that is simply busy at the moment you looked.
+OPEN_SPELL_GRACE_MINUTES = 90.0
+
 
 @dataclass(frozen=True)
 class ThermalWindow:
@@ -199,6 +204,47 @@ def _liveness(
             report.silent_units.append(unit)
 
 
+def _recovered(states: list[tuple[datetime, dict[str, Any]]]) -> bool:
+    """Did the governor come back, rather than: is it cool at this instant.
+
+    The first version asked whether the *final* sample was nominal, and that was wrong
+    in a way that made the criterion useless. A box grinding through a queue is warm
+    whenever you look at it, so the check failed on a system doing exactly what it is
+    supposed to do -- observed 2026-08-20 with 400 jobs draining and the report saying
+    "still degraded at the end of the window" about a governor that had cycled in and
+    out of `warm` all evening.
+
+    What matters is whether heat is a passing state or a terminal one:
+
+    - It returned to nominal at least once after engaging, **and**
+    - any spell still open at the end of the window is younger than
+      `OPEN_SPELL_GRACE_MINUTES`.
+
+    So a governor cycling under load passes, and one that went hot two hours ago and
+    never came back fails. The grace is generous because the honest failure this must
+    catch is "wedged hot indefinitely", not "busy for twenty minutes".
+    """
+    came_back = any(
+        str(earlier[1].get("thermal_state")) != "nominal"
+        and str(later[1].get("thermal_state")) == "nominal"
+        for earlier, later in pairwise(states)
+    )
+    if not came_back:
+        return False
+
+    # How long the current spell has been running, if it is a degraded one.
+    last_at, last_detail = states[-1]
+    if str(last_detail.get("thermal_state")) == "nominal":
+        return True
+    spell_started = last_at
+    for at, detail in reversed(states):
+        if str(detail.get("thermal_state")) == "nominal":
+            break
+        spell_started = at
+    open_minutes = (last_at - spell_started).total_seconds() / 60
+    return open_minutes <= OPEN_SPELL_GRACE_MINUTES
+
+
 def _thermal(beats: list[tuple[datetime, dict[str, Any]]]) -> ThermalWindow:
     """Time in each governor state, from the heartbeat's own cadence.
 
@@ -225,9 +271,7 @@ def _thermal(beats: list[tuple[datetime, dict[str, Any]]]) -> ThermalWindow:
         )
 
     engaged = any(state != "nominal" for state in minutes)
-    # Recovered means it is not *still* in a degraded state at the end of the window.
-    # Pausing under heat is the governor working; never coming back is the fault.
-    recovered = str(states[-1][1].get("thermal_state")) == "nominal" if engaged else True
+    recovered = _recovered(states) if engaged else True
 
     return ThermalWindow(
         samples=len(states),

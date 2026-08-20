@@ -251,6 +251,40 @@ def test_the_governor_engaging_does_not_fail_the_run(store: Any) -> None:
     assert report.passed is True
 
 
+def test_a_governor_cycling_under_sustained_load_still_passes(store: Any) -> None:
+    """The criterion as first written asked whether the *final* sample was nominal, and
+    that made it useless: a box grinding through a queue is warm whenever you look at
+    it. It failed a run doing exactly what it is supposed to do -- 400 jobs draining and
+    the report saying "still degraded at the end of the window" about a governor that
+    had cycled in and out of `warm` all evening.
+
+    What matters is whether heat is passing or terminal. Cycling passes.
+    """
+    for minute in range(4320, 0, -1):
+        # Alternating spells: warm for twenty minutes, nominal for ten, all night, and
+        # warm at the final sample because the queue is still draining.
+        hot = (minute // 20) % 2 == 0
+        _beat(
+            store,
+            "worker",
+            ago_minutes=minute,
+            source_mtime=1_000.0,
+            thermal_state="warm" if hot else "nominal",
+            temp_c=76.0 if hot else 64.0,
+        )
+    for unit in HEARTBEAT_UNITS:
+        if unit in ("worker", *OPTIONAL_UNITS):
+            continue
+        _beat(store, unit, ago_minutes=30)
+    _dispatch(store, 60, ago_hours=6)
+
+    report = assess_run(store, hours=72)
+
+    assert report.thermal.engaged is True
+    assert report.thermal.recovered is True
+    assert report.criteria["governor_recovered"] is True
+
+
 def test_a_governor_that_never_came_back_does_fail(store: Any) -> None:
     """Pausing under heat is correct; staying paused for the rest of the run is the
     system quietly stopping while reporting itself alive."""
