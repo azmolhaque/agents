@@ -522,3 +522,34 @@ def test_the_age_phrase_reads_as_a_person_wrote_it():
     assert _age_phrase(now - timedelta(days=95)) == "3 months ago"
     # A future-dated trigger from a bad page must not read as "-3 days ago".
     assert _age_phrase(now + timedelta(days=30)) == "today"
+
+
+# --------------------------------------------- the decode budget follows the language
+
+
+def test_a_bengali_angle_gets_a_budget_that_can_hold_it() -> None:
+    """`LeadProse` allows 1080 characters, and Bengali script costs several tokens per
+    character in this tokenizer. At a flat 400 the model ran out mid-string on a Dhaka
+    company and returned JSON ending inside a value -- "EOF while parsing a string at
+    line 3 column 863" -- after which the lead dispatched with a blank angle.
+    """
+    from cindraleads.agents.scorer import (
+        PROSE_MAX_TOKENS,
+        PROSE_MAX_TOKENS_BENGALI,
+        _prose_budget,
+    )
+
+    assert _prose_budget("BD") == PROSE_MAX_TOKENS_BENGALI
+    assert _prose_budget("bd") == PROSE_MAX_TOKENS_BENGALI
+    assert PROSE_MAX_TOKENS_BENGALI > PROSE_MAX_TOKENS
+
+
+def test_an_english_lead_is_not_slowed_down_to_fix_a_bengali_problem() -> None:
+    """Decode costs ~11x prefill on this box. Raising the budget for every lead would
+    spend the whole corpus's latency on a subset's problem, and the prompt only asks
+    for a Bengali angle when the country is BD."""
+    from cindraleads.agents.scorer import PROSE_MAX_TOKENS, _prose_budget
+
+    assert _prose_budget("US") == PROSE_MAX_TOKENS
+    assert _prose_budget(None) == PROSE_MAX_TOKENS
+    assert _prose_budget("") == PROSE_MAX_TOKENS

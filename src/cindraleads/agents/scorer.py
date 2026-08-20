@@ -73,6 +73,31 @@ def lead_id_for(canonical_domain: str) -> str:
 # 20 minutes is comfortably past the recovery without hammering the governor.
 PROSE_RETRY_SECONDS = 20 * 60
 
+# Decode budget for the prose call, and it has to depend on the language.
+#
+# `LeadProse` allows 1080 characters across three fields. In English that is roughly
+# 270 tokens and 400 was ample. Bengali script is several tokens per *character* in
+# this tokenizer, so a BD lead asking for a 400-character `bengali_angle` can want four
+# figures of budget -- and at 400 the model ran out mid-string, producing JSON that
+# ends in the middle of a value. Observed on futurestartup.com: "Invalid JSON: EOF while
+# parsing a string at line 3 column 863", after which the lead dispatched with a blank
+# angle.
+#
+# Sized by what is actually being asked for rather than raised across the board: decode
+# costs ~11x prefill on this box, so paying Bengali's price on every English lead would
+# slow the whole corpus to fix a subset of it.
+PROSE_MAX_TOKENS = 400
+PROSE_MAX_TOKENS_BENGALI = 1200
+
+
+def _prose_budget(country: str | None) -> int:
+    """Tokens to allow the prose call. BD gets more because Bengali costs more.
+
+    The prompt asks for `bengali_angle` only when the country is BD, so the expensive
+    budget follows the same condition rather than being applied everywhere.
+    """
+    return PROSE_MAX_TOKENS_BENGALI if str(country or "").upper() == "BD" else PROSE_MAX_TOKENS
+
 
 @dataclass(frozen=True)
 class ScoreOutcome:
@@ -157,7 +182,9 @@ class Scorer:
             country=facts["country"] or "",
         )
         try:
-            structured = await self.llm.generate(prompt, LeadProse, max_tokens=400)
+            structured = await self.llm.generate(
+                prompt, LeadProse, max_tokens=_prose_budget(facts["country"])
+            )
         except SchemaValidationError as exc:
             # Prose is a nice-to-have: the lead is already fully decided without it, so
             # a model failure must never cost us the lead. But *why* it failed decides
