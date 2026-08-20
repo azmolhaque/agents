@@ -120,8 +120,16 @@ Two rules are enforced mechanically rather than trusted:
 | Cold model load | ~32 s off microSD |
 
 **Decode costs ~11x more per token than prefill.** Every tuning decision follows from
-that: output is bounded in the schema (`maxLength`/`maxItems` become grammar rules), and
-the prompt budget is 1500 chars because 4000 cost 150 s/page against 64 s.
+that, and the prompt budget is 1500 chars because 4000 cost 150 s/page against 64 s.
+
+**Schema `maxLength` is advisory, not a grammar rule.** This was believed for months and
+is false. The schema does reach Ollama -- only `description`/`title` are stripped -- but
+GBNF cannot express a character limit, so `maxLength` on a string is checked by Pydantic
+*after* the tokens are spent. Measured here: `outreach_angle`, bounded at 400, reached
+at least 908 characters before the budget ran out mid-value. **`max_tokens` is the only
+real bound, and an overshoot is not trimmed -- it costs the whole object to a JSON EOF.**
+A ceiling is also not a cost: decode stops at the stop token, so sizing one tightly to
+the character bounds buys nothing and converts a long answer into a lost one.
 
 Two numbers that are latency-tuned against a *schema-validity* gate and must be re-tuned
 in Phase 3 against *field accuracy*: `textextract.extract_text(max_chars=1500)` and the

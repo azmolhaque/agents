@@ -620,6 +620,47 @@ def test_the_prose_version_moves_when_the_decode_budget_moves(monkeypatch):
     assert scorer.prose_version() != before
 
 
+def test_the_prose_version_moves_when_a_schema_bound_moves(monkeypatch):
+    """The same trap one level up. Shrinking `bengali_angle` from 400 to 220 changes
+    what the model is asked to write, but moves no prompt file and no token constant --
+    so without the bounds in this hash the two blank leads the change was made for stay
+    blank forever, while `enqueue_stale_scores` correctly reports nothing to do.
+    """
+    from pydantic import Field, create_model
+
+    from cindraleads.agents import scorer
+
+    before = scorer.prose_version()
+    shorter = create_model(
+        "LeadProse",
+        rationale=(str, Field(default="", max_length=280)),
+        outreach_angle=(str, Field(default="", max_length=400)),
+        bengali_angle=(str | None, Field(default=None, max_length=120)),
+    )
+    monkeypatch.setattr(scorer, "LeadProse", shorter)
+
+    assert scorer.prose_version() != before
+
+
+def test_the_bengali_bound_is_the_one_the_budget_was_sized_for():
+    """These two numbers are a pair and live in different files. `bengali_angle` at 220
+    characters is what makes 1200 tokens a comfortable ceiling rather than a marginal
+    one; raising the bound without raising the budget reintroduces the mid-string EOF
+    that shipped three blank cards to Discord.
+
+    Asserted rather than commented because the bound is *advisory* -- GBNF cannot
+    enforce `maxLength`, so nothing at runtime will complain if these drift apart.
+    """
+    from cindraleads.agents.scorer import PROSE_MAX_TOKENS_BENGALI, _max_length
+    from cindraleads.models import LeadProse
+
+    bound = _max_length(LeadProse.model_fields["bengali_angle"])
+    assert bound == 220
+    # Bengali runs to roughly three tokens per character in this tokenizer, and the
+    # other two fields have to fit alongside it.
+    assert bound * 3 <= PROSE_MAX_TOKENS_BENGALI, "the budget no longer covers the bound"
+
+
 def _seed_company_for_prose(store):  # type: ignore[no-untyped-def]
     """One company with one live trigger and one piece of evidence -- the minimum that
     scores, so the prose call is the only thing left that can fail."""

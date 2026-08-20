@@ -346,9 +346,19 @@ class LeadProse(_Model):
 
     Separate from `Lead` on purpose. The Scorer computes the number first and hands it
     to the model as a fact; this schema has no numeric field at all, so there is no
-    shape in which the model's output could become the score. The bounds are grammar
-    rules through Ollama's `format`, which is also what keeps a 4B from writing 300
-    tokens of marketing copy at 3.7 tok/s.
+    shape in which the model's output could become the score.
+
+    **These bounds are advisory, not grammar rules.** The schema does reach Ollama --
+    only `description` and `title` are stripped -- but GBNF cannot express "at most N
+    characters", so `maxLength` on a string is enforced by Pydantic *after* the tokens
+    are spent, not by the decoder while they are produced. Measured on this box:
+    `outreach_angle`, bounded at 400, reached at least 908 characters before the token
+    budget ran out mid-value and the whole object was lost to a JSON EOF.
+
+    The consequence is the one that matters for tuning: **the decode budget is the only
+    real bound**, and an overshoot is not trimmed, it costs the entire call. Lowering a
+    bound here still helps -- the model reads the schema and mostly obeys it -- but it
+    is persuasion, and the budget in `scorer.py` is what actually holds.
     """
 
     rationale: str = Field(default="", max_length=280)
@@ -357,7 +367,13 @@ class LeadProse(_Model):
     outreach_angle: str = Field(default="", max_length=400)
     # A real rewrite for BD prospects, not a machine gloss. Reviewed by a human
     # before Phase 5 closes.
-    bengali_angle: str | None = Field(default=None, max_length=400)
+    #
+    # 220, not 400. Bengali is several tokens per *character* in this tokenizer, so the
+    # old bound asked for up to four figures of decode on a box that does 3.7 tok/s --
+    # minutes per BD lead, to say something an English angle says in 400. Since the
+    # bound is advisory the shorter ask is worth more than the arithmetic suggests: it
+    # is the only lever that lowers what the model *aims* for.
+    bengali_angle: str | None = Field(default=None, max_length=220)
 
 
 class Job(_Model):

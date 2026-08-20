@@ -84,10 +84,23 @@ PROSE_RETRY_SECONDS = 20 * 60
 # parsing a string at line 3 column 863", after which the lead dispatched with a blank
 # angle.
 #
-# Sized by what is actually being asked for rather than raised across the board: decode
-# costs ~11x prefill on this box, so paying Bengali's price on every English lead would
-# slow the whole corpus to fix a subset of it.
-PROSE_MAX_TOKENS = 400
+# Sized by what is actually being asked for rather than raised across the board. The
+# per-language split is kept for the *worst* case only: at 3.7 tok/s a runaway 1200-token
+# decode is five minutes, and that ceiling should not apply to leads that cannot need it.
+#
+# The English figure went 400 -> 600 because 400 was mis-sized, and the way it failed
+# corrected a belief this whole strategy rested on. `LeadProse` bounds `outreach_angle`
+# at 400 characters, and `bisecto.com` -- no country, so the English budget -- produced
+# at least 908 before running out mid-string. `maxLength` reaches Ollama in the schema
+# but GBNF cannot express a character limit, so it is checked by Pydantic *after* the
+# tokens are spent. The bounds do not constrain the decoder; this constant is the only
+# thing that does.
+#
+# A ceiling is not a cost. Decode stops at the stop token, so a generous limit is free
+# on every call that finishes early and is paid only by the ramble it exists to catch.
+# Sizing this tightly to the character bounds bought nothing and turned an overshoot --
+# which the schema cannot prevent -- into a lost object rather than a long one.
+PROSE_MAX_TOKENS = 600
 PROSE_MAX_TOKENS_BENGALI = 1200
 
 
@@ -116,12 +129,31 @@ def prose_version(base: Path | None = None) -> str:
     what wrote it. Same shape as `RETIREMENT_RULES`: changing the rule is half a change,
     the other half is re-running it over what the old rule produced.
 
+    The schema bounds are in here too, and for the same reason one level up: shrinking
+    `bengali_angle` from 400 to 220 changes what the model is asked to write, and on its
+    own it moved neither the prompt hash nor either token constant. The two leads the
+    change was made for would have stayed blank forever while the mechanism built to
+    find them reported nothing to do.
+
     A lead that *has* an angle is never re-queued by this. Prose costs ~18 s of decode
     and an existing angle is not improved by a budget change.
     """
     digest = hashlib.sha256(prompt_version(base).encode())
     digest.update(f"|{PROSE_MAX_TOKENS}|{PROSE_MAX_TOKENS_BENGALI}".encode())
+    bounds = "|".join(
+        f"{name}:{_max_length(field)}" for name, field in sorted(LeadProse.model_fields.items())
+    )
+    digest.update(f"|{bounds}".encode())
     return digest.hexdigest()[:16]
+
+
+def _max_length(field: Any) -> int | None:
+    """The `max_length` off a Pydantic field, wherever this version keeps it."""
+    for entry in getattr(field, "metadata", ()) or ():
+        length = getattr(entry, "max_length", None)
+        if length is not None:
+            return int(length)
+    return None
 
 
 @dataclass(frozen=True)
