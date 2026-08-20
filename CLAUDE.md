@@ -193,6 +193,13 @@ Three things that shape the rest of Phase 7:
   to exit had done. `prometheus_client` is deliberately unused -- the text format is a
   dozen lines, and a metrics endpoint that fails to start on a missing optional extra
   is worse than none.
+- **A count that only climbs cannot answer a present-tense question.** `dead_letter`
+  is append-only and nothing purges it, so the all-time total held `/healthz` at
+  degraded indefinitely over four jobs buried by two bugs that were already fixed --
+  the pre-0006 attempt accounting and the watchdog crash loop. `/healthz` now grades
+  `dead_letter_recent` (24 h) and reports the total alongside it; `cindra acceptance`
+  still grades "no job lost" over the window a human chose. A probe that stays
+  degraded after the fault is gone is one you learn to ignore.
 - **The health endpoint's whole job is telling *idle* from *stopped*.** Zero ready jobs
   is both a healthy finished system and one whose harvest timer died on Tuesday; the
   job table cannot distinguish them, so `HEARTBEAT_UNITS` does. **A new timer needs an

@@ -83,6 +83,11 @@ HEARTBEAT_UNITS: dict[str, float] = {
 # Nothing that drains the queue or writes a lead may be listed here.
 OPTIONAL_UNITS: frozenset[str] = frozenset({"feedback"})
 
+# How far back "is anything dying" looks. A day covers a full cycle of every timer, so
+# a stage that is systematically failing shows up inside one window while yesterday's
+# fixed bug drops out of it.
+DEAD_LETTER_WINDOW = timedelta(hours=24)
+
 
 @dataclass(frozen=True)
 class Heartbeat:
@@ -206,6 +211,16 @@ def snapshot(store: Store, *, now: datetime | None = None) -> dict[str, float]:
         "queue_failed": count("SELECT COUNT(*) FROM jobs WHERE status = 'failed'"),
         "queue_dead": count("SELECT COUNT(*) FROM jobs WHERE status IN ('dead','dead_letter')"),
         "dead_letter_total": count("SELECT COUNT(*) FROM dead_letter"),
+        # The same pile, asked about in the present tense. `dead_letter` is append-only
+        # and nothing purges it, so the total answers "has anything ever died" and
+        # cannot answer "is anything dying". Four jobs buried by two bugs that are now
+        # fixed held `/healthz` at degraded indefinitely, and no amount of healthy
+        # running would have cleared it. Both are exported: the total is the record
+        # `cindra acceptance` grades against, the window is what a probe should read.
+        "dead_letter_recent": count(
+            "SELECT COUNT(*) FROM dead_letter WHERE died_at > ?",
+            to_iso(at - DEAD_LETTER_WINDOW),
+        ),
     }
 
     for tier in ("A", "B", "C", "REJECT"):

@@ -17,6 +17,7 @@ import pytest
 
 from cindraleads.health import (
     DEAD_LETTER_CRITICAL,
+    DEAD_LETTER_WARN,
     assess,
     port_is_free,
     serve,
@@ -281,6 +282,10 @@ def test_a_dead_job_is_counted_once_not_twice(store: Any) -> None:
     Driven through `fail()` rather than by inserting rows, because writing only the
     `dead_letter` side is exactly the shape that hid the bug: the old sum happened to
     be right whenever a test forgot the other half.
+
+    Asserted on the all-time figure in the detail rather than on `Check.value`, which
+    now carries the windowed count. Reverting `max` to `+` does not move the window, so
+    a guard on `value` would have stopped catching the bug it was written for.
     """
     from cindraleads.queue import JobQueue
 
@@ -290,12 +295,57 @@ def test_a_dead_job_is_counted_once_not_twice(store: Any) -> None:
         job_id = queue.enqueue(f"k{n}", max_attempts=1)
         queue.claim("w", kinds=[f"k{n}"])
         assert queue.fail(job_id, "boom") == "dead"
+    with store.tx() as conn:  # out of the window, so the all-time figure is visible
+        conn.execute("UPDATE dead_letter SET died_at = ?", (to_iso(utcnow() - timedelta(days=3)),))
 
     report = assess(store, thermal=_Governor())
     check = next(c for c in report.checks if c.name == "queue:dead")
 
-    assert check.value == 3.0, "three buried jobs must not report as six"
-    assert "3 job(s)" in check.detail
+    assert "3 all time" in check.detail, "three buried jobs must not report as six"
+
+
+def test_dead_letters_from_a_fixed_bug_stop_holding_the_endpoint_degraded(store: Any) -> None:
+    """`dead_letter` is append-only and nothing purges it, so an all-time count can only
+    climb. Four jobs buried by the pre-0006 attempt accounting and the watchdog crash
+    loop sat above the warn threshold permanently -- describing two bugs that were
+    already fixed, on a box where nothing had died since. A probe that stays degraded
+    after the fault is gone is one you learn to ignore, which is the single thing this
+    endpoint exists to avoid.
+
+    The pile is not hidden: it is still counted, still on `/metrics`, and still what
+    `cindra acceptance` grades "no job lost" against over a window a human chose.
+    """
+    _all_units_fresh(store)
+    stale = to_iso(utcnow() - timedelta(days=3))
+    with store.tx() as conn:
+        for n in range(DEAD_LETTER_WARN + 2):
+            conn.execute(
+                "INSERT INTO dead_letter (job_id, kind, payload, attempts, died_at) "
+                "VALUES (?,?,'{}',3,?)",
+                (f"old{n}", "score.company", stale),
+            )
+
+    check = next(c for c in assess(store, thermal=_Governor()).checks if c.name == "queue:dead")
+
+    assert check.status == "ok"
+    assert f"{DEAD_LETTER_WARN + 2} all time" in check.detail, "the pile must still be reported"
+
+
+def test_a_pile_that_is_still_growing_is_still_degraded(store: Any) -> None:
+    """The bound on the test above. Windowing must not make a stage that is failing
+    right now invisible just because the failures are recent."""
+    _all_units_fresh(store)
+    with store.tx() as conn:
+        for n in range(DEAD_LETTER_WARN):
+            conn.execute(
+                "INSERT INTO dead_letter (job_id, kind, payload, attempts, died_at) "
+                "VALUES (?,?,'{}',3,?)",
+                (f"new{n}", "extract.candidate", to_iso(utcnow())),
+            )
+
+    check = next(c for c in assess(store, thermal=_Governor()).checks if c.name == "queue:dead")
+
+    assert check.status == "degraded"
 
 
 def test_every_check_runs_even_after_one_fails(store: Any) -> None:

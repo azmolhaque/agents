@@ -38,6 +38,7 @@ from typing import Any, Literal
 from cindraleads.config import Settings, settings
 from cindraleads.logging import get_logger
 from cindraleads.metrics import (
+    DEAD_LETTER_WINDOW,
     HEARTBEAT_UNITS,
     OPTIONAL_UNITS,
     heartbeats,
@@ -69,9 +70,11 @@ DISK_WARN_MB = 2048.0
 DISK_CRITICAL_MB = 512.0
 
 # A dead-letter pile is not an outage, but it is unattended work. One is noise; a dozen
-# means a stage is systematically failing and nobody has noticed.
+# means a stage is systematically failing and nobody has noticed. Counted over
+# `DEAD_LETTER_WINDOW` rather than all time -- see `_check_queue`.
 DEAD_LETTER_WARN = 5
 DEAD_LETTER_CRITICAL = 25
+DEAD_LETTER_WINDOW_HOURS = int(DEAD_LETTER_WINDOW.total_seconds() // 3600)
 
 _RANK: dict[Status, int] = {"ok": 0, "degraded": 1, "critical": 2}
 
@@ -322,13 +325,25 @@ def _check_queue(report: HealthReport) -> None:
     # `max` rather than picking one, because a divergence between the two is itself a
     # fault worth surfacing rather than hiding behind whichever side we happened to read.
     dead = int(max(metrics.get("queue_dead", 0), metrics.get("dead_letter_total", 0)))
-    if dead >= DEAD_LETTER_CRITICAL:
+    # Graded on the window, reported with the total. `dead_letter` is append-only and
+    # nothing purges it, so an all-time count can only ever climb -- four jobs buried by
+    # the pre-0006 attempt accounting and the watchdog crash loop sat above the warn
+    # threshold permanently, describing two bugs that had already been fixed. A probe
+    # that stays degraded after the fault is gone is one you learn to ignore, which is
+    # the failure this endpoint exists to avoid. The total still appears in the message
+    # and on `/metrics`, because lost work does not stop mattering after a day -- it is
+    # `cindra acceptance` that grades it, over a window a human chose.
+    recent = int(metrics.get("dead_letter_recent", 0))
+    if recent >= DEAD_LETTER_CRITICAL:
         status: Status = "critical"
-    elif dead >= DEAD_LETTER_WARN:
+    elif recent >= DEAD_LETTER_WARN:
         status = "degraded"
     else:
         status = "ok"
-    report.add(Check("queue:dead", status, f"{dead} job(s) past retry", value=float(dead)))
+    detail = f"{recent} job(s) past retry in {DEAD_LETTER_WINDOW_HOURS}h"
+    if dead > recent:
+        detail += f" ({dead} all time)"
+    report.add(Check("queue:dead", status, detail, value=float(recent)))
 
     ready = int(metrics.get("queue_ready", 0))
     deferred = int(metrics.get("queue_deferred", 0))
