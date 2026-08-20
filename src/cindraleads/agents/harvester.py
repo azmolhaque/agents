@@ -55,6 +55,11 @@ log = get_logger("cindraleads.harvester")
 HARVEST_KIND = "harvest.query"
 EXTRACT_KIND = "extract.candidate"
 
+# Per-run harvest yield, written to `metrics` so `cindra explain` can report a template
+# that produces nothing. The company table cannot: a template yielding zero companies
+# has no `discovered_by` row and simply does not appear.
+HARVEST_YIELD_METRIC = "harvest_yield"
+
 
 @dataclass(frozen=True)
 class HarvestOutcome:
@@ -226,10 +231,37 @@ class Harvester:
                 }
             )
 
+        # Persisted, not just logged. A template that returns nothing but platform URLs
+        # produces no company, so it has no row in `companies.discovered_by` and is
+        # invisible to `cindra explain`'s yield table -- it reads as a template that was
+        # never tried rather than one that fails every time. Two of them were doing
+        # exactly that at weights 98 and 94, spending SerpAPI credits hourly for zero
+        # candidates, and nothing in the system could say so.
+        conn.execute(
+            "INSERT INTO metrics (name, value, labels, recorded_at) VALUES (?,?,?,?)",
+            (
+                HARVEST_YIELD_METRIC,
+                float(len(payloads)),
+                json.dumps(
+                    {
+                        "template_id": outcome.plan.template_id,
+                        "engine": outcome.plan.engine,
+                        "hits": len(outcome.hits),
+                        "candidates": len(payloads),
+                        "dropped_platform": dropped_platform,
+                    },
+                    separators=(",", ":"),
+                ),
+                to_iso(utcnow()),
+            ),
+        )
         log.info(
             "harvest_complete",
             job_id=job.job_id,
             stage="harvester",
+            # The template, not only the engine. Several templates share an engine, so
+            # `engine=hn_algolia` could not tell you *which* query found nothing.
+            template_id=outcome.plan.template_id,
             engine=outcome.plan.engine,
             hits=len(outcome.hits),
             new_candidates=len(payloads),

@@ -25,18 +25,22 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import Any
 
+from cindraleads.agents.harvester import HARVEST_YIELD_METRIC
 from cindraleads.models import to_iso, utcnow
 from cindraleads.scoring import ScoringConfig, tier_for
 from cindraleads.store import Store
 
 __all__ = [
+    "HarvestYield",
     "LeadRow",
     "ScoreDiagnosis",
     "TemplateYield",
     "diagnose",
     "evidence_breadth",
+    "harvest_yield",
     "template_yield",
 ]
 
@@ -97,6 +101,11 @@ class ScoreDiagnosis:
     # Per-template discovery yield. The answer to "which query finds real companies",
     # which no amount of scoring analysis can reach.
     by_template: list[TemplateYield] = field(default_factory=list)
+
+    # What harvest returned, which is the only view that can see a template failing:
+    # one producing zero companies has no `discovered_by` row and vanishes from
+    # `by_template` entirely.
+    by_harvest: list[HarvestYield] = field(default_factory=list)
 
     @property
     def dispatchable(self) -> int:
@@ -194,6 +203,67 @@ class TemplateYield:
         return (self.sendable / self.companies) if self.companies else 0.0
 
 
+@dataclass(frozen=True)
+class HarvestYield:
+    """What a query template returned, before anything became a company.
+
+    The other half of `TemplateYield`, and the half that can see a template failing.
+    `companies.discovered_by` can only describe templates that produced a company, so a
+    template returning nothing but platform URLs has no row there and reads as one that
+    was never tried. Two were doing exactly that at weights 98 and 94 -- ten hits, ten
+    dropped, zero candidates, every run, spending SerpAPI credits.
+    """
+
+    template_id: str
+    runs: int
+    hits: int
+    candidates: int
+    dropped_platform: int
+
+    @property
+    def drop_rate(self) -> float:
+        return (self.dropped_platform / self.hits) if self.hits else 0.0
+
+    @property
+    def is_barren(self) -> bool:
+        """Ran, found hits, and turned none of them into a candidate. Every time."""
+        return self.runs > 0 and self.hits > 0 and self.candidates == 0
+
+
+def harvest_yield(store: Store, *, days: float = 7.0) -> list[HarvestYield]:
+    """Per-template harvest results over the window, worst first.
+
+    Reads the `harvest_yield` metric the Harvester writes on every run. Ordered by
+    candidates ascending so the templates producing nothing are the first thing read.
+    """
+    stamp = to_iso(utcnow() - timedelta(days=days))
+    rows = store.conn.execute(
+        "SELECT labels FROM metrics WHERE name = ? AND recorded_at >= ?",
+        (HARVEST_YIELD_METRIC, stamp),
+    ).fetchall()
+
+    totals: dict[str, list[int]] = {}
+    for row in rows:
+        try:
+            detail = json.loads(str(row["labels"]))
+        except ValueError:
+            continue
+        bucket = totals.setdefault(str(detail.get("template_id") or "(unknown)"), [0, 0, 0, 0])
+        bucket[0] += 1
+        bucket[1] += int(detail.get("hits") or 0)
+        bucket[2] += int(detail.get("candidates") or 0)
+        bucket[3] += int(detail.get("dropped_platform") or 0)
+
+    found = [
+        HarvestYield(
+            template_id=template, runs=t[0], hits=t[1], candidates=t[2], dropped_platform=t[3]
+        )
+        for template, t in totals.items()
+    ]
+    found.sort(key=lambda y: (y.candidates, -y.hits))
+    return found
+
+
 def template_yield(store: Store) -> list[TemplateYield]:
     """Companies per discovery template, and how many became leads worth sending.
 
@@ -238,6 +308,7 @@ def diagnose(
 
     breadth = evidence_breadth(store)
     result.by_template = template_yield(store)
+    result.by_harvest = harvest_yield(store)
     fingerprint = cfg.fingerprint()
 
     for lead in leads:

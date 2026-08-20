@@ -635,6 +635,30 @@ def explain(
                 f"not be attributed retroactively)"
             )
 
+    if report.by_harvest:
+        # Before this table a template returning nothing but platform URLs was invisible
+        # -- it produces no company, so it has no `discovered_by` row and never appears
+        # above. Two were doing that at weights 98 and 94, spending SerpAPI credits
+        # hourly for zero candidates.
+        typer.echo("\nharvest yield by template (last 7 days, worst first)")
+        typer.echo(f"  {'template':<24} {'runs':>5} {'hits':>6} {'candidates':>11} {'dropped':>8}")
+        for harvested in report.by_harvest:
+            flag = "  <-- returns nothing usable" if harvested.is_barren else ""
+            typer.echo(
+                f"  {harvested.template_id[:24]:<24} {harvested.runs:>5} "
+                f"{harvested.hits:>6} {harvested.candidates:>11} "
+                f"{harvested.dropped_platform:>8}{flag}"
+            )
+        barren = [r.template_id for r in report.by_harvest if r.is_barren]
+        if barren:
+            typer.echo(
+                f"\n  {len(barren)} template(s) found hits and produced no candidate: "
+                f"{', '.join(barren)}."
+                f"\n  Every hit was a platform URL with no company site behind it. Lower "
+                f"the weight in icp.yaml, add a site: filter, or retire them -- they cost "
+                f"credits and a plan slot on every run."
+            )
+
     typer.echo(f"\nclosest to the Tier C floor of {report.floor:.0f}")
     for lead, gap, blocker in report.near_misses:
         typer.echo(

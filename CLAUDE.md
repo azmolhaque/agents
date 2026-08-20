@@ -309,6 +309,16 @@ judged lead. Reporting `judged` from one population while arguing from the other
 produced a report claiming nothing was judged directly above a proposal citing eighteen
 judged leads.
 
+**A template that produces nothing is invisible to the table built to judge
+templates.** `cindra explain`'s yield view groups `companies.discovered_by`, so a query
+returning only platform URLs has no row and reads as one never tried. `serpapi_marketplace`
+(weight 98) and `serpapi_jobs` (94) were each returning 10 hits, dropping 10 as platform
+URLs and producing zero candidates on every run, spending SerpAPI credits hourly. The
+Harvester now persists per-run yield to `metrics` and `explain` reports it worst-first,
+flagging any template that found hits and converted none. `dropped_platform` itself is
+correct -- a LinkedIn URL has no company behind it -- the defect was that nobody could see
+how often it fired.
+
 **Most contacts were in the markup, and `extract_text` throws markup away.** The
 Enricher found contacts for 23 of 201 companies, so `reachability` -- 15% of the score --
 was zero on 173 of 195 leads and ten of them sat 0.8 points under the Tier C floor. The

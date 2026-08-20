@@ -416,3 +416,72 @@ def test_an_unscored_company_counts_as_found_but_not_sendable(store: Any) -> Non
 
     row = next(r for r in template_yield(store) if r.template_id == "hn_funding")
     assert (row.companies, row.scored, row.sendable) == (1, 0, 0)
+
+
+# ------------------------------------------- templates that produce nothing at all
+
+
+def _harvest_run(store: Any, template_id: str, *, hits: int, candidates: int, dropped: int) -> None:
+    from cindraleads.agents.harvester import HARVEST_YIELD_METRIC
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO metrics (name, value, labels, recorded_at) VALUES (?,?,?,?)",
+            (
+                HARVEST_YIELD_METRIC,
+                float(candidates),
+                json.dumps(
+                    {
+                        "template_id": template_id,
+                        "engine": "serpapi_jobs",
+                        "hits": hits,
+                        "candidates": candidates,
+                        "dropped_platform": dropped,
+                    },
+                    separators=(",", ":"),
+                ),
+                to_iso(utcnow()),
+            ),
+        )
+
+
+def test_a_template_that_produces_no_company_is_still_visible(store: Any) -> None:
+    """The blind spot this table exists to close.
+
+    `by_template` groups `companies.discovered_by`, so a template returning nothing but
+    platform URLs has no row there at all -- it reads as one that was never tried rather
+    than one that fails every run. Two were doing exactly that at weights 98 and 94,
+    ten hits and ten dropped each time, spending SerpAPI credits hourly.
+    """
+    from cindraleads.diagnose import harvest_yield
+
+    for _ in range(6):
+        _harvest_run(store, "serpapi_marketplace", hits=10, candidates=0, dropped=10)
+    _harvest_run(store, "hn_who_is_hiring", hits=50, candidates=31, dropped=19)
+
+    found = {y.template_id: y for y in harvest_yield(store)}
+
+    assert found["serpapi_marketplace"].is_barren is True
+    assert found["serpapi_marketplace"].runs == 6
+    assert found["serpapi_marketplace"].drop_rate == 1.0
+    assert found["hn_who_is_hiring"].is_barren is False
+
+
+def test_the_worst_template_is_reported_first(store: Any) -> None:
+    """Ordered by candidates ascending, so the failing ones are what you read."""
+    from cindraleads.diagnose import harvest_yield
+
+    _harvest_run(store, "productive", hits=50, candidates=31, dropped=19)
+    _harvest_run(store, "barren", hits=10, candidates=0, dropped=10)
+
+    assert next(y.template_id for y in harvest_yield(store)) == "barren"
+
+
+def test_a_template_that_simply_found_nothing_is_not_called_barren(store: Any) -> None:
+    """Zero hits is a quiet week or a cached query, not a broken template. Only a
+    template that *found* things and converted none of them has a problem."""
+    from cindraleads.diagnose import harvest_yield
+
+    _harvest_run(store, "quiet", hits=0, candidates=0, dropped=0)
+
+    assert harvest_yield(store)[0].is_barren is False
