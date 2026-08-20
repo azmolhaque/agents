@@ -193,13 +193,20 @@ query_templates:
 
   # ---- rationed: only SerpAPI can do these ----------------------------------
 
-  - id: serp_marketplace_pentest
-    engine: serpapi_marketplace
-    query: site:upwork.com "penetration test" posted
-    targets: [T9_MARKETPLACE]
-    weight: 98
-    cost: 1
-    rationale: Someone actively shopping for exactly what we sell.
+  # RETIRED 2026-08-21. `site:upwork.com` returns Upwork URLs, and an Upwork client is
+  # anonymous by design -- there is no company behind the posting to find. Every hit was
+  # dropped as a platform URL: 10 hits, 10 dropped, 0 candidates, on every run it made.
+  # At weight 98 it also won a plan slot and a credit ahead of templates that can work.
+  #
+  # The intent was sound -- someone shopping for exactly what we sell is the best signal
+  # there is -- so it is worth rebuilding against a marketplace that names the buyer.
+  # Restoring this query as written would only spend credits again.
+  #
+  # - id: serp_marketplace_pentest
+  #   engine: serpapi_marketplace
+  #   query: site:upwork.com "penetration test" posted
+  #   targets: [T9_MARKETPLACE]
+  #   weight: 98
 
   - id: serp_jobs_ai_no_sec
     engine: serpapi_jobs
