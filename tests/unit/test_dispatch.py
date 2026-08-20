@@ -648,8 +648,10 @@ def test_the_bengali_bound_is_the_one_the_budget_was_sized_for():
     one; raising the bound without raising the budget reintroduces the mid-string EOF
     that shipped three blank cards to Discord.
 
-    Asserted rather than commented because the bound is *advisory* -- GBNF cannot
-    enforce `maxLength`, so nothing at runtime will complain if these drift apart.
+    Asserted rather than commented because the failure mode is silent in both
+    directions. The grammar enforces the bound faithfully -- it just enforces it in
+    *characters* while the budget is in *tokens*, so a bound the budget cannot afford
+    produces legal output that dies mid-string. Nothing at runtime compares them.
     """
     from cindraleads.agents.scorer import PROSE_MAX_TOKENS_BENGALI, _max_length
     from cindraleads.models import LeadProse
@@ -683,7 +685,7 @@ def _seed_company_for_prose(store):  # type: ignore[no-untyped-def]
         conn.execute("INSERT OR REPLACE INTO trigger_evidence VALUES ('t1','e1')")
 
 
-def _seed_scorer_for_retry(store):  # type: ignore[no-untyped-def]
+def _seed_scorer_for_retry(store, reason="ConnectError: connection refused"):  # type: ignore[no-untyped-def]
     """A Scorer whose prose call always fails with a *recoverable* reason, so the only
     thing that can end the chain is the ceiling."""
     from cindraleads.agents.scorer import Scorer
@@ -692,9 +694,7 @@ def _seed_scorer_for_retry(store):  # type: ignore[no-untyped-def]
 
     class _AlwaysThermal:
         async def generate(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
-            raise SchemaValidationError(
-                "LLM inference is paused by the thermal governor; retry when cool"
-            )
+            raise SchemaValidationError(reason)
 
     _seed_company_for_prose(store)
     cfg = settings()
@@ -803,6 +803,63 @@ def test_prose_retries_are_bounded(rig):
     assert store.conn.execute("SELECT * FROM leads").fetchone() is not None, (
         "giving up on the angle must never cost the lead"
     )
+
+
+def test_a_hot_spell_does_not_spend_the_fault_budget(rig):
+    """The distinction the queue makes between `attempts` and `reclaims`, applied here
+    for the same reason: the evidence differs. Three failed calls say the prompt or the
+    budget is wrong. Three thermal pauses say the box was hot for an hour, which is a
+    designed-for state on a passively-cooled Pi under sustained decode.
+
+    Charged to one counter, a single hot spell spends the whole allowance in 60 minutes
+    and the lead is angle-less permanently -- and silently, because by then
+    `prose_version` matches and `enqueue_stale_scores` is right to report nothing to do.
+    Both leads still blank after the last deploy were failing exactly this way.
+    """
+    from cindraleads.agents.scorer import (
+        MAX_PROSE_ATTEMPTS,
+        PROSE_ATTEMPT_KEY,
+        PROSE_PAUSE_KEY,
+        SCORE_KIND,
+    )
+
+    _build, _posts, store = rig
+    scorer = _seed_scorer_for_retry(
+        store, reason="LLM inference is paused by the thermal governor; retry when cool"
+    )
+
+    payload: dict = {"canonical_domain": "acme.io"}
+    for _ in range(MAX_PROSE_ATTEMPTS + 2):
+        job = Job(job_id="j", kind=SCORE_KIND, payload=dict(payload))
+        outcome = asyncio.run(scorer.prepare(job))
+        with store.tx() as conn:
+            result = scorer.commit(job, outcome, conn)
+        follow = [p for k, p in result.follow_on if k == SCORE_KIND]
+        assert follow, "a thermal pause must not exhaust the retry chain"
+        payload = {k: v for k, v in follow[0].items() if k != "_delay_seconds"}
+
+    assert payload[PROSE_ATTEMPT_KEY] == 0, "a pause is not a fault"
+    assert payload[PROSE_PAUSE_KEY] == MAX_PROSE_ATTEMPTS + 2, "and it is still counted"
+
+
+def test_even_a_hot_spell_ends_eventually(rig):
+    """The bound on the test above. Past `MAX_PROSE_PAUSES` the governor is not having a
+    spell, it is the steady state, and re-decoding forever helps nothing."""
+    from cindraleads.agents.scorer import MAX_PROSE_PAUSES, PROSE_PAUSE_KEY, SCORE_KIND
+
+    _build, _posts, store = rig
+    scorer = _seed_scorer_for_retry(
+        store, reason="LLM inference is paused by the thermal governor; retry when cool"
+    )
+
+    payload: dict = {"canonical_domain": "acme.io", PROSE_PAUSE_KEY: MAX_PROSE_PAUSES - 1}
+    job = Job(job_id="j", kind=SCORE_KIND, payload=payload)
+    outcome = asyncio.run(scorer.prepare(job))
+    with store.tx() as conn:
+        result = scorer.commit(job, outcome, conn)
+
+    assert not [p for k, p in result.follow_on if k == SCORE_KIND]
+    assert store.conn.execute("SELECT * FROM leads").fetchone() is not None
 
 
 def test_a_lead_that_already_has_an_angle_is_not_re_queued(rig):

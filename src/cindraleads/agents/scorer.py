@@ -88,18 +88,18 @@ PROSE_RETRY_SECONDS = 20 * 60
 # per-language split is kept for the *worst* case only: at 3.7 tok/s a runaway 1200-token
 # decode is five minutes, and that ceiling should not apply to leads that cannot need it.
 #
-# The English figure went 400 -> 600 because 400 was mis-sized, and the way it failed
-# corrected a belief this whole strategy rested on. `LeadProse` bounds `outreach_angle`
-# at 400 characters, and `bisecto.com` -- no country, so the English budget -- produced
-# at least 908 before running out mid-string. `maxLength` reaches Ollama in the schema
-# but GBNF cannot express a character limit, so it is checked by Pydantic *after* the
-# tokens are spent. The bounds do not constrain the decoder; this constant is the only
-# thing that does.
+# These pair with the `LeadProse` bounds, and nothing at runtime checks that they agree.
+# The grammar *does* hold -- a field bounded at 20 characters comes back as exactly 20,
+# cut mid-phrase -- but it bounds characters while this bounds tokens, and those are the
+# same number only in English. A 400-character `bengali_angle` is legal grammar worth
+# ~1200 tokens; against a 400-token budget the decode ran out inside a string the
+# grammar was perfectly happy with, and the object was lost to a JSON EOF at byte column
+# 908. Shrinking the bound to 220 is the other half of this constant.
 #
-# A ceiling is not a cost. Decode stops at the stop token, so a generous limit is free
-# on every call that finishes early and is paid only by the ramble it exists to catch.
-# Sizing this tightly to the character bounds bought nothing and turned an overshoot --
-# which the schema cannot prevent -- into a lost object rather than a long one.
+# The English figure went 400 -> 600 for headroom, not for a measured failure. A ceiling
+# is not a cost: decode stops at the stop token, so a generous limit is free on every
+# call that finishes early and is paid only by the ramble it exists to catch. Sizing it
+# tightly to the bounds saved nothing and turned a long answer into a lost one.
 PROSE_MAX_TOKENS = 600
 PROSE_MAX_TOKENS_BENGALI = 1200
 
@@ -167,9 +167,11 @@ class ScoreOutcome:
     # come back for the prose rather than finalising the lead without an angle.
     retry_prose_in: int = 0
 
-    # Which attempt the *next* prose call would be, carried into the follow-on payload
-    # so the chain can count itself. See `MAX_PROSE_ATTEMPTS`.
+    # How many times prose has failed for this lead, carried into the follow-on payload
+    # so the chain can count itself. Split by cause: a fault and a thermal pause are
+    # charged to different ceilings. See `MAX_PROSE_ATTEMPTS` / `MAX_PROSE_PAUSES`.
     prose_attempt: int = 0
+    prose_pauses: int = 0
 
 
 @dataclass
@@ -259,16 +261,20 @@ class Scorer:
             # during one hot spell is permanently angle-less -- which is what happened
             # on the first real scoring run: 32 of 32.
             reason = str(exc)
-            attempt = int(job.payload.get(PROSE_ATTEMPT_KEY) or 0) + 1
-            # Both conditions, and the ceiling is the one that is new. A transient
-            # cause that never clears is indistinguishable from a permanent one after
-            # enough tries, and the lead is already complete without the angle.
-            retry = _is_recoverable(reason) and attempt < MAX_PROSE_ATTEMPTS
+            paused = _THERMAL in reason.lower()
+            # Exactly one of the two counters moves, so every retry is charged to the
+            # evidence it actually provides -- the same accounting the queue does with
+            # `attempts` and `reclaims`.
+            attempt = int(job.payload.get(PROSE_ATTEMPT_KEY) or 0) + (0 if paused else 1)
+            pauses = int(job.payload.get(PROSE_PAUSE_KEY) or 0) + (1 if paused else 0)
+            within = pauses < MAX_PROSE_PAUSES if paused else attempt < MAX_PROSE_ATTEMPTS
+            retry = _is_recoverable(reason) and within
             log.warning(
                 "scorer_prose_failed",
                 canonical_domain=domain,
                 error=reason[:200],
                 attempt=attempt,
+                pauses=pauses,
                 will_retry=retry,
                 gave_up=_is_recoverable(reason) and not retry,
             )
@@ -276,6 +282,7 @@ class Scorer:
                 canonical_domain=domain,
                 retry_prose_in=PROSE_RETRY_SECONDS if retry else 0,
                 prose_attempt=attempt,
+                prose_pauses=pauses,
             )
         prose = structured.value
         leaked = _leaked_codes(prose)
@@ -368,6 +375,7 @@ class Scorer:
                         "canonical_domain": outcome.canonical_domain,
                         "_delay_seconds": outcome.retry_prose_in,
                         PROSE_ATTEMPT_KEY: outcome.prose_attempt,
+                        PROSE_PAUSE_KEY: outcome.prose_pauses,
                     },
                 )
             )
@@ -660,6 +668,10 @@ def enqueue_stale_scores(
 # incidence.
 _RECOVERABLE = ("thermal governor", "connect", "timeout", "refused")
 
+# The one recoverable cause that is a designed-for state rather than a fault, and so is
+# counted separately. See `MAX_PROSE_PAUSES`.
+_THERMAL = "thermal governor"
+
 # How many times prose may be retried before the lead ships without an angle.
 #
 # The retry needs its own ceiling because nothing else can supply one. A prose failure
@@ -670,9 +682,22 @@ _RECOVERABLE = ("thermal governor", "connect", "timeout", "refused")
 # whose binding constraint is decode.
 MAX_PROSE_ATTEMPTS = 3
 
-# Carried in the follow-on payload. Not a column: it is per-attempt state belonging to
+# A thermal pause gets its own, far higher ceiling, for the reason the queue separates
+# `attempts` from `reclaims`: the evidence differs. Three failed calls say the prompt or
+# the budget is wrong; three pauses say the box was hot for an hour, which is a
+# designed-for state on a passively-cooled Pi under sustained decode. Charging them to
+# the same counter would spend the whole allowance on a single hot spell and leave the
+# lead permanently angle-less -- and *silently*, because by then `prose_version` matches
+# and `enqueue_stale_scores` is right to report nothing to do.
+#
+# 12 is four hours at `PROSE_RETRY_SECONDS`. Past that the governor is not having a
+# spell, it is the steady state, and something bigger is wrong than one lead's angle.
+MAX_PROSE_PAUSES = 12
+
+# Carried in the follow-on payload. Not columns: this is per-attempt state belonging to
 # the retry chain, and a lead re-scored for any other reason should start over.
 PROSE_ATTEMPT_KEY = "_prose_attempt"
+PROSE_PAUSE_KEY = "_prose_pauses"
 
 
 def _is_recoverable(reason: str) -> bool:

@@ -120,16 +120,21 @@ Two rules are enforced mechanically rather than trusted:
 | Cold model load | ~32 s off microSD |
 
 **Decode costs ~11x more per token than prefill.** Every tuning decision follows from
-that, and the prompt budget is 1500 chars because 4000 cost 150 s/page against 64 s.
+that: output is bounded in the schema (`maxLength`/`maxItems` become grammar rules), and
+the prompt budget is 1500 chars because 4000 cost 150 s/page against 64 s.
 
-**Schema `maxLength` is advisory, not a grammar rule.** This was believed for months and
-is false. The schema does reach Ollama -- only `description`/`title` are stripped -- but
-GBNF cannot express a character limit, so `maxLength` on a string is checked by Pydantic
-*after* the tokens are spent. Measured here: `outreach_angle`, bounded at 400, reached
-at least 908 characters before the budget ran out mid-value. **`max_tokens` is the only
-real bound, and an overshoot is not trimmed -- it costs the whole object to a JSON EOF.**
-A ceiling is also not a cost: decode stops at the stop token, so sizing one tightly to
-the character bounds buys nothing and converts a long answer into a lost one.
+**`maxLength` bounds characters; `max_tokens` bounds tokens; the two are only the same
+number in English.** Verified directly -- a field bounded at 20 returned exactly 20
+characters, cut mid-phrase, so the grammar does hold. What it does not do is keep the
+model inside the *budget*: a 400-character `bengali_angle` is legal grammar worth ~1200
+tokens, and against a 400-token budget the decode ran out inside a string the grammar
+was still happy with. JSON EOF, whole object lost, `EOF while parsing a string at line 3
+column 908` -- a byte column, which is how 300 Bengali characters reads as 908.
+
+**A bound and a budget are one decision made in two files, and nothing at runtime checks
+they agree.** `test_the_bengali_bound_is_the_one_the_budget_was_sized_for` is that check.
+A ceiling is also not a cost -- decode stops at the stop token -- so sizing `max_tokens`
+tightly to the bound saves nothing and converts a long answer into a lost one.
 
 Two numbers that are latency-tuned against a *schema-validity* gate and must be re-tuned
 in Phase 3 against *field accuracy*: `textextract.extract_text(max_chars=1500)` and the
@@ -305,6 +310,14 @@ applies, nothing dead-letters and `/healthz` reads ok. Fourteen leads were re-de
 every twenty minutes with no counter anywhere that could say so. `MAX_PROSE_ATTEMPTS`
 is the ceiling, carried in the follow-on payload because it is per-attempt state and a
 lead re-scored for another reason should start over.
+
+**A thermal pause is charged to its own counter, for the same reason the queue splits
+`attempts` from `reclaims`.** Three failed calls say the prompt or the budget is wrong;
+three pauses say the box was hot for an hour, which is designed-for. On one counter a
+single hot spell spends the whole allowance and the lead is angle-less *permanently* --
+silently, because by then `prose_version` matches and `enqueue_stale_scores` is right to
+report nothing to do. `MAX_PROSE_PAUSES` is 12, four hours; past that the governor is
+not having a spell, it is the steady state.
 
 They were looping because **`_RECOVERABLE` matched a fact about the configuration
 rather than about the failure.** "no escalation backend" is appended to every

@@ -348,17 +348,16 @@ class LeadProse(_Model):
     to the model as a fact; this schema has no numeric field at all, so there is no
     shape in which the model's output could become the score.
 
-    **These bounds are advisory, not grammar rules.** The schema does reach Ollama --
-    only `description` and `title` are stripped -- but GBNF cannot express "at most N
-    characters", so `maxLength` on a string is enforced by Pydantic *after* the tokens
-    are spent, not by the decoder while they are produced. Measured on this box:
-    `outreach_angle`, bounded at 400, reached at least 908 characters before the token
-    budget ran out mid-value and the whole object was lost to a JSON EOF.
+    The bounds are grammar rules through Ollama's `format`, and they hold: a field
+    bounded at 20 returns exactly 20 characters, cut mid-phrase. That is also what keeps
+    a 4B from writing 300 tokens of marketing copy at 3.7 tok/s.
 
-    The consequence is the one that matters for tuning: **the decode budget is the only
-    real bound**, and an overshoot is not trimmed, it costs the entire call. Lowering a
-    bound here still helps -- the model reads the schema and mostly obeys it -- but it
-    is persuasion, and the budget in `scorer.py` is what actually holds.
+    **They bound characters, though, and the decode budget bounds tokens** -- the same
+    number only in English. Every bound here is half a decision; the other half is
+    `PROSE_MAX_TOKENS*` in `scorer.py`, and nothing at runtime notices if they disagree.
+    Raising one of these without raising the budget means the grammar permits a string
+    the budget cannot finish, and the object is lost to a JSON EOF rather than arriving
+    short.
     """
 
     rationale: str = Field(default="", max_length=280)
@@ -369,10 +368,10 @@ class LeadProse(_Model):
     # before Phase 5 closes.
     #
     # 220, not 400. Bengali is several tokens per *character* in this tokenizer, so the
-    # old bound asked for up to four figures of decode on a box that does 3.7 tok/s --
-    # minutes per BD lead, to say something an English angle says in 400. Since the
-    # bound is advisory the shorter ask is worth more than the arithmetic suggests: it
-    # is the only lever that lowers what the model *aims* for.
+    # old bound was legal grammar worth ~1200 tokens on a box that does 3.7 tok/s --
+    # minutes per BD lead, to say something an English angle says in 400 characters. The
+    # grammar enforced it faithfully; the budget could not pay for it, and the decode
+    # died inside a string that was never going to be too long.
     bengali_angle: str | None = Field(default=None, max_length=220)
 
 
