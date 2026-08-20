@@ -208,9 +208,25 @@ query_templates:
   #   targets: [T9_MARKETPLACE]
   #   weight: 98
 
+  # REWRITTEN 2026-08-21. Was `site:boards.greenhouse.io ("AI engineer" OR "ML
+  # engineer")`, which returned only Greenhouse board URLs -- 10 hits, 10 dropped as
+  # platform URLs, 0 candidates, every run. The `site:` filter and the platform rule
+  # contradicted each other, so it could never produce a lead.
+  #
+  # Not fixable by teaching the Harvester to read ATS URLs: the board API returns
+  # `{"name": "GitLab", "content": ""}` and the jobs carry `company_name` but no
+  # website, so a board slug cannot be resolved to a canonical domain without guessing.
+  # An ATS board enriches a company we already found -- which `_boards()` already does.
+  #
+  # Inverted instead: exclude the platforms so what comes back is the company's own
+  # careers page, on its own domain, which is both extractable and the thing that
+  # implies payroll.
   - id: serp_jobs_ai_no_sec
     engine: serpapi_jobs
-    query: site:boards.greenhouse.io ("AI engineer" OR "ML engineer")
+    query: >-
+      ("AI engineer" OR "ML engineer" OR "LLM engineer") ("we are hiring" OR careers)
+      -site:linkedin.com -site:indeed.com -site:glassdoor.com -site:greenhouse.io
+      -site:lever.co -site:ashbyhq.com -site:workable.com -site:ziprecruiter.com
     targets: [T4_HIRING_AI_ONLY, T3_HIRING_SEC]
     weight: 94
     cost: 1
