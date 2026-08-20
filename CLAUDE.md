@@ -290,6 +290,20 @@ stages needs a test that drives all three.** Same shape as `digest_pages` and
 to organizations" for weeks while calling an unfiltered search, so every personal
 langchain project became a candidate.
 
+**A retry that completes successfully is invisible to everything built to catch a
+loop.** A prose failure is not a stage failure -- the lead is scored and stored, the
+job returns `ok` and completes -- so `attempts` never increments, `max_attempts` never
+applies, nothing dead-letters and `/healthz` reads ok. Fourteen leads were re-decoding
+every twenty minutes with no counter anywhere that could say so. `MAX_PROSE_ATTEMPTS`
+is the ceiling, carried in the follow-on payload because it is per-attempt state and a
+lead re-scored for another reason should start over.
+
+They were looping because **`_RECOVERABLE` matched a fact about the configuration
+rather than about the failure.** "no escalation backend" is appended to every
+exhausted-ladder message on a box with no cloud tier, which is this box, always -- so a
+deterministic JSON truncation read as transient. A marker present in 100% of cases is a
+constant, not a discriminator, exactly like `single_source` at 96% incidence.
+
 **A `git pull` does not change what is running.** The worker and health units are
 long-lived Python processes; they keep the modules imported at boot while the new code
 sits on disk, draining jobs and reporting healthy. Deploying is
