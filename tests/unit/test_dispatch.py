@@ -7,6 +7,7 @@ inference to produce, and it happens on exactly the leads with the most to say.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -619,22 +620,9 @@ def test_the_prose_version_moves_when_the_decode_budget_moves(monkeypatch):
     assert scorer.prose_version() != before
 
 
-def test_a_thermal_pause_defers_prose_instead_of_losing_it(rig):
-    """What the first real scoring run cost: 32 of 32 leads finalised with no angle.
-
-    The governor paused inference for the whole batch. Each lead scored correctly --
-    the arithmetic never needed a model -- but the job completed, so no lead would
-    ever have been given an angle without a manual rescore.
-    """
-    from cindraleads.agents.scorer import PROSE_RETRY_SECONDS, SCORE_KIND, ScoreOutcome, Scorer
-    from cindraleads.config import settings
-
-    _build, _posts, store = rig
-    cfg = settings()
-    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
-    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
-    scorer = Scorer(store=store, llm=None, config=cfg)
-
+def _seed_company_for_prose(store):  # type: ignore[no-untyped-def]
+    """One company with one live trigger and one piece of evidence -- the minimum that
+    scores, so the prose call is the only thing left that can fail."""
     with store.tx() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO companies (canonical_domain, display_name, ai_surface, "
@@ -652,6 +640,45 @@ def test_a_thermal_pause_defers_prose_instead_of_losing_it(rig):
             "('t1','acme.io','T1_AI_SHIP',0.9,'2026-08-15T00:00:00Z','2099-01-01T00:00:00Z')"
         )
         conn.execute("INSERT OR REPLACE INTO trigger_evidence VALUES ('t1','e1')")
+
+
+def _seed_scorer_for_retry(store):  # type: ignore[no-untyped-def]
+    """A Scorer whose prose call always fails with a *recoverable* reason, so the only
+    thing that can end the chain is the ceiling."""
+    from cindraleads.agents.scorer import Scorer
+    from cindraleads.config import settings
+    from cindraleads.errors import SchemaValidationError
+
+    class _AlwaysThermal:
+        async def generate(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            raise SchemaValidationError(
+                "LLM inference is paused by the thermal governor; retry when cool"
+            )
+
+    _seed_company_for_prose(store)
+    cfg = settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+    return Scorer(store=store, llm=_AlwaysThermal(), config=cfg)
+
+
+def test_a_thermal_pause_defers_prose_instead_of_losing_it(rig):
+    """What the first real scoring run cost: 32 of 32 leads finalised with no angle.
+
+    The governor paused inference for the whole batch. Each lead scored correctly --
+    the arithmetic never needed a model -- but the job completed, so no lead would
+    ever have been given an angle without a manual rescore.
+    """
+    from cindraleads.agents.scorer import PROSE_RETRY_SECONDS, SCORE_KIND, ScoreOutcome, Scorer
+    from cindraleads.config import settings
+
+    _build, _posts, store = rig
+    cfg = settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+    scorer = Scorer(store=store, llm=None, config=cfg)
+
+    _seed_company_for_prose(store)
 
     outcome = ScoreOutcome(canonical_domain="acme.io", retry_prose_in=PROSE_RETRY_SECONDS)
     job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
@@ -674,6 +701,67 @@ def test_a_schema_failure_is_not_retried():
     assert not _is_recoverable("extraction failed schema: 3 validation errors")
     assert _is_recoverable("LLM inference is paused by the thermal governor; retry when cool")
     assert _is_recoverable("ConnectError: connection refused")
+
+
+def test_a_missing_cloud_tier_does_not_make_every_failure_recoverable():
+    """`no escalation backend configured` is appended to every exhausted-ladder message
+    on a box with no cloud tier -- which is this box, always. As a marker it matched
+    unconditionally, so a deterministic failure was classified as transient and retried
+    forever: the Bengali angle that ran out of decode budget mid-string came back every
+    twenty minutes on a JSON truncation that waiting cannot fix.
+
+    The real message is asserted verbatim, because the bug lives in the wrapper text
+    rather than in the underlying failure -- a paraphrase would not have caught it.
+    """
+    from cindraleads.agents.scorer import _is_recoverable
+
+    assert not _is_recoverable(
+        "LeadProse could not be produced after 2 attempt(s) (no escalation backend "
+        'configured); failures: ["1 validation error for LeadProse\\n  Invalid JSON: '
+        'EOF while parsing a string at line 3 column 863"]'
+    )
+    assert _is_recoverable(
+        "LeadProse could not be produced after 2 attempt(s) (no escalation backend "
+        'configured); failures: ["LLM inference is paused by the thermal governor"]'
+    ), "the underlying cause still decides, and a thermal pause is still transient"
+
+
+def test_prose_retries_are_bounded(rig):
+    """A prose failure is not a stage failure: the lead is scored and stored, the job
+    returns ok and completes. So `attempts` never increments, `max_attempts` never
+    applies, nothing dead-letters and `/healthz` reads ok -- there is no mechanism
+    anywhere else that could stop this chain. Unbounded, it is a decode call every
+    twenty minutes forever on the box whose binding constraint is decode.
+
+    Driven as a chain rather than as one call, because the counter lives in the payload
+    the previous attempt wrote. Asserting on a single `prepare()` would pass with the
+    payload key never read.
+    """
+    from cindraleads.agents.scorer import MAX_PROSE_ATTEMPTS, PROSE_ATTEMPT_KEY, SCORE_KIND
+
+    _build, _posts, store = rig
+    scorer = _seed_scorer_for_retry(store)
+
+    payload: dict = {"canonical_domain": "acme.io"}
+    seen = []
+    for _ in range(MAX_PROSE_ATTEMPTS + 2):
+        job = Job(job_id="j", kind=SCORE_KIND, payload=dict(payload))
+        outcome = asyncio.run(scorer.prepare(job))
+        with store.tx() as conn:
+            result = scorer.commit(job, outcome, conn)
+        seen.append(outcome.prose_attempt)
+        follow = [p for k, p in result.follow_on if k == SCORE_KIND]
+        if not follow:
+            break
+        payload = {k: v for k, v in follow[0].items() if k != "_delay_seconds"}
+
+    assert seen == list(range(1, MAX_PROSE_ATTEMPTS + 1)), (
+        f"the chain must stop at {MAX_PROSE_ATTEMPTS}, not run forever: {seen}"
+    )
+    assert payload.get(PROSE_ATTEMPT_KEY) == MAX_PROSE_ATTEMPTS - 1, "the count is carried"
+    assert store.conn.execute("SELECT * FROM leads").fetchone() is not None, (
+        "giving up on the angle must never cost the lead"
+    )
 
 
 def test_a_lead_that_already_has_an_angle_is_not_re_queued(rig):

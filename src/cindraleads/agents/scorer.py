@@ -135,6 +135,10 @@ class ScoreOutcome:
     # come back for the prose rather than finalising the lead without an angle.
     retry_prose_in: int = 0
 
+    # Which attempt the *next* prose call would be, carried into the follow-on payload
+    # so the chain can count itself. See `MAX_PROSE_ATTEMPTS`.
+    prose_attempt: int = 0
+
 
 @dataclass
 class Scorer:
@@ -223,16 +227,23 @@ class Scorer:
             # during one hot spell is permanently angle-less -- which is what happened
             # on the first real scoring run: 32 of 32.
             reason = str(exc)
-            recoverable = _is_recoverable(reason)
+            attempt = int(job.payload.get(PROSE_ATTEMPT_KEY) or 0) + 1
+            # Both conditions, and the ceiling is the one that is new. A transient
+            # cause that never clears is indistinguishable from a permanent one after
+            # enough tries, and the lead is already complete without the angle.
+            retry = _is_recoverable(reason) and attempt < MAX_PROSE_ATTEMPTS
             log.warning(
                 "scorer_prose_failed",
                 canonical_domain=domain,
                 error=reason[:200],
-                will_retry=recoverable,
+                attempt=attempt,
+                will_retry=retry,
+                gave_up=_is_recoverable(reason) and not retry,
             )
             return ScoreOutcome(
                 canonical_domain=domain,
-                retry_prose_in=PROSE_RETRY_SECONDS if recoverable else 0,
+                retry_prose_in=PROSE_RETRY_SECONDS if retry else 0,
+                prose_attempt=attempt,
             )
         prose = structured.value
         leaked = _leaked_codes(prose)
@@ -324,6 +335,7 @@ class Scorer:
                     {
                         "canonical_domain": outcome.canonical_domain,
                         "_delay_seconds": outcome.retry_prose_in,
+                        PROSE_ATTEMPT_KEY: outcome.prose_attempt,
                     },
                 )
             )
@@ -602,7 +614,33 @@ def enqueue_stale_scores(
 
 # Failures that will plausibly answer differently later. A schema violation from the
 # model will not -- it has already been retried at temperature 0 and escalated.
-_RECOVERABLE = ("thermal governor", "no escalation backend", "connect", "timeout", "refused")
+# Markers of a failure that waiting can fix. Every one names a condition external to
+# the request: the box was too hot, the socket did not open, the model did not answer
+# in time. Send the same prompt in twenty minutes and it may well work.
+#
+# `no escalation backend` used to be in this list and had to come out. It is not a
+# description of the failure -- it is appended to *every* exhausted-ladder message on a
+# box with no cloud tier configured, which is this box, always. So it matched
+# unconditionally and made `_is_recoverable` return True for failures that waiting
+# cannot fix: the Bengali decode that ran out of budget mid-string was retried every
+# twenty minutes on a deterministic JSON truncation. A marker present in 100% of cases
+# is a constant, not a discriminator -- the same shape as `single_source` at 96%
+# incidence.
+_RECOVERABLE = ("thermal governor", "connect", "timeout", "refused")
+
+# How many times prose may be retried before the lead ships without an angle.
+#
+# The retry needs its own ceiling because nothing else can supply one. A prose failure
+# is not a stage failure -- the lead is scored and stored, the job returns `ok=True`
+# and completes -- so `attempts` never increments and the queue's `max_attempts` never
+# applies. Without this the loop is unbounded and *invisible*: no failed job, no dead
+# letter, `/healthz` ok, and a decode call every twenty minutes forever on the box
+# whose binding constraint is decode.
+MAX_PROSE_ATTEMPTS = 3
+
+# Carried in the follow-on payload. Not a column: it is per-attempt state belonging to
+# the retry chain, and a lead re-scored for any other reason should start over.
+PROSE_ATTEMPT_KEY = "_prose_attempt"
 
 
 def _is_recoverable(reason: str) -> bool:
