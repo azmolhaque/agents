@@ -536,6 +536,24 @@ def pipeline(
     asyncio.run(_run())
 
 
+def _trigger_for_tier_a(report: Any, cfg: Any) -> float:
+    """What the trigger component would have to reach for Tier A, all else at its mean.
+
+    Solves the weighted sum for `trigger`, holding every other component at the corpus
+    mean and reachability at a perfect 100. Answers "is Tier A reachable by enriching
+    harder" with arithmetic rather than with another week of scraping work.
+    """
+    floor_a = float(cfg.tiers.get("A", 75))
+    others = sum(
+        report.component_means.get(name, 0.0) * weight
+        for name, weight in cfg.components.items()
+        if name not in ("trigger", "reachability")
+    )
+    others += 100.0 * cfg.components.get("reachability", 0.0)
+    weight = cfg.components.get("trigger", 0.0)
+    return (floor_a - others) / weight if weight else float("inf")
+
+
 @app.command()
 def explain(
     near_misses: Annotated[int, typer.Option(help="How many marginal leads to list.")] = 10,
@@ -580,6 +598,28 @@ def explain(
         arrow = f"   ->{lifted:>5} with no penalties at all" if lifted != now else ""
         typer.echo(f"  {tier:>8}: {now:>5}{arrow}")
     typer.echo(f"  {'sendable':>8}: {report.dispatchable} (anything above REJECT)")
+
+    # The ceiling on enrichment, stated before anyone spends another week on it. If
+    # Tier A is still zero when every lead is handed a perfect contact, contacts are
+    # not what is holding it back and no amount of scraping will move it.
+    ceiling_a = report.tiers_with_contact.get("A", 0)
+    if report.total:
+        typer.echo(
+            "\n  with a perfect contact for every lead: "
+            + ", ".join(
+                f"{tier} {report.tiers_with_contact.get(tier, 0)}"
+                for tier in ("A", "B", "C", "REJECT")
+            )
+        )
+        if ceiling_a == 0:
+            typer.echo(
+                "  Tier A stays at 0 even then -- reachability is not the constraint.\n"
+                f"  At the current means it needs trigger >= "
+                f"{_trigger_for_tier_a(report, scoring_cfg):.0f}/100 against an actual "
+                f"mean of {report.component_means.get('trigger', 0):.0f}. That is a "
+                f"discovery problem: the corpus does not contain companies with strong\n"
+                "  enough news, and no scoring or enrichment change reaches it."
+            )
 
     typer.echo("\ncomponents (mean of 100, and how many leads score zero)")
     for name, mean in sorted(report.component_means.items(), key=lambda kv: kv[1]):

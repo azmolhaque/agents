@@ -485,3 +485,33 @@ def test_a_template_that_simply_found_nothing_is_not_called_barren(store: Any) -
     _harvest_run(store, "quiet", hits=0, candidates=0, dropped=0)
 
     assert harvest_yield(store)[0].is_barren is False
+
+
+def test_the_ceiling_says_whether_contacts_could_ever_reach_tier_a(store: Any) -> None:
+    """The question that stops a month being spent on the wrong component.
+
+    Every lead is handed a perfect contact and re-tiered. If Tier A is still zero, the
+    constraint is not reachability and no scraping improvement reaches it -- which is
+    exactly the position this corpus is in, with `trigger` averaging 35 of 100 against
+    a Tier A floor of 75.
+    """
+    for i in range(10):
+        # Weak news, everything else strong. No contact can rescue these.
+        _lead(store, f"weak{i}.com", score=39, tier="REJECT", **_weak(reachability=0.0))
+
+    report = diagnose(store)
+
+    assert report.tiers_with_contact.get("A", 0) == 0
+    assert sum(report.tiers_with_contact.values()) == report.total
+
+
+def test_the_ceiling_finds_leads_a_contact_would_actually_promote(store: Any) -> None:
+    """The other half: when the news *is* strong, a contact is worth finding, and the
+    ceiling has to say so rather than being uniformly pessimistic."""
+    for i in range(10):
+        _lead(store, f"strong{i}.com", score=60, tier="C", **_strong(reachability=0.0))
+
+    report = diagnose(store)
+
+    assert report.tiers_with_contact.get("REJECT", 0) == 0
+    assert report.tiers_with_contact.get("A", 0) + report.tiers_with_contact.get("B", 0) > 0

@@ -75,6 +75,11 @@ class ScoreDiagnosis:
     penalty_cost: dict[str, float] = field(default_factory=dict)
     # tier distribution if every penalty were lifted at once
     tiers_unpenalised: dict[str, int] = field(default_factory=dict)
+
+    # Tier distribution if every lead had a perfect contact. The ceiling on enrichment
+    # work: if Tier A is still zero here, contacts are not what is holding it back and
+    # the constraint is upstream, in what discovery brings home.
+    tiers_with_contact: dict[str, int] = field(default_factory=dict)
     # per-penalty: how many leads gain a tier if only that one is lifted
     promoted_by_lifting: dict[str, int] = field(default_factory=dict)
     near_misses: list[tuple[LeadRow, float, str]] = field(default_factory=list)
@@ -335,6 +340,16 @@ def diagnose(
 
         unpenalised = tier_for(_final(raw - lead.penalty_total), cfg)
         result.tiers_unpenalised[unpenalised] = result.tiers_unpenalised.get(unpenalised, 0) + 1
+
+        # The ceiling: every lead handed a perfect contact, penalties and all else
+        # unchanged. This is the question enrichment work can actually answer, and
+        # separating it from the rest stops months being spent on the wrong component.
+        # If Tier A stays at zero here, no amount of contact-finding reaches it and the
+        # constraint is upstream in what discovery brings back.
+        perfect = dict(lead.components)
+        perfect["reachability"] = 100.0
+        best = tier_for(_final(_weighted(perfect, cfg) + lead.penalty_total), cfg)
+        result.tiers_with_contact[best] = result.tiers_with_contact.get(best, 0) + 1
 
         for name, cost in lead.penalties.items():
             lifted = tier_for(_final(raw - cost), cfg)

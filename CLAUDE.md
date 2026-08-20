@@ -309,6 +309,14 @@ judged lead. Reporting `judged` from one population while arguing from the other
 produced a report claiming nothing was judged directly above a proposal citing eighteen
 judged leads.
 
+**Tier A is not an enrichment problem, and `cindra explain` now proves it rather
+than arguing it.** The report re-tiers every lead with `reachability` set to a perfect
+100. If Tier A is still zero there, contacts cannot reach it -- and at the current means
+they cannot: solving the weighted sum for the Tier A floor of 75 needs `trigger >= 81`
+against a corpus mean of 35. That is a discovery problem. The counterfactual is printed
+directly under the tier table so the next person does not spend a week on the wrong
+component, the way this one nearly did.
+
 **A template that produces nothing is invisible to the table built to judge
 templates.** `cindra explain`'s yield view groups `companies.discovered_by`, so a query
 returning only platform URLs has no row and reads as one never tried. `serpapi_marketplace`
