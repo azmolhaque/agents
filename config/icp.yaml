@@ -85,9 +85,20 @@ query_templates:
   # thread is a company with payroll, which is the strongest free company filter there
   # is. `since_days: 120` covers three monthly threads; the Harvester reads at most
   # three and 40 comments from each, because each accepted comment is ~64 s of decode.
+  #
+  # `tags: story,author_whoishiring` is the other half, and without it the rest is
+  # pointless. `query` is full text, so "Ask HN Who is hiring" matched any Ask HN post
+  # sharing those words -- measured live: "Who wants to fund DB research?", "Have you
+  # worked with anyone from HN?", "Do you know how much head hunters cost?". This
+  # template had never once found the hiring thread, which is the real reason it
+  # produced nothing; the comment mechanism alone would have read the comments of the
+  # wrong threads. The thread is posted monthly by the `whoishiring` bot, so filtering
+  # on the author selects it exactly and the query text picks the hiring one out of
+  # that account's three monthly posts.
   - id: hn_who_is_hiring
     engine: hn_algolia
-    query: Ask HN Who is hiring
+    query: Who is hiring
+    tags: story,author_whoishiring
     since_days: 120
     comments: true
     targets: [T3_HIRING_SEC, T4_HIRING_AI_ONLY]

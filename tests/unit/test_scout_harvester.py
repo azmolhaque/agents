@@ -638,3 +638,23 @@ async def test_comment_expansion_is_bounded(rig):
     result = await harvester.run(_job(plan))
 
     assert len(result.follow_on) <= MAX_COMMENTS_PER_THREAD
+
+
+def test_the_hiring_template_targets_the_thread_and_not_the_words(scout: Scout):
+    """`query` on Algolia is full text, and "Ask HN Who is hiring" matched anything
+    sharing those words. Measured against the live API: "Who wants to fund DB
+    research?", "Have you worked with anyone from HN?", "Do you know how much head
+    hunters cost?" -- three Ask HN discussions and not one hiring thread.
+
+    So this template had never once found the thread it is named after, which is the
+    real reason it produced nothing. The comment-reading mechanism alone would have
+    faithfully read the comments of the wrong threads. The thread is posted monthly by
+    the `whoishiring` bot, and the author tag is the only thing that selects it.
+    """
+    template = next(t for t in scout.templates if t.id == "hn_who_is_hiring")
+
+    assert "author_whoishiring" in template.tags, (
+        "without the author filter this matches any Ask HN post about hiring"
+    )
+    assert template.comments, "and the companies are in the comments, not the story"
+    assert template.tags.startswith("story"), "the thread itself is a story, not a comment"
