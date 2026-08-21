@@ -54,6 +54,11 @@ class QueryTemplate:
     # GitHub only. Personal repos are excluded by default because a personal repo is a
     # person; a template sets this to opt back in, which no current one does.
     include_personal_repos: bool = False
+    # HN only. The hits are the *comments* of the matched threads rather than the
+    # threads themselves. For a thread like "Ask HN: Who is hiring" the story is an
+    # index and the companies are in the replies -- without this the only URL on offer
+    # is news.ycombinator.com, which is a platform and rightly dropped.
+    comments: bool = False
 
     def to_plan(self, *, cache_ttl_hours: int) -> QueryPlan:
         params: dict[str, str] = {"since_days": str(self.since_days)}
@@ -61,6 +66,8 @@ class QueryTemplate:
             params["tags"] = self.tags
         if self.include_personal_repos:
             params["organizations_only"] = "false"
+        if self.comments:
+            params["comments"] = "true"
         return QueryPlan(
             template_id=self.id,
             query=self.query,
@@ -123,6 +130,7 @@ class Scout:
                     targets=tuple(entry.get("targets", [])),
                     weight=int(entry.get("weight", 50)),
                     include_personal_repos=bool(entry.get("include_personal_repos", False)),
+                    comments=bool(entry.get("comments", False)),
                     since_days=int(entry.get("since_days", 30)),
                     tags=str(entry.get("tags", "")),
                     rationale=str(entry.get("rationale", "")),

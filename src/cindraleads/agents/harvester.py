@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sqlite3
 import uuid
 from dataclasses import dataclass
@@ -59,6 +60,22 @@ EXTRACT_KIND = "extract.candidate"
 # that produces nothing. The company table cannot: a template yielding zero companies
 # has no `discovered_by` row and simply does not appear.
 HARVEST_YIELD_METRIC = "harvest_yield"
+
+# Bounds on comment expansion. A monthly "Who is hiring" thread runs past 500 comments
+# and each accepted one becomes an extract job at ~64 s of decode -- unbounded, a single
+# harvest would queue more than the Pi drains in a day and starve every other template
+# behind it. Three threads covers the current month plus the two before it, which is the
+# whole useful window: an entry from four months ago has been filled or withdrawn.
+MAX_COMMENT_THREADS = 3
+MAX_COMMENTS_PER_THREAD = 40
+
+# An HN item URL, which is the only shape whose comments can be fetched.
+_HN_ITEM = re.compile(r"news\.ycombinator\.com/item\?id=(\d+)")
+
+
+def _hn_item_id(url: str) -> str | None:
+    match = _HN_ITEM.search(url or "")
+    return match.group(1) if match else None
 
 
 @dataclass(frozen=True)
@@ -128,11 +145,14 @@ class Harvester:
         try:
             if plan.engine == "hn_algolia":
                 assert self.hn is not None
-                return await self.hn.search(
+                stories = await self.hn.search(
                     plan.query,
                     since_days=since_days,
                     tags=plan.params.get("tags") or "story",
                 )
+                if plan.params.get("comments") == "true":
+                    return await self._expand_comments(stories, plan)
+                return stories
             if SerpApiClient.supports(plan.engine):
                 assert self.serpapi is not None
                 return await self.serpapi.search(plan.engine, plan.query)
@@ -157,6 +177,39 @@ class Harvester:
                 error=f"{type(exc).__name__}: {exc}",
             )
             return []
+
+    async def _expand_comments(self, stories: list[SourceHit], plan: QueryPlan) -> list[SourceHit]:
+        """Replace each story with the companies named in its comments.
+
+        For a thread like "Ask HN: Who is hiring", the story is an index and the
+        comments are the content -- so the stories are consumed here and never returned.
+        Returning both would put the thread's own news.ycombinator.com URL back in the
+        hit list, where it would be dropped as a platform URL and counted against this
+        template's yield: the exact number that made the template look broken.
+
+        Bounded by `MAX_COMMENT_THREADS` and `MAX_COMMENTS_PER_THREAD` because a monthly
+        hiring thread runs to 500+ comments and every accepted one becomes an extract
+        job at ~64 s of decode. Left unbounded, one harvest would queue more work than
+        the Pi can drain in a day and starve every other template behind it.
+        """
+        assert self.hn is not None
+        out: list[SourceHit] = []
+        for story in stories[:MAX_COMMENT_THREADS]:
+            story_id = _hn_item_id(story.url)
+            if story_id is None:
+                # A story whose URL is somewhere else entirely is not a discussion
+                # thread; it is an ordinary hit and keeps its own meaning.
+                out.append(story)
+                continue
+            comments = await self.hn.thread_comments(story_id, limit=MAX_COMMENTS_PER_THREAD)
+            log.info(
+                "harvester_thread_expanded",
+                template_id=plan.template_id,
+                story_id=story_id,
+                comments=len(comments),
+            )
+            out.extend(comments)
+        return out
 
     # ----------------------------------------------------------------- stage
     #

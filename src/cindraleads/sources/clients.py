@@ -155,6 +155,132 @@ class HackerNewsClient:
         the highest-signal free source for T1_AI_SHIP."""
         return await self.search("", since_days=since_days, tags="show_hn")
 
+    # ------------------------------------------------------------- comments
+
+    @classmethod
+    def comments_request_for(cls, story_id: str, *, limit: int = 100) -> tuple[str, dict[str, str]]:
+        """The comment fetch for one story, as a URL the cache can key on.
+
+        No `numericFilters`: a thread's comments are bounded by the thread, and dating
+        them again would only re-ask the question the story's own date already answered.
+        """
+        return (
+            "https://hn.algolia.com/api/v1/search",
+            {
+                "tags": f"comment,story_{story_id}",
+                "hitsPerPage": str(min(limit, 100)),
+            },
+        )
+
+    async def thread_comments(self, story_id: str, *, limit: int = 100) -> list[SourceHit]:
+        """The comments of one story, as hits pointing at the companies inside them.
+
+        This exists because of a specific, measured hole. "Ask HN: Who is hiring" is the
+        strongest free company-shaped signal there is -- every entry has payroll -- and
+        it produced 19 hits, 16 platform drops and 0 candidates on every run it made.
+        The reason is structural rather than a bad weight: the thread is *one story*
+        whose URL is news.ycombinator.com, and the companies are in its comments. A hit
+        was a link to Hacker News, so it implied nothing and the platform rule correctly
+        dropped it. `hn_show_ai` converts for the opposite reason -- a Show HN story
+        carries an external `url` -- so the distinction was never the source, it was
+        whether a hit carries a company's own domain.
+
+        Each comment keeps its HN permalink as the hit URL, which is what the evidence
+        actually is: a dated, reachable, quotable public post. The company's own site
+        goes in `raw["homepage"]`, where `extraction_target` already looks -- so the
+        extractor reads the company's landing page while the citation still points at
+        the thing we actually saw. Nothing in the drop rule changes.
+
+        A comment with no company URL in it is skipped rather than guessed at. Plenty of
+        entries are replies, "how do I apply" questions, or a pitch with the address in
+        an image; none of those name a domain, and inventing one would be exactly the
+        unsourced claim the evidence rule exists to forbid.
+        """
+        url, params = self.comments_request_for(story_id, limit=limit)
+        result = await self.egress.fetch(self.SOURCE_ID, url, params=params)
+        data = _safe_json(result.body, source_id=self.SOURCE_ID, url=result.url)
+        if not isinstance(data, dict):
+            return []
+
+        hits: list[SourceHit] = []
+        # Sliced here as well as asked for in `hitsPerPage`. The bound exists to cap how
+        # much decode one harvest can queue, and a bound enforced only by the remote is
+        # not a bound -- a server that ignores the parameter, or starts defaulting to a
+        # larger page, would silently queue hours of extraction.
+        for item in list(data.get("hits", []))[:limit]:
+            text = str(item.get("comment_text") or "")
+            homepage = company_url_in(text)
+            if homepage is None:
+                continue
+            comment_id = str(item.get("objectID") or "")
+            hits.append(
+                SourceHit(
+                    url=f"https://news.ycombinator.com/item?id={comment_id}",
+                    title=_comment_title(text),
+                    snippet=_strip_tags(text)[:500],
+                    source_id=self.SOURCE_ID,
+                    published_at=_parse_iso(item.get("created_at")),
+                    raw={"homepage": homepage, "author": item.get("author"), "comment": True},
+                )
+            )
+        return hits
+
+
+# Algolia returns comment bodies as HTML fragments, so a link is an `href` and a bare
+# URL is plain text. Both appear in practice and both are matched.
+_HREF = re.compile(r'href="(https?://[^"\s]+)"', re.IGNORECASE)
+_BARE_URL = re.compile(r"https?://[^\s<>\"')]+", re.IGNORECASE)
+_TAG = re.compile(r"<[^>]+>")
+
+
+def company_url_in(text: str) -> str | None:
+    """The first URL in a comment that belongs to a company rather than a platform.
+
+    Order matters and is not arbitrary: `href` links first, because a hiring post that
+    links anything links its careers page or its site, and only then bare text. Within
+    each, first-wins -- a "Who is hiring" entry leads with the company and mentions the
+    ATS board or a Twitter handle later.
+
+    Returns None rather than a platform URL. `greenhouse.io` and `linkedin.com` are in
+    `PLATFORM_HOSTS` for the reason the ATS work was abandoned: a board slug cannot be
+    resolved to a company's domain without guessing.
+    """
+    from cindraleads.dedupe import canonical_domain
+
+    unescaped = _unescape(text)
+    for pattern in (_HREF, _BARE_URL):
+        for match in pattern.finditer(unescaped):
+            candidate = match.group(1) if pattern is _HREF else match.group(0)
+            candidate = candidate.rstrip(".,);")
+            if canonical_domain(candidate) is not None:
+                return candidate
+    return None
+
+
+def _unescape(text: str) -> str:
+    from html import unescape
+
+    return unescape(text)
+
+
+def _strip_tags(text: str) -> str:
+    return " ".join(_TAG.sub(" ", _unescape(text)).split())
+
+
+def _comment_title(text: str) -> str:
+    """The company name, by the thread's own convention.
+
+    "Who is hiring" entries lead `Company | Role | Location | ...`, so the first
+    segment is the name. Falls back to the opening words when a comment does not follow
+    it -- a wrong-but-harmless title, since the Extractor reads the company's own page
+    and never trusts this.
+    """
+    plain = _strip_tags(text)
+    # En and em dash by escape, not literally: both are visually ambiguous with a
+    # hyphen in source, and the linter is right that a reader cannot tell them apart.
+    head = re.split(r"\s[|\u2013\u2014-]\s", plain, maxsplit=1)[0]
+    return head[:120].strip() or plain[:120]
+
 
 class GitHubClient:
     """GitHub REST. 5,000 req/h authenticated, which is effectively unlimited here."""

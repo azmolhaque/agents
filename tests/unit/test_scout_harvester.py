@@ -442,14 +442,12 @@ def test_company_shaped_templates_outrank_project_shaped_ones():
 
     # A hit here implies payroll or investors.
     #
-    # `hn_who_is_hiring` is deliberately not in this list any more, and the reason is
-    # the invariant itself: the question is what a *hit* implies, not what the source
-    # is about. Its hits are links to news.ycombinator.com -- the thread is one story
-    # and the companies are in its comments -- so a hit implies nothing and 19 of them
-    # produced 0 candidates. It was company-shaped in intent and platform-shaped in
-    # fact, and this test was reading the intent. It returns here when the Harvester
-    # can read the thread's comments; see the note in `icp.yaml`.
-    company_shaped = ("hn_hiring_ai_roles", "hn_funding")
+    # `hn_who_is_hiring` briefly left this list, and putting it back is the point of
+    # `comments: true`. The invariant asks what a *hit* implies, not what the source is
+    # about -- and while a hit was the thread's own news.ycombinator.com URL it implied
+    # nothing, which is why 19 hits produced 0 candidates. Now a hit is a comment naming
+    # a company, so the premise and the mechanism finally agree.
+    company_shaped = ("hn_who_is_hiring", "hn_hiring_ai_roles", "hn_funding")
     # A hit here implies someone shipped something, which anyone can do.
     project_shaped = ("hn_show_ai", "hn_ai_agent")
 
@@ -480,3 +478,163 @@ def test_a_plan_carries_the_template_that_made_it():
     plans = Scout.from_config(SourceRegistry.from_config()).plan(limit=5)
     assert plans
     assert all(p.template_id for p in plans), [p.query for p in plans if not p.template_id]
+
+
+# --------------------------------------------------- thread comments (Phase 7 follow-up)
+
+
+def test_a_comment_url_is_the_company_not_the_platform():
+    """The extraction that makes the hiring thread usable at all.
+
+    Real comments are HTML fragments: a hiring post links its own site, and mentions
+    its ATS board, its Twitter, or a Show HN somewhere further down. First-wins over
+    hrefs before bare text is what keeps the company's domain ahead of those.
+    """
+    from cindraleads.sources.clients import company_url_in
+
+    assert company_url_in('We are hiring! <a href="https://acme.io/careers">apply</a>') == (
+        "https://acme.io/careers"
+    )
+    # The platform is skipped and the company behind it found instead.
+    assert (
+        company_url_in(
+            'Acme | Remote | <a href="https://boards.greenhouse.io/acme">jobs</a> '
+            '<a href="https://acme.io">acme.io</a>'
+        )
+        == "https://acme.io"
+    )
+    # Bare text, which plenty of comments use.
+    assert company_url_in("Acme (acme.io) is hiring, see https://acme.io/jobs") == (
+        "https://acme.io/jobs"
+    )
+    # Trailing punctuation is not part of the URL.
+    assert company_url_in("see https://acme.io/jobs.") == "https://acme.io/jobs"
+
+
+def test_a_comment_with_no_company_url_is_skipped_not_guessed():
+    """Replies, "how do I apply" questions, and pitches with the address in an image
+    all name no domain. Inferring one would be exactly the unsourced claim the evidence
+    rule forbids -- and rule 2 says no evidence, no lead."""
+    from cindraleads.sources.clients import company_url_in
+
+    assert company_url_in("Does anyone know if this role is still open?") is None
+    assert company_url_in('<a href="https://news.ycombinator.com/item?id=1">see above</a>') is None
+    assert company_url_in("") is None
+
+
+def _thread_payload(comments: list[dict]):  # type: ignore[no-untyped-def]
+    """A story search followed by that story's comments, on the two Algolia paths."""
+    story = {
+        "objectID": "42",
+        "title": "Ask HN: Who is hiring? (August 2026)",
+        "url": None,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "search_by_date" in str(request.url):
+            return httpx.Response(200, text=json.dumps({"hits": [story]}))
+        return httpx.Response(200, text=json.dumps({"hits": comments}))
+
+    return handler
+
+
+async def test_the_hiring_thread_yields_the_companies_in_its_comments(rig):
+    """The defect this whole mechanism exists for: 19 hits, 16 platform drops, 0
+    candidates, every run, on the strongest free company-shaped source there is.
+
+    The thread's own URL must not survive into the hit list. Returning it alongside the
+    comments would put news.ycombinator.com back in front of the drop rule and charge
+    this template for it -- the exact number that made it look broken.
+    """
+    harvester, _ = rig(
+        _thread_payload(
+            [
+                {
+                    "objectID": "101",
+                    "comment_text": 'Acme Health | Remote | <a href="https://acme.io">acme.io</a>',
+                    "created_at": "2026-08-01T00:00:00Z",
+                },
+                {
+                    "objectID": "102",
+                    "comment_text": "Is this thread still active?",
+                    "created_at": "2026-08-01T00:00:00Z",
+                },
+            ]
+        )
+    )
+    plan = QueryPlan(
+        query="Ask HN Who is hiring",
+        engine="hn_algolia",
+        params={"comments": "true"},
+        targets=["T4_HIRING_AI_ONLY"],
+    )
+
+    result = await harvester.run(_job(plan))
+
+    assert result.ok
+    urls = {p["url"] for _, p in result.follow_on}
+    assert urls == {"https://acme.io"}, "the company is extracted, the thread is not a hit"
+    assert not any("ycombinator" in u for u in urls)
+
+
+async def test_the_comment_keeps_the_hn_permalink_as_its_evidence(rig):
+    """The company's page is what gets read; the comment is what we actually saw.
+
+    Citing acme.io as the evidence for "they are hiring" would be a claim their landing
+    page may not make. The permalink is dated, public and quotable, which is what rule 2
+    asks of an evidence URL.
+    """
+    import json as _json
+
+    harvester, store = rig(
+        _thread_payload(
+            [
+                {
+                    "objectID": "101",
+                    "comment_text": 'Acme | <a href="https://acme.io">acme.io</a>',
+                    "created_at": "2026-08-01T00:00:00Z",
+                }
+            ]
+        )
+    )
+    plan = QueryPlan(query="Ask HN Who is hiring", engine="hn_algolia", params={"comments": "true"})
+
+    await harvester.run(_job(plan))
+
+    payload = _json.loads(store.conn.execute("SELECT raw_payload FROM candidates").fetchone()[0])
+    assert "news.ycombinator.com/item?id=101" in _json.dumps(payload)
+
+
+async def test_a_thread_without_the_flag_still_behaves_as_before(rig):
+    """The expansion is opt-in per template. Every other HN template returns stories,
+    and turning them all into comment readers would change what they mean."""
+    harvester, _ = rig(_thread_payload([{"objectID": "101", "comment_text": "x"}]))
+    plan = QueryPlan(query="ai agent", engine="hn_algolia")
+
+    result = await harvester.run(_job(plan))
+
+    # The story has no external url, so its own HN permalink is the hit -- a platform
+    # URL, correctly dropped. Unchanged behaviour, asserted so the flag stays opt-in.
+    assert result.follow_on == []
+
+
+async def test_comment_expansion_is_bounded(rig):
+    """A monthly hiring thread runs past 500 comments and each accepted one is ~64 s of
+    decode. Unbounded, one harvest queues more than the Pi drains in a day and starves
+    every other template behind it."""
+    from cindraleads.agents.harvester import MAX_COMMENTS_PER_THREAD
+
+    many = [
+        {
+            "objectID": str(i),
+            "comment_text": f'Co{i} | <a href="https://co{i}.io">co{i}.io</a>',
+            "created_at": "2026-08-01T00:00:00Z",
+        }
+        for i in range(MAX_COMMENTS_PER_THREAD + 25)
+    ]
+    harvester, _ = rig(_thread_payload(many))
+    plan = QueryPlan(query="Ask HN Who is hiring", engine="hn_algolia", params={"comments": "true"})
+
+    result = await harvester.run(_job(plan))
+
+    assert len(result.follow_on) <= MAX_COMMENTS_PER_THREAD

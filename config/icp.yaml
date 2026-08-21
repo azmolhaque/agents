@@ -68,28 +68,30 @@ query_templates:
   # a launch, and it is free. It is simply no longer first in the queue.
 
   # ---- company-shaped and free: someone is hiring, so someone is paying ------
-  # DEMOTED 2026-08-21, from 96 to 20, and the reason is structural rather than a
-  # weight being wrong. Measured: 19 hits, 16 dropped as platform URLs, 0 candidates.
+  # `comments: true` is what makes this template work at all, and it was demoted to 20
+  # for one day without it. Measured then: 19 hits, 16 dropped as platform URLs, 0
+  # candidates, on every run it had ever made.
   #
-  # "Ask HN: Who is hiring" is *one thread*. Its story URL is news.ycombinator.com, and
-  # the companies live in the comments -- which the Harvester never sees, because a hit
-  # is a URL to fetch and this URL is the platform. Compare `hn_show_ai`, which converts
-  # 100 hits into 35 candidates: a Show HN story carries an external `url` pointing at
-  # the product's own site. The distinction is not the source, it is whether a hit
+  # "Ask HN: Who is hiring" is *one thread*. Its story URL is news.ycombinator.com and
+  # the companies are in the replies, so the only URL on offer was the platform's and
+  # the drop rule correctly threw it away. Compare `hn_show_ai`, which converts 100 hits
+  # into 35 candidates: a Show HN story carries an external `url` pointing at the
+  # product's own site. The distinction was never the source, it was whether a hit
   # carries a company's own domain.
   #
-  # The premise was never wrong -- every entry in that thread really is a company with
-  # payroll, which is why this is demoted rather than retired. Reaching them needs the
-  # Harvester to read the thread's comments as documents, which is a new mechanism and
-  # not a weight. At 96 it won a plan slot on every run and returned nothing; at 20 it
-  # costs nothing while the mechanism is missing, and the yield table will say the day
-  # it starts working.
+  # With the flag, a hit is a *comment*: its HN permalink is the evidence -- dated,
+  # public, quotable -- and the company URL inside it is what gets extracted. Restored
+  # to 96 because the original premise holds and is now reachable: every entry in this
+  # thread is a company with payroll, which is the strongest free company filter there
+  # is. `since_days: 120` covers three monthly threads; the Harvester reads at most
+  # three and 40 comments from each, because each accepted comment is ~64 s of decode.
   - id: hn_who_is_hiring
     engine: hn_algolia
     query: Ask HN Who is hiring
-    since_days: 45
+    since_days: 120
+    comments: true
     targets: [T3_HIRING_SEC, T4_HIRING_AI_ONLY]
-    weight: 20
+    weight: 96
 
   - id: hn_hiring_ai_roles
     engine: hn_algolia
