@@ -583,6 +583,64 @@ async def test_the_template_that_found_a_company_survives_to_the_company_row(rig
     assert found[0]["discovered_by"] == "hn_who_is_hiring"
 
 
+async def test_provenance_survives_the_real_harvester(rig):
+    """The seam the test above does not cross, and where the bug actually lived.
+
+    That test hand-writes `template_id` into the extract job payload -- the one thing
+    the Harvester has never done. It writes the value into `candidates.raw_payload`
+    instead, and the Extractor then overwrites that whole column with a fresh dict whose
+    `template_id` came from the absent job key. So the Harvester's correct value was
+    destroyed by the stage documented as forwarding it, `discovered_by` was NULL for all
+    305 companies, and `cindra explain` reported `(unknown)` -- which reads as "these
+    predate the column" rather than "this has never once worked".
+
+    Fixed at the Extractor end alone the first time, which is why it came back. This
+    test starts from `Harvester.commit`, so nothing between the template and the company
+    row is impersonated.
+    """
+    from cindraleads.agents import HARVEST_KIND, Harvester
+    from cindraleads.agents.harvester import HarvestOutcome
+    from cindraleads.models import QueryPlan
+    from cindraleads.sources.clients import SourceHit
+
+    extractor, resolver, _backend, store = rig()
+    queue = JobQueue(store)
+    harvester = Harvester(store=store, egress=extractor.egress, queue=queue)
+    outcome = HarvestOutcome(
+        plan=QueryPlan(
+            query="Who is hiring",
+            engine="hn_algolia",
+            template_id="hn_who_is_hiring",
+            targets=["T4_HIRING_AI_ONLY"],
+        ),
+        hits=[
+            SourceHit(
+                url="https://acmehealth.io/",
+                title="Acme Health",
+                snippet="hiring",
+                source_id="hn_algolia",
+            )
+        ],
+    )
+    with store.tx() as conn:
+        result = harvester.commit(Job(job_id="h1", kind=HARVEST_KIND), outcome, conn)
+        assert result.ok
+        for kind, payload in result.follow_on:
+            queue.enqueue(kind, payload, conn=conn)
+
+    await drive(
+        store,
+        {EXTRACT_KIND: extractor, RESOLVE_KIND: resolver},
+        [EXTRACT_KIND, RESOLVE_KIND],
+    )
+
+    found = rows(store, "SELECT canonical_domain, discovered_by FROM companies")
+    assert found, "the pipeline produced no company"
+    assert found[0]["discovered_by"] == "hn_who_is_hiring", (
+        "the template that found the company must reach the company row"
+    )
+
+
 async def test_a_company_found_without_a_template_records_no_false_credit(rig):
     """Inbound mail and hand-seeded candidates have no template. NULL is the honest
     answer and `cindra explain` groups it as `(unknown)`; inventing a template here

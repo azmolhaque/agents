@@ -348,19 +348,24 @@ class Extractor:
             "evidence_ids": evidence_ids,
             "trigger_codes": trigger_codes,
             "prompt_version": self._prompt_version,
-            # Forwarded, not dropped. The Harvester puts `template_id` on the extract
-            # job and the Resolver reads it out of *this* payload to write
-            # `companies.discovered_by` -- and this stage sat silently between them, so
-            # the column was NULL for every company ever recorded and `cindra explain`'s
-            # per-template yield table could never populate. The whole point of that
-            # table is that a weight in `icp.yaml` is a guess until it disagrees; with
-            # no attribution it could not disagree with anything.
+            # Carried over from the row this UPDATE is about to replace, and *that* is
+            # the load-bearing part.
             #
-            # It goes in the stored candidate payload rather than the follow-on job
-            # because that is where the Resolver reads from, and because discovery
-            # provenance should survive a re-resolve rather than living only in a
-            # transient job row.
-            "template_id": job.payload.get("template_id") or "",
+            # The Harvester writes `template_id` into `candidates.raw_payload`; the
+            # Resolver reads it back out of the same column to set
+            # `companies.discovered_by`. This stage overwrites that column wholesale, so
+            # anything not deliberately carried across is destroyed here.
+            #
+            # It read `job.payload["template_id"]` for weeks. The Harvester has never
+            # put that key on the extract job -- only in the stored payload -- so the
+            # value was always "", and this stage silently erased the correct one the
+            # Harvester had written. `discovered_by` was NULL for all 305 companies and
+            # `cindra explain` reported `(unknown)`, which reads as "these predate the
+            # column" rather than "this has never worked".
+            #
+            # The job payload stays as a fallback and is checked first, so a re-extract
+            # driven by hand can still supply it.
+            "template_id": job.payload.get("template_id") or _stored_template_id(conn, outcome),
         }
         conn.execute(
             "UPDATE candidates SET content_sha256 = ?, raw_payload = ?, status = ? "
@@ -384,6 +389,25 @@ class Extractor:
         outcome = await self.prepare(job)
         with self.store.tx() as conn:
             return self.commit(job, outcome, conn)
+
+
+def _stored_template_id(conn: sqlite3.Connection, outcome: ExtractOutcome) -> str:
+    """The discovering template, off the candidate row the Harvester wrote.
+
+    Read here rather than taken from the job because this is where the value actually
+    is, and because discovery provenance should survive a re-extract instead of living
+    only in a transient job row.
+    """
+    row = conn.execute(
+        "SELECT raw_payload FROM candidates WHERE candidate_id = ?", (outcome.candidate_id,)
+    ).fetchone()
+    if row is None:
+        return ""
+    try:
+        stored = json.loads(row["raw_payload"])
+    except (ValueError, TypeError):
+        return ""
+    return str(stored.get("template_id") or "") if isinstance(stored, dict) else ""
 
 
 def _set_status(conn: sqlite3.Connection, candidate_id: str, status: str) -> None:
