@@ -177,6 +177,8 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         # from measurement rather than being written once from memory.
         "grnh.se",
         "trakstar.com",
+        "onstrider.com",
+        "hr-manager.net",
         # Form and document hosts. A hiring post linking a Google Form is asking for
         # applications, not publishing a company site -- and in the "Who wants to be
         # hired" thread a Drive link is somebody's CV, which is a person and not a
@@ -184,6 +186,7 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         "forms.gle",
         "docs.google.com",
         "drive.google.com",
+        "acrobat.adobe.com",
         "airtable.com",
         "typeform.com",
         "vercel.app",

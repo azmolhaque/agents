@@ -97,6 +97,30 @@ _BAND_TO_MAX: dict[str, int] = {
 # Sector words that mean "never contact", matched against industry text.
 _GOV_WORDS = ("government", "ministry", "municipal", "federal", "defence", "defense", "military")
 _CNI_WORDS = ("critical infrastructure", "power grid", "nuclear", "water utility", "air traffic")
+
+# Suffixes reserved for government, by registry policy rather than by convention. A
+# domain under one of these is a public body as a matter of fact, which is stronger
+# evidence than any word a model might put in an `industry` field.
+_GOV_SUFFIXES = (
+    "gov",
+    "mil",
+    "gov.uk",
+    "gov.au",
+    "gov.in",
+    "gov.bd",
+    "gov.pk",
+    "gov.lk",
+    "gov.np",
+    "gov.sg",
+    "gov.za",
+    "govt.nz",
+    "go.jp",
+    "go.kr",
+    "go.id",
+    "gc.ca",
+    "gouv.fr",
+    "europa.eu",
+)
 _COMPETITOR_WORDS = (
     "penetration testing",
     "pentest",
@@ -154,8 +178,26 @@ def under_employee_ceiling(facts: LeadFacts) -> bool:
 
 
 def not_government_or_cni(facts: LeadFacts) -> bool:
+    """Government and critical infrastructure, by domain first and prose second.
+
+    The word match alone rested on `industry` and `display_name` -- text a 4B model
+    wrote from a web page. For a hard exclude that is the wrong evidence: whether we
+    may contact a government agency should not depend on the extractor choosing to type
+    "government" into a field it often leaves empty. `nyc.gov` arrived from the hiring
+    thread with the display name "New York City Public Interest Tech", which contains
+    none of the words below.
+
+    A government TLD is definitional rather than inferred, so it is checked first.
+    """
+    if _has_government_tld(facts.canonical_domain or ""):
+        return False
     text = f"{facts.industry or ''} {facts.display_name}".lower()
     return not any(word in text for word in (*_GOV_WORDS, *_CNI_WORDS))
+
+
+def _has_government_tld(domain: str) -> bool:
+    host = domain.strip().lower().strip(".")
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in _GOV_SUFFIXES)
 
 
 def not_a_competitor(facts: LeadFacts) -> bool:

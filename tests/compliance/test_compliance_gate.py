@@ -95,6 +95,28 @@ def test_rule_not_government_or_cni(gate: ComplianceGate):
         assert "not_government_or_cni" in gate.review(facts(industry=industry)).vetoes
 
 
+def test_a_government_domain_is_vetoed_whatever_the_page_calls_itself(gate: ComplianceGate):
+    """The word match reads `industry` and `display_name` -- text a 4B model wrote from
+    a web page. For a hard exclude that is the wrong evidence: whether we may contact a
+    public body must not depend on the extractor choosing to type "government" into a
+    field it often leaves empty.
+
+    `nyc.gov` arrived from the HN hiring thread as "New York City Public Interest Tech",
+    which contains none of the words the rule looks for. The TLD is reserved by registry
+    policy, so it is a fact about the organisation rather than a guess about it.
+    """
+    for domain in ("nyc.gov", "defense.gov", "army.mil", "hmrc.gov.uk", "dhaka.gov.bd"):
+        verdict = gate.review(facts(canonical_domain=domain, display_name="Innovation Lab"))
+        assert "not_government_or_cni" in verdict.vetoes, domain
+
+
+def test_a_company_domain_that_merely_contains_gov_is_not_vetoed(gate: ComplianceGate):
+    """The bound. Suffix matching, not substring -- `govinda.io` and `datagov.com` are
+    ordinary companies, and a rule that vetoed them would silently shrink the corpus."""
+    for domain in ("govinda.io", "datagov.com", "governor.app", "milton.io"):
+        assert gate.review(facts(canonical_domain=domain)).passed, domain
+
+
 def test_rule_not_a_competitor(gate: ComplianceGate):
     for name in ("Redteam Security Ltd", "Acme Penetration Testing", "Managed Security Co"):
         assert "not_a_competitor" in gate.review(facts(display_name=name)).vetoes
