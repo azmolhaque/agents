@@ -360,6 +360,34 @@ Four things shape it:
   scoring change that applied itself would be one nobody read, measured against a corpus
   scored under the rules it just replaced.
 
+**The Critic argued about a penalty that no longer exists.** `penalty_counts` is read
+off stored `score_breakdown` rows -- what the build that scored each lead applied, not
+what the file says now. `no_contact` was deleted from `scoring.yaml` on 2026-08-18 and
+three stale leads still carried it, so the report proposed editing a key that is not in
+the file, quoting a point value from history. It even flagged those leads as stale at
+the top of its own output and argued from them anyway. **Every penalty rule now checks
+the running config first.**
+
+Meanwhile `single_source` -- 52% incidence, holding 47 of 262 leads out of a better
+tier, the largest lever in the report -- drew no proposal, because incidence was the
+only thing being asked about and 52% is far under `CONSTANT_OFFSET_INCIDENCE`.
+`HELD_BACK_SHARE` closes the band, but **only paired with an incidence floor**: "promotes
+a tenth of the corpus" alone fires on any penalty applied near a tier boundary, including
+one doing exactly its job.
+
+**A hit that is a platform URL implies nothing, whatever the source implies.**
+`hn_who_is_hiring` sat at weight 96 as the strongest free company signal and returned 19
+hits, 16 platform drops, 0 candidates -- because "Ask HN: Who is hiring" is *one story*
+whose URL is news.ycombinator.com, with the companies in its comments. `hn_show_ai`
+converts 100 hits into 35 candidates for the opposite reason: a Show HN story carries an
+external `url`. The premise was never wrong, so it is demoted to 20 rather than retired;
+reaching those companies needs the Harvester to read comments as documents, which is a
+mechanism and not a weight.
+
+**`is_barren` needs a minimum sample or it condemns templates nobody measured.** It
+flagged a template with one hit across two runs in the same words as one with nineteen,
+and the advice attached is "lower the weight or retire it".
+
 **Precision is scoped to dispatched leads; the Critic is not.** `precision_report`
 answers "of what we sent, how much was worth sending" and joins through `dispatch_log`
 inside a window. The Critic argues about weights, and a verdict typed at the CLI on a

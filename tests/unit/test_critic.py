@@ -146,7 +146,33 @@ def test_a_penalty_on_a_minority_of_leads_is_left_alone(store: Any) -> None:
 def test_a_penalty_worth_most_of_the_scale_is_proposed_for_cutting(store: Any) -> None:
     """The `no_contact` shape: -25 against a 100-point scale with a Tier C floor of 40,
     on top of a `reachability` component already pricing the same fact. One fact cost
-    40% of the usable range and no lead missing a contact could clear the floor."""
+    40% of the usable range and no lead missing a contact could clear the floor.
+
+    Driven through a penalty that is still in `scoring.yaml`, because a proposal about
+    one that is not is unactionable by construction -- see the config-guard test below.
+    """
+    n = MIN_CORPUS + 5
+    for i in range(n):
+        penalties = {"single_source": -30.0} if i < n // 3 else {}
+        _lead(store, f"c{i}.com", **{**_components(), **penalties})  # type: ignore[arg-type]
+
+    report = critique(store)
+
+    assert "penalties.single_source" in _keys(report)
+    proposal = next(p for p in report.proposals if p.key == "penalties.single_source")
+    assert "usable range" in proposal.rationale
+
+
+def test_a_penalty_no_longer_in_the_config_is_not_proposed(store: Any) -> None:
+    """`penalty_counts` is read off stored `score_breakdown` rows, which record what the
+    build that scored each lead applied -- not what the file says now. `no_contact` was
+    deleted from `scoring.yaml` on 2026-08-18, and three leads scored before that still
+    carried it, so the Critic proposed cutting a key that is not in the file and quoted a
+    point value it could only have got from history.
+
+    A reader would have opened `scoring.yaml`, found nothing to edit, and learned to
+    distrust the report -- which is the one thing a proposal-only tool cannot survive.
+    """
     n = MIN_CORPUS + 5
     for i in range(n):
         penalties = {"no_contact": -30.0} if i < n // 3 else {}
@@ -154,9 +180,33 @@ def test_a_penalty_worth_most_of_the_scale_is_proposed_for_cutting(store: Any) -
 
     report = critique(store)
 
-    assert "penalties.no_contact" in _keys(report)
-    proposal = next(p for p in report.proposals if p.key == "penalties.no_contact")
-    assert "usable range" in proposal.rationale
+    assert "no_contact" not in ScoringConfig.load().penalties, "premise of this test"
+    assert "penalties.no_contact" not in _keys(report)
+
+
+def test_a_penalty_holding_back_a_tenth_of_the_corpus_is_proposed(store: Any) -> None:
+    """Incidence alone misses this one. `single_source` fired on 52% of the real corpus
+    -- nowhere near `CONSTANT_OFFSET_INCIDENCE` -- while being the largest lever in the
+    report: lifting it alone promoted 47 of 262 leads. `cindra explain` had been telling
+    humans to read it exactly that way for weeks; no rule here did.
+
+    A penalty can discriminate perfectly well and still be priced for a corpus with
+    better corroboration than the one it is being applied to.
+    """
+    n = MIN_CORPUS + 15
+    for i in range(n):
+        # Half the corpus, and the penalty alone decides their tier: 57.5 without it,
+        # 49.5 with. Small enough (-8) that the double-charged rule stays quiet, so this
+        # asserts the new rule rather than an existing one.
+        penalties = {"single_source": -8.0} if i < n // 2 else {}
+        _lead(store, f"c{i}.com", **{**_components(), **penalties})  # type: ignore[arg-type]
+
+    report = critique(store)
+    keys = _keys(report)
+
+    assert "penalties.single_source" in keys
+    proposal = next(p for p in report.proposals if p.key == "penalties.single_source")
+    assert "holding" in proposal.rationale
 
 
 def test_a_component_that_is_zero_for_everyone_points_upstream_not_at_the_weight(

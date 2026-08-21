@@ -208,6 +208,11 @@ class TemplateYield:
         return (self.sendable / self.companies) if self.companies else 0.0
 
 
+# Hits a template needs before "found things and converted none" is a finding rather
+# than a coincidence. See `HarvestYield.is_barren`.
+MIN_HITS_TO_JUDGE = 5
+
+
 @dataclass(frozen=True)
 class HarvestYield:
     """What a query template returned, before anything became a company.
@@ -231,8 +236,17 @@ class HarvestYield:
 
     @property
     def is_barren(self) -> bool:
-        """Ran, found hits, and turned none of them into a candidate. Every time."""
-        return self.runs > 0 and self.hits > 0 and self.candidates == 0
+        """Ran, found enough hits to judge by, and turned none into a candidate.
+
+        `MIN_HITS_TO_JUDGE` is the whole difference between a finding and a coincidence.
+        Without it this flagged `hn_ai_agent` on a single hit across two runs, in the
+        same list and the same wording as `hn_who_is_hiring` on nineteen -- and the
+        advice attached is "lower the weight or retire it", which on one hit is a
+        recommendation to delete a template nobody has measured. Same reasoning as the
+        Critic's `MIN_TEMPLATE_SAMPLE`: two companies and one sendable lead is not a
+        50% hit rate.
+        """
+        return self.runs > 0 and self.hits >= MIN_HITS_TO_JUDGE and self.candidates == 0
 
 
 def harvest_yield(store: Store, *, days: float = 7.0) -> list[HarvestYield]:

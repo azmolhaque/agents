@@ -64,6 +64,22 @@ MIN_TEMPLATE_SAMPLE = 8
 # to reach significance.
 MIN_JUDGED_PER_TRIGGER = 4
 
+# A penalty whose removal would promote this share of the corpus a tier is miscalibrated
+# for that corpus, whatever its incidence. `single_source` sat at 52% -- well under
+# CONSTANT_OFFSET_INCIDENCE, so no rule caught it -- while holding back 47 of 262 leads,
+# the largest single lever in the report. `cindra explain` has always told humans to
+# read it that way ("if 'lifting it alone promotes' is large, the penalty is
+# miscalibrated"); this is the Critic applying its own advice.
+HELD_BACK_SHARE = 0.10
+
+# ...but only for a penalty that is also widespread. "Promotes a tenth of the corpus" is
+# sensitive to where scores happen to sit relative to a threshold, so on its own it fires
+# on any penalty applied to leads near a boundary -- including one that is simply doing
+# its job. The pair is the signal: fires on a large minority AND decides the tier for a
+# tenth of everything. `single_source` at 52% and 18% sits in exactly the band between
+# an ordinary discriminator and CONSTANT_OFFSET_INCIDENCE, which is why no rule saw it.
+HELD_BACK_INCIDENCE = 0.40
+
 
 @dataclass(frozen=True)
 class Proposal:
@@ -133,7 +149,8 @@ def critique(store: Store, *, config: ScoringConfig | None = None) -> Critique:
             f"numbers below."
         )
 
-    report.proposals += _constant_offset_penalties(diag, leads)
+    report.proposals += _constant_offset_penalties(diag, leads, cfg)
+    report.proposals += _held_back_penalties(diag, cfg)
     report.proposals += _double_charged_penalties(diag, cfg)
     report.proposals += _unproductive_templates(diag)
     report.proposals += _feedback_disagreements(store, cfg, report=report)
@@ -152,13 +169,15 @@ def critique(store: Store, *, config: ScoringConfig | None = None) -> Critique:
 # ------------------------------------------------------------------- the arguments
 
 
-def _constant_offset_penalties(diag: ScoreDiagnosis, leads: list[LeadRow]) -> list[Proposal]:
+def _constant_offset_penalties(
+    diag: ScoreDiagnosis, leads: list[LeadRow], cfg: ScoringConfig
+) -> list[Proposal]:
     """A penalty that fires on nearly every lead is a constant subtracted from the scale."""
     out: list[Proposal] = []
     total = max(1, diag.total)
     for name, count in sorted(diag.penalty_counts.items(), key=lambda kv: -kv[1]):
         incidence = count / total
-        if incidence < CONSTANT_OFFSET_INCIDENCE:
+        if incidence < CONSTANT_OFFSET_INCIDENCE or not _still_configured(name, cfg):
             continue
         cited = tuple(lead.lead_id for lead in leads if name in lead.penalties)
         out.append(
@@ -186,6 +205,67 @@ def _constant_offset_penalties(diag: ScoreDiagnosis, leads: list[LeadRow]) -> li
     return out
 
 
+def _still_configured(name: str, cfg: ScoringConfig) -> bool:
+    """Whether a penalty seen in the corpus still exists in the running config.
+
+    `penalty_counts` is read off stored `score_breakdown` rows, which record what the
+    build that scored each lead applied -- not what the current file says. `no_contact`
+    was deleted from `scoring.yaml` on 2026-08-18 and three leads scored before that
+    still carry it, so the Critic proposed cutting a key that is not in the file, citing
+    a point value it could only have got from history. A reader would have opened
+    `scoring.yaml`, found nothing to edit, and learned to distrust the report.
+
+    The staleness was even visible: those leads were among the four the same report
+    flagged as scored under an older calibration, at the top of its own output.
+    """
+    return name in cfg.penalties
+
+
+def _held_back_penalties(diag: ScoreDiagnosis, cfg: ScoringConfig) -> list[Proposal]:
+    """A penalty that is the only thing standing between many leads and a better tier.
+
+    Incidence alone misses this. `single_source` fired on 52% of the corpus -- nowhere
+    near `CONSTANT_OFFSET_INCIDENCE` -- while being the single largest lever available:
+    lifting it promoted 47 of 262 leads. A penalty can be a perfectly good discriminator
+    and still be priced too high for the corpus it is discriminating over, and that is
+    a different question from whether it fires too often.
+    """
+    out: list[Proposal] = []
+    total = max(1, diag.total)
+    for name, promoted in sorted(diag.promoted_by_lifting.items(), key=lambda kv: -kv[1]):
+        share = promoted / total
+        incidence = diag.penalty_counts.get(name, 0) / total
+        if share < HELD_BACK_SHARE or incidence < HELD_BACK_INCIDENCE:
+            continue
+        if incidence >= CONSTANT_OFFSET_INCIDENCE or not _still_configured(name, cfg):
+            # Above that line it is a constant offset and the other rule says so better.
+            continue
+        cost = abs(cfg.penalties.get(name, 0.0))
+        out.append(
+            Proposal(
+                target="scoring.yaml",
+                key=f"penalties.{name}",
+                change=(
+                    f"Halve `{name}` to about {cost / 2:.0f} points, or make it "
+                    f"proportional to how thin the corroboration actually is."
+                ),
+                rationale=(
+                    f"`{name}` is the only thing holding {promoted} of {total} leads "
+                    f"({share:.0%}) out of a higher tier -- lifting it alone promotes "
+                    f"them. It fires on {diag.penalty_counts.get(name, 0)} lead(s), so "
+                    f"it is still discriminating between leads rather than subtracting a "
+                    f"constant; it is simply priced for a corpus with better "
+                    f"corroboration than this one has. Re-price it or improve what it "
+                    f"measures, but at this share it is deciding the tier distribution "
+                    f"on its own."
+                ),
+                evidence=(),
+                confidence="medium",
+            )
+        )
+    return out
+
+
 def _double_charged_penalties(diag: ScoreDiagnosis, cfg: ScoringConfig) -> list[Proposal]:
     """A penalty whose cost rivals the whole usable range of the scale.
 
@@ -198,7 +278,7 @@ def _double_charged_penalties(diag: ScoreDiagnosis, cfg: ScoringConfig) -> list[
     floor = diag.floor
     headroom = max(1.0, 100.0 - floor)
     for name, count in diag.penalty_counts.items():
-        if not count:
+        if not count or not _still_configured(name, cfg):
             continue
         per_lead = abs(diag.penalty_cost.get(name, 0.0)) / count
         if per_lead < headroom * 0.4:

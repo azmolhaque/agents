@@ -441,7 +441,15 @@ def test_company_shaped_templates_outrank_project_shaped_ones():
     templates = {t.id: t for t in Scout.from_config(SourceRegistry.from_config()).templates}
 
     # A hit here implies payroll or investors.
-    company_shaped = ("hn_who_is_hiring", "hn_hiring_ai_roles", "hn_funding")
+    #
+    # `hn_who_is_hiring` is deliberately not in this list any more, and the reason is
+    # the invariant itself: the question is what a *hit* implies, not what the source
+    # is about. Its hits are links to news.ycombinator.com -- the thread is one story
+    # and the companies are in its comments -- so a hit implies nothing and 19 of them
+    # produced 0 candidates. It was company-shaped in intent and platform-shaped in
+    # fact, and this test was reading the intent. It returns here when the Harvester
+    # can read the thread's comments; see the note in `icp.yaml`.
+    company_shaped = ("hn_hiring_ai_roles", "hn_funding")
     # A hit here implies someone shipped something, which anyone can do.
     project_shaped = ("hn_show_ai", "hn_ai_agent")
 

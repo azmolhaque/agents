@@ -487,6 +487,26 @@ def test_a_template_that_simply_found_nothing_is_not_called_barren(store: Any) -
     assert harvest_yield(store)[0].is_barren is False
 
 
+def test_one_bad_hit_is_not_enough_to_condemn_a_template(store: Any) -> None:
+    """`hn_ai_agent` returned a single hit across two runs and converted none of it, and
+    was listed as "returns nothing usable" beside `hn_who_is_hiring` at nineteen hits --
+    same wording, same advice, which is "lower the weight or retire it". On one hit that
+    recommends deleting a template nobody has measured.
+
+    Same reasoning as the Critic's `MIN_TEMPLATE_SAMPLE`: two companies and one sendable
+    lead is not a 50% hit rate.
+    """
+    from cindraleads.diagnose import MIN_HITS_TO_JUDGE, harvest_yield
+
+    _harvest_run(store, "barely_ran", hits=1, candidates=0, dropped=1)
+    _harvest_run(store, "measured", hits=MIN_HITS_TO_JUDGE, candidates=0, dropped=MIN_HITS_TO_JUDGE)
+
+    found = {y.template_id: y for y in harvest_yield(store)}
+
+    assert found["barely_ran"].is_barren is False, "one hit is a coincidence"
+    assert found["measured"].is_barren is True, "and the threshold must still fire"
+
+
 def test_the_ceiling_says_whether_contacts_could_ever_reach_tier_a(store: Any) -> None:
     """The question that stops a month being spent on the wrong component.
 
