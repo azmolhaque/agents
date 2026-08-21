@@ -380,9 +380,22 @@ one doing exactly its job.
 hits, 16 platform drops, 0 candidates -- because "Ask HN: Who is hiring" is *one story*
 whose URL is news.ycombinator.com, with the companies in its comments. `hn_show_ai`
 converts 100 hits into 35 candidates for the opposite reason: a Show HN story carries an
-external `url`. The premise was never wrong, so it is demoted to 20 rather than retired;
-reaching those companies needs the Harvester to read comments as documents, which is a
-mechanism and not a weight.
+external `url`. The distinction was never the source, it was whether a hit carries a
+company's own domain.
+
+**`comments: true` makes a hit a comment**, which is what closed it. The HN permalink
+stays the hit URL -- that is what we actually saw, dated and quotable -- and the company
+URL inside the comment goes in `raw["homepage"]`, where `extraction_target` already
+looks. So the Extractor reads the company's page while the citation points at the
+comment; citing acme.io as evidence for "they are hiring" would be a claim their landing
+page may not make. A comment naming no domain is skipped, never guessed at. Bounded at
+3 threads x 40 comments and **sliced client-side as well as requested** -- a bound the
+remote enforces is not a bound, and each accepted comment is ~64 s of decode.
+
+**Not yet verified against the live API.** `hn.algolia.com` is blocked by the dev
+session's network policy, so the tests drive a mock encoding the assumed response shape.
+The Pi is the only place `tags=comment,story_<id>` and real comment HTML have been
+exercised end to end.
 
 **`is_barren` needs a minimum sample or it condemns templates nobody measured.** It
 flagged a template with one hit across two runs in the same words as one with nineteen,
