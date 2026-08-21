@@ -230,6 +230,19 @@ class Scorer:
         if self.llm is None or self._angle_prompt is None:
             return ScoreOutcome(canonical_domain=domain)
 
+        # A retry only exists to fetch a missing angle, so if the angle arrived while it
+        # was waiting there is nothing left for it to do. `commit` already refuses to
+        # *schedule* a retry for a lead that has prose, but a job queued twenty minutes
+        # ago cannot know what happened since -- and this one re-decoded an angle
+        # `bisecto.com` had already been given, for 94 s on a box that does 3.7 tok/s.
+        # The most expensive possible no-op, and invisible: the job completes, the lead
+        # is fine, and the only trace is the duration.
+        #
+        # Scoped to retries. A plain score job re-writes prose on purpose.
+        if _is_prose_retry(job) and _has_angle(self.store.conn, lead_id_for(domain)):
+            log.info("scorer_prose_retry_moot", canonical_domain=domain)
+            return ScoreOutcome(canonical_domain=domain)
+
         result = score(self._score_input(facts), self.scoring)
         prompt = self._angle_prompt.format(
             display_name=facts["display_name"],
@@ -703,6 +716,15 @@ PROSE_PAUSE_KEY = "_prose_pauses"
 def _is_recoverable(reason: str) -> bool:
     lowered = reason.lower()
     return any(marker in lowered for marker in _RECOVERABLE)
+
+
+def _is_prose_retry(job: Job) -> bool:
+    """Whether this job is a follow-on asking for an angle a previous attempt missed.
+
+    Read off the counters rather than a flag of its own: they exist only on the retry
+    chain, and a lead re-scored for any other reason arrives without them.
+    """
+    return bool(job.payload.get(PROSE_ATTEMPT_KEY) or job.payload.get(PROSE_PAUSE_KEY))
 
 
 def _has_angle(conn: sqlite3.Connection, lead_id: str) -> bool:

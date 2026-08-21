@@ -842,6 +842,68 @@ def test_a_hot_spell_does_not_spend_the_fault_budget(rig):
     assert payload[PROSE_PAUSE_KEY] == MAX_PROSE_ATTEMPTS + 2, "and it is still counted"
 
 
+def _seed_lead_with_angle(store, angle):  # type: ignore[no-untyped-def]
+    """A stored lead for `acme.io` that already carries prose."""
+    from cindraleads.agents.scorer import lead_id_for
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO leads (lead_id, canonical_domain, score, tier, recommended_offer, "
+            "outreach_angle, first_seen_at, last_updated_at, pipeline_version) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                lead_id_for("acme.io"),
+                "acme.io",
+                50,
+                "C",
+                "snapshot_free",
+                angle,
+                "2026-08-20T00:00:00Z",
+                "2026-08-20T00:00:00Z",
+                "test",
+            ),
+        )
+
+
+def test_a_retry_whose_angle_already_arrived_does_not_decode(rig):
+    """Observed: a retry scheduled at 20:50 fired at 21:12 and spent 94 s re-writing an
+    angle a reconcile-driven rescore had filled in at 21:05. `commit` refuses to
+    *schedule* a retry for a lead that has prose, but a job already queued cannot know
+    what happened while it waited.
+
+    The most expensive possible no-op on a 3.7 tok/s box, and invisible from the
+    outside: the job completes, the lead is correct, and the only trace is the duration.
+    """
+    from cindraleads.agents.scorer import PROSE_PAUSE_KEY, SCORE_KIND
+
+    _build, _posts, store = rig
+    scorer = _seed_scorer_for_retry(store)  # its LLM raises if it is ever called
+    _seed_lead_with_angle(store, "an angle that arrived while the retry waited")
+
+    payload = {"canonical_domain": "acme.io", PROSE_PAUSE_KEY: 2}
+    job = Job(job_id="j", kind=SCORE_KIND, payload=payload)
+    outcome = asyncio.run(scorer.prepare(job))
+
+    assert outcome.prose is None, "no decode, and no failure either"
+    assert outcome.retry_prose_in == 0, "and nothing further is scheduled"
+
+
+def test_a_plain_rescore_still_writes_prose(rig):
+    """The bound on the test above: the skip is scoped to the retry chain. A score job
+    arriving for any other reason -- a new trigger, a recalibration -- rewrites prose on
+    purpose, and must not be silently turned into a no-op by an existing angle."""
+    from cindraleads.agents.scorer import SCORE_KIND
+
+    _build, _posts, store = rig
+    scorer = _seed_scorer_for_retry(store)
+    _seed_lead_with_angle(store, "an existing angle")
+
+    job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
+    outcome = asyncio.run(scorer.prepare(job))
+
+    assert outcome.prose_attempt == 1, "the stub LLM was called, so prose was attempted"
+
+
 def test_even_a_hot_spell_ends_eventually(rig):
     """The bound on the test above. Past `MAX_PROSE_PAUSES` the governor is not having a
     spell, it is the steady state, and re-decoding forever helps nothing."""
