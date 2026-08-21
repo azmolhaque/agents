@@ -30,7 +30,7 @@ import json
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from typing import get_args
+from typing import Any, get_args
 
 import httpx
 
@@ -52,7 +52,13 @@ from cindraleads.sources.http import EgressClient, FetchDenied
 from cindraleads.store import Store
 from cindraleads.textextract import extract_text, extract_title
 
-__all__ = ["EXTRACT_KIND", "RESOLVE_KIND", "ExtractOutcome", "Extractor"]
+__all__ = [
+    "EXTRACT_KIND",
+    "RESOLVE_KIND",
+    "ExtractOutcome",
+    "Extractor",
+    "enqueue_unextracted",
+]
 
 log = get_logger("cindraleads.extractor")
 
@@ -486,3 +492,59 @@ def _is_temporary(reason: str) -> bool:
     A per-domain budget refills; robots.txt does not change its mind on our schedule.
     """
     return "budget" in reason.lower()
+
+
+def enqueue_unextracted(store: Store, queue: Any, *, limit: int = 0) -> int:
+    """Queue an extract job for every candidate stranded without one.
+
+    The gap this closes is one nothing else could see. Every other reconciler starts
+    from `companies` -- `enqueue_unenriched` asks which company was never enriched,
+    `enqueue_stale_scores` which company's lead is behind its triggers -- and a
+    candidate that never extracted never became a company. It sits in `candidates` with
+    status `new`, its extract job dead-lettered, invisible to every query in the system
+    and to `/healthz`, which counts dead letters but cannot say what work they were.
+
+    Found after a thermal spell dead-lettered 11 extract jobs in one minute and left 15
+    candidates stranded, including most of a fresh harvest. The pause accounting stops
+    that happening again; this is the other half, because fixing the cause does not
+    recover what the bug already buried -- the same shape as `RETIREMENT_RULES`.
+
+    Liveness is checked against the job table rather than assumed from status, so a
+    candidate already queued or in flight is not enqueued twice. Extract jobs carry no
+    dedupe key -- the Harvester creates them once per candidate -- so nothing else
+    would have stopped a duplicate.
+    """
+    rows = store.conn.execute(
+        "SELECT candidate_id, raw_payload FROM candidates c "
+        "WHERE c.status = 'new' "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM jobs j WHERE j.kind = ? "
+        "      AND j.status IN ('pending', 'in_flight') "
+        "      AND json_extract(j.payload, '$.candidate_id') = c.candidate_id) "
+        "ORDER BY c.created_at" + (" LIMIT ?" if limit else ""),
+        (EXTRACT_KIND, *([limit] if limit else [])),
+    ).fetchall()
+
+    queued = 0
+    with store.tx() as conn:
+        for row in rows:
+            try:
+                payload = json.loads(row["raw_payload"])
+            except (ValueError, TypeError):
+                continue
+            url = str(payload.get("url") or "")
+            if not url:
+                continue
+            queue.enqueue(
+                EXTRACT_KIND,
+                {
+                    "candidate_id": str(row["candidate_id"]),
+                    "url": url,
+                    "targets": list(payload.get("targets") or []),
+                },
+                conn=conn,
+            )
+            queued += 1
+    if queued:
+        log.info("extract_backlog_requeued", candidates=queued)
+    return queued

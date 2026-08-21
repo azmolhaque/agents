@@ -125,8 +125,8 @@ async def drive(store, stages, kinds):  # type: ignore[no-untyped-def]
     return await _work_loop(store, stages, kinds=kinds, **OPTS)
 
 
-def rows(store: Store, sql: str) -> list:
-    return store.conn.execute(sql).fetchall()
+def rows(store: Store, sql: str, *params: object) -> list:
+    return store.conn.execute(sql, params).fetchall()
 
 
 # ------------------------------------------------------------------ happy path
@@ -750,3 +750,55 @@ async def test_a_hot_spell_does_not_spend_the_domain_budget_allowance(rig):
     assert outcome.pauses == 4, "the pause counter moves"
     assert outcome.deferrals == 2, "the budget counter does not"
     assert MAX_THERMAL_PAUSES > 4
+
+
+def test_a_candidate_whose_extract_job_died_is_recoverable():
+    """The gap nothing else could see.
+
+    Every other reconciler starts from `companies`: `enqueue_unenriched` asks which
+    company was never enriched, `enqueue_stale_scores` which company's lead is behind
+    its triggers. A candidate whose extract job dead-lettered never became a company, so
+    it is invisible to both -- and to `/healthz`, which counts dead letters but cannot
+    say what work they were.
+
+    A thermal spell dead-lettered 11 extract jobs in one minute and stranded 15
+    candidates, most of a fresh harvest. Fixing the pause accounting stops it recurring;
+    it does not recover what was already buried. Same shape as `RETIREMENT_RULES`.
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path as _Path
+
+    from cindraleads.agents.extractor import enqueue_unextracted
+    from cindraleads.queue import JobQueue
+    from cindraleads.store import Store as _Store
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = _Store(_Path(tmp) / "r.db", migrations_dir=MIGRATIONS)
+        store.migrate()
+        queue = JobQueue(store)
+        with store.tx() as conn:
+            for cid, url in (("c1", "https://acme.io/"), ("c2", "https://beta.io/")):
+                conn.execute(
+                    "INSERT INTO candidates (candidate_id, content_sha256, raw_payload, "
+                    "status, created_at) VALUES (?,?,?,?,?)",
+                    (cid, "", _json.dumps({"url": url}), "new", "2026-08-21T00:00:00Z"),
+                )
+            # c2 is already queued and must not be enqueued a second time. Extract jobs
+            # carry no dedupe key, so nothing else would have stopped the duplicate.
+            queue.enqueue(
+                EXTRACT_KIND, {"candidate_id": "c2", "url": "https://beta.io/"}, conn=conn
+            )
+
+        assert enqueue_unextracted(store, queue) == 1, "only the stranded one"
+
+        live = rows(
+            store,
+            "SELECT payload FROM jobs WHERE kind = ? AND status = 'pending'",
+            EXTRACT_KIND,
+        )
+        ids = sorted(_json.loads(r["payload"])["candidate_id"] for r in live)
+        assert ids == ["c1", "c2"]
+
+        assert enqueue_unextracted(store, queue) == 0, "and re-running queues nothing new"
+        store.close()

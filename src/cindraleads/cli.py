@@ -33,6 +33,7 @@ from cindraleads.agents import (
     SCORE_KIND,
     enqueue_stale_scores,
     enqueue_unenriched,
+    enqueue_unextracted,
 )
 from cindraleads.config import settings
 from cindraleads.errors import CindraError, LeaseLost
@@ -751,13 +752,23 @@ def reconcile(
 
     async def _run() -> None:
         async with Runtime(store=store, config=cfg) as runtime:
+            # Extraction first, and it is the one that recovers *lost* work rather
+            # than merely late work: a candidate whose extract job died never became a
+            # company, so no other reconciler here can see it.
+            stranded = enqueue_unextracted(store, runtime.queue)
             fresh = enqueue_unenriched(store, runtime.queue, force=force)
             stale = enqueue_stale_scores(store, runtime.queue, force=force)
         typer.echo(
-            f"queued {fresh} for enrichment, {stale} for (re)scoring"
-            + (" (forced past dedupe)" if force else "")
+            f"queued {stranded} for extraction, {fresh} for enrichment, "
+            f"{stale} for (re)scoring" + (" (forced past dedupe)" if force else "")
         )
-        record_heartbeat(store, "reconcile", queued_enrich=fresh, queued_score=stale)
+        record_heartbeat(
+            store,
+            "reconcile",
+            queued_extract=stranded,
+            queued_enrich=fresh,
+            queued_score=stale,
+        )
 
     asyncio.run(_run())
 

@@ -168,6 +168,18 @@ Enrichment is passive throughout: CT logs, public DNS, RDAP, the company's own p
 their ATS board's public JSON. `contacts.py` imports no socket library at all, which is
 the strongest available form of "never SMTP VRFY/RCPT" -- a test asserts it.
 
+**A thermal pause is a defer in every stage that runs a model, and the Extractor was
+missed.** It turned every `SchemaValidationError` into a stage error, so a pause
+incremented `attempts` and retried within seconds -- three pauses in one minute
+dead-lettered 11 candidates that had never once been shown to the model. Fixed in the
+Scorer first; nothing asked whether another stage had the same shape, and it did.
+
+**Fixing the cause does not recover what the bug buried.** Those candidates sat in
+`candidates` with status `new` and no live job, invisible to every reconciler --
+`enqueue_unenriched` and `enqueue_stale_scores` both start from `companies`, and a
+candidate that never extracted never became one. `enqueue_unextracted` is the third
+reconciler and the only one that recovers *lost* work rather than late work.
+
 **`cindra maintain` is the only thing in the system that looks backwards.** Every stage
 moves work forward and never revisits a row it wrote, so decay, retirement, evidence
 reachability and retention all live in one nightly pass (PLAN.md 2.7,
