@@ -522,17 +522,15 @@ def test_a_comment_with_no_company_url_is_skipped_not_guessed():
     assert company_url_in("") is None
 
 
-def _thread_payload(comments: list[dict]):  # type: ignore[no-untyped-def]
+def _thread_payload(comments: list[dict], stories: list[dict] | None = None):  # type: ignore[no-untyped-def]
     """A story search followed by that story's comments, on the two Algolia paths."""
-    story = {
-        "objectID": "42",
-        "title": "Ask HN: Who is hiring? (August 2026)",
-        "url": None,
-    }
+    stories = stories or [
+        {"objectID": "42", "title": "Ask HN: Who is hiring? (August 2026)", "url": None}
+    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         if "search_by_date" in str(request.url):
-            return httpx.Response(200, text=json.dumps({"hits": [story]}))
+            return httpx.Response(200, text=json.dumps({"hits": stories}))
         return httpx.Response(200, text=json.dumps({"hits": comments}))
 
     return handler
@@ -658,3 +656,65 @@ def test_the_hiring_template_targets_the_thread_and_not_the_words(scout: Scout):
     )
     assert template.comments, "and the companies are in the comments, not the story"
     assert template.tags.startswith("story"), "the thread itself is a story, not a comment"
+
+
+async def test_the_who_wants_to_be_hired_thread_is_not_read(rig):
+    """`author_whoishiring` returns everything that account posts, and it posts "Who is
+    hiring?" *and* "Who wants to be hired?" every month. The second is individuals
+    advertising themselves -- personal CVs, resume PDFs, Drive links -- and the anti-ICP
+    rule excludes people with no business affiliation outright. This is B2B only.
+
+    Measured live before the filter existed: 23 of 40 candidates in one run came from
+    that thread, so it was the majority of the yield rather than an edge case.
+    """
+    harvester, _ = rig(
+        _thread_payload(
+            [
+                {
+                    "objectID": "9",
+                    "comment_text": 'Me | <a href="https://copey.dev/resume.pdf">CV</a>',
+                    "created_at": "2026-08-01T00:00:00Z",
+                }
+            ],
+            stories=[
+                {"objectID": "1", "title": "Ask HN: Who wants to be hired? (August 2026)"},
+            ],
+        )
+    )
+    plan = QueryPlan(
+        query="Who is hiring",
+        engine="hn_algolia",
+        params={"comments": "true", "title_contains": "Who is hiring"},
+    )
+
+    result = await harvester.run(_job(plan))
+
+    assert result.follow_on == [], "a thread of jobseekers is not a source of prospects"
+
+
+async def test_the_hiring_thread_survives_the_title_filter(rig):
+    """The bound on the test above -- an over-eager filter would reject everything."""
+    harvester, _ = rig(
+        _thread_payload(
+            [
+                {
+                    "objectID": "9",
+                    "comment_text": 'Acme | <a href="https://acme.io">acme.io</a>',
+                    "created_at": "2026-08-01T00:00:00Z",
+                }
+            ],
+            stories=[
+                {"objectID": "1", "title": "Ask HN: Who wants to be hired? (August 2026)"},
+                {"objectID": "2", "title": "Ask HN: Who is hiring? (August 2026)"},
+            ],
+        )
+    )
+    plan = QueryPlan(
+        query="Who is hiring",
+        engine="hn_algolia",
+        params={"comments": "true", "title_contains": "Who is hiring"},
+    )
+
+    result = await harvester.run(_job(plan))
+
+    assert {p["url"] for _, p in result.follow_on} == {"https://acme.io"}

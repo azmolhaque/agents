@@ -99,6 +99,7 @@ query_templates:
     engine: hn_algolia
     query: Who is hiring
     tags: story,author_whoishiring
+    title_contains: "Who is hiring"
     since_days: 120
     comments: true
     targets: [T3_HIRING_SEC, T4_HIRING_AI_ONLY]

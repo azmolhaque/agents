@@ -59,6 +59,12 @@ class QueryTemplate:
     # index and the companies are in the replies -- without this the only URL on offer
     # is news.ycombinator.com, which is a platform and rightly dropped.
     comments: bool = False
+    # HN comment expansion only. Which of the matched stories are worth reading, by
+    # title. The author filter returns everything an account posts, and `whoishiring`
+    # posts "Who is hiring?" *and* "Who wants to be hired?" every month -- the second
+    # is individuals advertising themselves, which the anti-ICP rule excludes outright.
+    # Measured before this existed: 23 of 40 candidates in a run were personal CVs.
+    title_contains: str = ""
 
     def to_plan(self, *, cache_ttl_hours: int) -> QueryPlan:
         params: dict[str, str] = {"since_days": str(self.since_days)}
@@ -68,6 +74,8 @@ class QueryTemplate:
             params["organizations_only"] = "false"
         if self.comments:
             params["comments"] = "true"
+        if self.title_contains:
+            params["title_contains"] = self.title_contains
         return QueryPlan(
             template_id=self.id,
             query=self.query,
@@ -131,6 +139,7 @@ class Scout:
                     weight=int(entry.get("weight", 50)),
                     include_personal_repos=bool(entry.get("include_personal_repos", False)),
                     comments=bool(entry.get("comments", False)),
+                    title_contains=str(entry.get("title_contains", "")),
                     since_days=int(entry.get("since_days", 30)),
                     tags=str(entry.get("tags", "")),
                     rationale=str(entry.get("rationale", "")),

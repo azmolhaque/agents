@@ -194,6 +194,16 @@ class Harvester:
         """
         assert self.hn is not None
         out: list[SourceHit] = []
+        # An author filter returns everything that account posts, and `whoishiring`
+        # posts "Who is hiring?" *and* "Who wants to be hired?" every month. The second
+        # is individuals advertising themselves -- personal CVs, resume PDFs, Google
+        # Drive links -- and the anti-ICP rule excludes people with no business
+        # affiliation outright. Measured before this filter: 23 of 40 candidates in one
+        # run came from that thread. Applied to the *story* title, so a whole thread is
+        # rejected once rather than every comment in it being judged separately.
+        wanted = plan.params.get("title_contains", "").lower()
+        if wanted:
+            stories = [s for s in stories if wanted in s.title.lower()]
         for story in stories[:MAX_COMMENT_THREADS]:
             story_id = _hn_item_id(story.url)
             if story_id is None:
