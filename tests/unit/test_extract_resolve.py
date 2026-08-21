@@ -661,3 +661,92 @@ async def test_a_company_found_without_a_template_records_no_false_credit(rig):
 
     found = rows(store, "SELECT discovered_by FROM companies")
     assert found and found[0]["discovered_by"] is None
+
+
+async def test_a_thermal_pause_defers_the_candidate_instead_of_failing_it(rig):
+    """Observed burying a whole batch. The governor stops inference for minutes, and
+    this path returned an error -- which fails the stage, increments `attempts` and
+    retries within seconds, so three pauses inside one minute dead-lettered candidates
+    that had never once been shown to the model. 21 freshly harvested companies were
+    going through exactly that.
+
+    Same distinction the queue draws between `attempts` and `reclaims`: a schema failure
+    says the page or the prompt is wrong, a pause says the box is hot. Only the first is
+    evidence about the candidate.
+    """
+    from cindraleads.agents.extractor import THERMAL_DEFER_SECONDS
+    from cindraleads.errors import SchemaValidationError
+
+    class _Paused:
+        async def generate(self, *_a, **_k):  # type: ignore[no-untyped-def]
+            raise SchemaValidationError(
+                "LLM inference is paused by the thermal governor; retry when cool"
+            )
+
+    extractor, _resolver, _backend, store = rig()
+    extractor.llm = _Paused()
+    seed_candidate(store, "c1", "https://acmehealth.io/")
+    job = Job(
+        job_id="j1",
+        kind=EXTRACT_KIND,
+        payload={"candidate_id": "c1", "url": "https://acmehealth.io/"},
+    )
+
+    outcome = await extractor.prepare(job)
+    with store.tx() as conn:
+        result = extractor.commit(job, outcome, conn)
+
+    assert result.ok, "a hot box must not fail the stage"
+    assert outcome.error is None
+    follow = [p for k, p in result.follow_on if k == EXTRACT_KIND]
+    assert follow, "the candidate comes back rather than being buried"
+    assert follow[0]["_delay_seconds"] == THERMAL_DEFER_SECONDS
+    assert follow[0]["pauses"] == 1
+
+
+async def test_a_real_schema_failure_still_fails(rig):
+    """The bound. A page the model genuinely cannot parse must still fail, be retried
+    the normal number of times, and dead-letter -- otherwise the ceiling that stops a
+    broken candidate looping is gone."""
+    from cindraleads.errors import SchemaValidationError
+
+    class _Broken:
+        async def generate(self, *_a, **_k):  # type: ignore[no-untyped-def]
+            raise SchemaValidationError("3 validation errors for CompanyExtraction")
+
+    extractor, _resolver, _backend, store = rig()
+    extractor.llm = _Broken()
+    seed_candidate(store, "c1", "https://acmehealth.io/")
+    job = Job(
+        job_id="j1",
+        kind=EXTRACT_KIND,
+        payload={"candidate_id": "c1", "url": "https://acmehealth.io/"},
+    )
+
+    outcome = await extractor.prepare(job)
+
+    assert outcome.error is not None
+    assert outcome.defer_seconds == 0
+
+
+async def test_a_hot_spell_does_not_spend_the_domain_budget_allowance(rig):
+    """Two counters, because a hot box and an exhausted per-domain fetch budget are
+    different facts. Shared, a thermal spell would consume the deferrals a genuinely
+    early candidate needs to come back tomorrow."""
+    from cindraleads.agents.extractor import MAX_THERMAL_PAUSES
+    from cindraleads.errors import SchemaValidationError
+
+    class _Paused:
+        async def generate(self, *_a, **_k):  # type: ignore[no-untyped-def]
+            raise SchemaValidationError("paused by the thermal governor")
+
+    extractor, _resolver, _backend, store = rig()
+    extractor.llm = _Paused()
+    seed_candidate(store, "c1", "https://acmehealth.io/")
+    payload = {"candidate_id": "c1", "url": "https://acmehealth.io/", "pauses": 3, "deferrals": 2}
+
+    outcome = await extractor.prepare(Job(job_id="j1", kind=EXTRACT_KIND, payload=payload))
+
+    assert outcome.pauses == 4, "the pause counter moves"
+    assert outcome.deferrals == 2, "the budget counter does not"
+    assert MAX_THERMAL_PAUSES > 4

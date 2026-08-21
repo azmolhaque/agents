@@ -71,6 +71,21 @@ PROMPT_CHAR_BUDGET = 1500
 DEFER_SECONDS = 6 * 3600
 MAX_DEFERRALS = 4
 
+# A thermal pause clears in minutes, not hours, so it waits far less than a domain
+# budget does -- but it is still a *defer* and never a failure. `MAX_THERMAL_PAUSES` is
+# four hours at this interval; past that the governor is not having a spell, it is the
+# steady state, and something bigger is wrong than one candidate.
+THERMAL_DEFER_SECONDS = 20 * 60
+MAX_THERMAL_PAUSES = 12
+
+# The one LLM failure that means "the box is busy", rather than "this page or this
+# prompt is wrong". Matched on the governor's own message.
+_THERMAL_MARKER = "thermal governor"
+
+
+def _is_thermal(reason: str) -> bool:
+    return _THERMAL_MARKER in reason.lower()
+
 
 @dataclass(frozen=True)
 class ExtractOutcome:
@@ -92,6 +107,9 @@ class ExtractOutcome:
     # with a delay instead of being marked done.
     defer_seconds: int = 0
     deferrals: int = 0
+    # Charged separately from `deferrals`: a hot box and an exhausted domain
+    # budget are different facts and must not share one allowance.
+    pauses: int = 0
 
 
 @dataclass
@@ -122,6 +140,7 @@ class Extractor:
         url = str(payload.get("url") or "")
         targets = tuple(str(t) for t in payload.get("targets") or ())
         deferrals = int(payload.get("deferrals") or 0)
+        pauses = int(payload.get("pauses") or 0)
         if not candidate_id or not url:
             return ExtractOutcome(
                 candidate_id=candidate_id,
@@ -214,6 +233,28 @@ class Extractor:
         try:
             structured = await self.llm.generate(prompt, CompanyExtraction)
         except SchemaValidationError as exc:
+            # A thermal pause is not an extraction failure, and charging it as one
+            # buried a whole batch. The governor stops inference for minutes at a time;
+            # this path returned `error`, which fails the stage, increments `attempts`
+            # and retries within seconds -- so three pauses in under a minute
+            # dead-lettered a candidate that had never once been shown to the model.
+            # Observed doing exactly that to 21 freshly harvested companies.
+            #
+            # Same distinction the queue draws between `attempts` and `reclaims`, and
+            # the Scorer between failures and pauses: the evidence differs. A schema
+            # failure says the page or the prompt is wrong. A pause says the box is hot,
+            # which is a designed-for state on a passively cooled Pi and resolves on its
+            # own. So it gets its own counter and its own, far higher ceiling.
+            if _is_thermal(str(exc)) and pauses < MAX_THERMAL_PAUSES:
+                return ExtractOutcome(
+                    candidate_id=candidate_id,
+                    url=url,
+                    source_id=self.source_id,
+                    targets=targets,
+                    defer_seconds=THERMAL_DEFER_SECONDS,
+                    deferrals=deferrals,
+                    pauses=pauses + 1,
+                )
             # The ladder already retried locally and, if permitted, escalated. This is
             # the dead-letter end of it.
             return ExtractOutcome(
@@ -289,6 +330,7 @@ class Extractor:
                             "url": outcome.url,
                             "targets": list(outcome.targets),
                             "deferrals": outcome.deferrals,
+                            "pauses": outcome.pauses,
                             "_delay_seconds": outcome.defer_seconds,
                         },
                     )
