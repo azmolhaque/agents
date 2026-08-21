@@ -392,10 +392,22 @@ page may not make. A comment naming no domain is skipped, never guessed at. Boun
 3 threads x 40 comments and **sliced client-side as well as requested** -- a bound the
 remote enforces is not a bound, and each accepted comment is ~64 s of decode.
 
-**Not yet verified against the live API.** `hn.algolia.com` is blocked by the dev
-session's network policy, so the tests drive a mock encoding the assumed response shape.
-The Pi is the only place `tags=comment,story_<id>` and real comment HTML have been
-exercised end to end.
+**The mock passed and the mock was wrong.** `hn.algolia.com` is blocked by the dev
+session's network policy, so the tests drive a mock encoding the assumed response shape
+-- and a mock cannot know the *query* is wrong. Two live calls from the Pi found what
+786 green tests could not: `query` is full text, so "Ask HN Who is hiring" was matching
+"Who wants to fund DB research?" and "Do you know how much head hunters cost?". **This
+template had never once found the thread it is named after**, which is the real reason
+it produced nothing; reading comments would have faithfully read the wrong threads.
+`tags: story,author_whoishiring` selects the monthly bot post exactly.
+
+**Most links in that thread are an ATS, and an ATS host is worse than useless.**
+Measured on the first 10: 7 were `teamtailor.com`, `wellfound.com`, `careerpuck.com`,
+`kula.ai`, `applicantstack.com`, `uctalent.io` or `forms.gle`, against 3 real company
+domains. Each hosts many companies behind a slug, so
+`arborealmanagement.na.teamtailor.com` canonicalizes to `teamtailor.com` and every
+company on that ATS would merge onto one bogus row -- rung 1 doing exactly its job to
+data that should never have reached it. They are in `PLATFORM_HOSTS` now.
 
 **`is_barren` needs a minimum sample or it condemns templates nobody measured.** It
 flagged a template with one hit across two runs in the same words as one with nineteen,

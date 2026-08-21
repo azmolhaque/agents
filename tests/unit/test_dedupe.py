@@ -161,3 +161,38 @@ def test_the_ladder_is_symmetric():
     forward = same_company(domain=b[0], name=b[1], country=b[2], known=[a])
     backward = same_company(domain=a[0], name=a[1], country=a[2], known=[b])
     assert (forward is None) == (backward is None)
+
+
+def test_an_ats_host_is_never_a_company():
+    """Measured against a real "Who is hiring" thread on 2026-08-21: 7 of the first 10
+    URLs were an ATS, a job board or a Google Form, against 3 genuine company domains.
+
+    Letting one through is worse than dropping it. Every one of these hosts many
+    companies behind a slug or subdomain, so `arborealmanagement.na.teamtailor.com`
+    canonicalizes to `teamtailor.com` -- and every company on that ATS would merge onto
+    one bogus row, which is dedupe rung 1 doing exactly what it should to data that
+    should never have reached it.
+    """
+    from cindraleads.dedupe import canonical_domain
+
+    for url in (
+        "https://arborealmanagement.na.teamtailor.com/jobs/684013-principal-engineer",
+        "https://wellfound.com/l/2CyQz1",
+        "https://app.careerpuck.com/job-board/choco/job/079ab75d",
+        "https://careers.kula.ai/alaffia/34483c",
+        "https://realtors.applicantstack.com/x/detail/a2yfvt49zurx",
+        "https://uctalent.io/referral/Huynh_Nhu_Bao_Nhan221138/nedZedvOV6rcVKOQ",
+        "https://forms.gle/R5b8FaGEM7CSJzsC7",
+    ):
+        assert canonical_domain(url) is None, url
+
+
+def test_a_company_careers_page_on_its_own_domain_still_resolves():
+    """The bound on the test above. The whole point of reading the thread is the
+    companies that publish on their own domain, and over-filtering would drop them."""
+    from cindraleads.dedupe import canonical_domain
+
+    assert canonical_domain("https://spade.com/careers/") == "spade.com"
+    assert canonical_domain("https://creativelens.ai") == "creativelens.ai"
+    # A Greenhouse *job id* on the company's own careers host is the company's page.
+    assert canonical_domain("https://careers.dat.com/jobs/?gh_jid=6139594004") == "dat.com"

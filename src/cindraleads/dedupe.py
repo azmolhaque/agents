@@ -132,11 +132,52 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         "upwork.com",
         "fiverr.com",
         "freelancer.com",
+        # Applicant tracking systems and job boards. Every one of these hosts many
+        # companies behind a slug or a subdomain, so the registrable domain names the
+        # *vendor* and never the prospect -- and letting one through is worse than
+        # useless: `arborealmanagement.na.teamtailor.com` canonicalizes to
+        # `teamtailor.com`, so every company on that ATS would collapse onto a single
+        # bogus row and poison the dedupe ladder. Reading the slug back to a domain is
+        # the guess the Greenhouse work was abandoned over.
+        #
+        # The list below is not speculative. Each was returned by a real "Who is
+        # hiring" comment on 2026-08-21: 7 of the first 10 URLs in that thread were one
+        # of these, against 3 genuine company domains.
         "greenhouse.io",
         "lever.co",
         "ashbyhq.com",
         "workable.com",
         "bdjobs.com",
+        "teamtailor.com",
+        "wellfound.com",
+        "angel.co",
+        "careerpuck.com",
+        "kula.ai",
+        "applicantstack.com",
+        "uctalent.io",
+        "smartrecruiters.com",
+        "jobvite.com",
+        "bamboohr.com",
+        "recruitee.com",
+        "breezy.hr",
+        "myworkdayjobs.com",
+        "taleo.net",
+        "icims.com",
+        "pinpointhq.com",
+        "join.com",
+        "rippling.com",
+        "hire.withgoogle.com",
+        "indeed.com",
+        "glassdoor.com",
+        "ziprecruiter.com",
+        "otta.com",
+        "builtin.com",
+        # Form and document hosts. A hiring post that links a Google Form is asking for
+        # applications, not publishing a company site.
+        "forms.gle",
+        "docs.google.com",
+        "airtable.com",
+        "typeform.com",
         "vercel.app",
         "netlify.app",
         "herokuapp.com",
