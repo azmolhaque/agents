@@ -65,6 +65,14 @@ class QueryTemplate:
     # is individuals advertising themselves, which the anti-ICP rule excludes outright.
     # Measured before this existed: 23 of 40 candidates in a run were personal CVs.
     title_contains: str = ""
+    # Cap on hits this template may return in one run. 0 means the source default.
+    #
+    # A broad query returns a full page every time, and every hit is a candidate at
+    # ~64 s of decode. Unfiltered Show HN reached 250 hits and 85 candidates over five
+    # runs -- more than every other template combined -- and buried the corpus in side
+    # projects before anything else got a look in. Weight decides *order*; this decides
+    # *share*, and share is what a fixed decode budget actually rations.
+    max_hits: int = 0
 
     def to_plan(self, *, cache_ttl_hours: int) -> QueryPlan:
         params: dict[str, str] = {"since_days": str(self.since_days)}
@@ -76,6 +84,8 @@ class QueryTemplate:
             params["comments"] = "true"
         if self.title_contains:
             params["title_contains"] = self.title_contains
+        if self.max_hits:
+            params["max_hits"] = str(self.max_hits)
         return QueryPlan(
             template_id=self.id,
             query=self.query,
@@ -140,6 +150,7 @@ class Scout:
                     include_personal_repos=bool(entry.get("include_personal_repos", False)),
                     comments=bool(entry.get("comments", False)),
                     title_contains=str(entry.get("title_contains", "")),
+                    max_hits=int(entry.get("max_hits", 0)),
                     since_days=int(entry.get("since_days", 30)),
                     tags=str(entry.get("tags", "")),
                     rationale=str(entry.get("rationale", "")),

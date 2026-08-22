@@ -421,6 +421,25 @@ domains. Each hosts many companies behind a slug, so
 company on that ATS would merge onto one bogus row -- rung 1 doing exactly its job to
 data that should never have reached it. They are in `PLATFORM_HOSTS` now.
 
+**Algolia has no boolean operator, and five templates had returned zero hits for the
+life of the project.** Not zero candidates -- zero *hits*. `query` is typo-tolerant full
+text where every word must match, so `raises seed OR "Series A" OR "we raised"` requires
+seven tokens in one story and finds nothing, while `Series A` fills a page. `Dhaka
+startup` is the one to remember: two tokens, still zero, because both must co-occur. It
+is not length, it is requiring several rare terms at once -- **one concept per
+template**. SerpAPI and GitHub do support boolean and keep theirs.
+
+That is why the corpus was 79% T1_AI_SHIP + T8_HYGIENE_GAP with the trigger mean pinned
+at 35 against the 75 Tier A needs. T2, T3, T4, T6 and T12 could not exist in quantity
+because the only free queries that find them matched nothing. It read for weeks as
+"discovery is hard" rather than "five queries are malformed".
+
+**Weight decides order; `max_hits` decides share, and share is what a fixed decode
+budget rations.** Unfiltered Show HN was 250 hits and 85 candidates over five runs --
+more than every other template combined -- while converting 1 of 17 companies into a
+sendable lead (6% against a 33% baseline, mean 23.6 against 32.3). Demotion alone never
+touched it, because it returns a full page whenever it runs at all.
+
 **`is_barren` needs a minimum sample or it condemns templates nobody measured.** It
 flagged a template with one hit across two runs in the same words as one with nineteen,
 and the advice attached is "lower the weight or retire it".

@@ -68,6 +68,34 @@ query_templates:
   # a launch, and it is free. It is simply no longer first in the queue.
 
   # ---- company-shaped and free: someone is hiring, so someone is paying ------
+  # ---- REWRITTEN 2026-08-22. Five templates below had returned ZERO hits, ever. ----
+  #
+  # Not zero candidates -- zero *hits*, on every run since the project started. Every
+  # one used Google-style boolean syntax, and Algolia is not a boolean engine: `query`
+  # is typo-tolerant full text, `OR` is just another word to match, and by default every
+  # word must appear. A seven-token query matches nothing at all.
+  #
+  # Measured live on 2026-08-22:
+  #
+  #   0   raises seed OR "Series A" OR "we raised"      50  Series A
+  #   0   data breach OR security incident OR ...       50  data breach
+  #   0   SOC 2 OR penetration test OR ...              50  SOC 2
+  #   0   Dhaka startup                                  5  Bangladesh
+  #  12   hiring AI engineer                            17  we are hiring
+  #
+  # `Dhaka startup` is the one to remember: two tokens and still zero, because both
+  # words must occur in the same story. It is not query *length* that breaks, it is
+  # requiring several rare terms at once. One concept per template.
+  #
+  # This is why the corpus is 79% T1_AI_SHIP + T8_HYGIENE_GAP and the trigger mean is
+  # stuck at 35: the templates that find funding, hiring, incidents and BD-local news
+  # have never once returned anything, so those triggers could not exist in quantity.
+  #
+  # `max_hits` arrives with them. A revived query returning a full page every run is
+  # exactly how unfiltered Show HN reached 250 hits and 85 candidates over five runs and
+  # buried everything else -- weight decides order, max_hits decides share, and share is
+  # what a fixed decode budget actually rations.
+
   # `comments: true` is what makes this template work at all, and it was demoted to 20
   # for one day without it. Measured then: 19 hits, 16 dropped as platform URLs, 0
   # candidates, on every run it had ever made.
@@ -107,7 +135,8 @@ query_templates:
 
   - id: hn_hiring_ai_roles
     engine: hn_algolia
-    query: hiring "AI engineer" OR "ML engineer" OR "LLM" remote
+    query: hiring AI engineer
+    max_hits: 15
     since_days: 45
     targets: [T4_HIRING_AI_ONLY, T1_AI_SHIP]
     weight: 92
@@ -117,7 +146,8 @@ query_templates:
 
   - id: hn_funding
     engine: hn_algolia
-    query: raises seed OR "Series A" OR "we raised"
+    query: Series A
+    max_hits: 15
     since_days: 90
     targets: [T2_FUNDING]
     weight: 90
@@ -166,18 +196,26 @@ query_templates:
     engine: hn_algolia
     tags: show_hn
     query: ""
+    max_hits: 15
     since_days: 30
     targets: [T1_AI_SHIP]
-    weight: 55
+    weight: 25
     rationale: >
-      Show HN, unfiltered. Was weight 95 and the single largest source of side
-      projects in the corpus -- a tic-tac-toe game and a world clock both arrived
-      here. Kept because a funded team announcing a launch is a genuine T1, and it
-      costs nothing; demoted because most posts are one person's weekend.
+      Show HN, unfiltered, and now measured rather than argued about. `discovered_by`
+      attributes 17 companies to it: 1 sendable, a 6% hit rate against a 33% corpus
+      baseline, mean score 23.6 against 32.3. It is the worst-converting template in
+      the file and simultaneously the largest source of volume -- 250 hits and 85
+      candidates over five runs, more than every other template combined -- which is
+      how a tic-tac-toe game, a world clock, Markdown Buddy and Music Mini Games all
+      reached the near-miss list.
+      Kept, because a funded team announcing a launch is a genuine T1 and it costs
+      nothing. Cut to 25 with `max_hits: 15` because weight alone never controlled it:
+      order decides who runs, share decides who fills the corpus.
 
   - id: hn_ai_agent
     engine: hn_algolia
-    query: AI agent OR LLM chatbot OR MCP server
+    query: AI agent
+    max_hits: 10
     since_days: 45
     targets: [T1_AI_SHIP, T11_STACK_RISK]
     weight: 52
@@ -187,7 +225,8 @@ query_templates:
 
   - id: hn_pentest_pressure
     engine: hn_algolia
-    query: SOC 2 OR penetration test OR security questionnaire
+    query: SOC 2
+    max_hits: 15
     since_days: 60
     targets: [T10_VENDOR_PRESSURE, T5_COMPLIANCE]
     weight: 82
@@ -197,7 +236,8 @@ query_templates:
 
   - id: hn_incident
     engine: hn_algolia
-    query: data breach OR security incident OR exposed database
+    query: data breach
+    max_hits: 10
     since_days: 45
     targets: [T6_INCIDENT]
     weight: 64
@@ -207,13 +247,16 @@ query_templates:
 
   - id: hn_south_asia
     engine: hn_algolia
-    query: Bangladesh OR Dhaka OR Pakistan OR "Sri Lanka" startup funding
+    query: Bangladesh
+    max_hits: 10
     since_days: 120
     targets: [T12_LOCAL, T2_FUNDING]
     weight: 58
     rationale: >
-      The BD/South Asia local-trust wedge. `funding` added to the query: without it
-      this returned discussion threads about the region rather than companies in it.
+      The BD/South Asia local-trust wedge. One word on purpose: `Dhaka startup`
+      returned zero live, because Algolia requires every term and few stories carry
+      both. `Bangladesh` returns 5 -- a small pool, but a real one, where the previous
+      six-term boolean query returned nothing at all.
 
   # ---- rationed: only SerpAPI can do these ----------------------------------
 

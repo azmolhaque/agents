@@ -73,6 +73,16 @@ MAX_COMMENTS_PER_THREAD = 40
 _HN_ITEM = re.compile(r"news\.ycombinator\.com/item\?id=(\d+)")
 
 
+# The source default, and what a template gets when it sets no cap of its own.
+DEFAULT_HN_HITS = 50
+
+
+def _hn_limit(plan: QueryPlan) -> int:
+    """Hits this plan may return. Read in both the fetch and the cache key, from one
+    place, because those two disagreeing is a silent failure rather than a loud one."""
+    return int(plan.params.get("max_hits") or DEFAULT_HN_HITS)
+
+
 def _hn_item_id(url: str) -> str | None:
     match = _HN_ITEM.search(url or "")
     return match.group(1) if match else None
@@ -124,6 +134,11 @@ class Harvester:
                 plan.query,
                 since_days=int(plan.params.get("since_days", 30)),
                 tags=plan.params.get("tags") or "story",
+                # Must match what `execute` fetches with, `hitsPerPage` included. The
+                # planned key and the fetched key diverging once already meant
+                # `skip_if_cached` never fired at all -- silently, because a cache miss
+                # looks exactly like a template whose answer expired.
+                limit=_hn_limit(plan),
             )
         if plan.engine == "github_api":
             return GitHubClient.cache_key(plan.query)
@@ -149,6 +164,7 @@ class Harvester:
                     plan.query,
                     since_days=since_days,
                     tags=plan.params.get("tags") or "story",
+                    limit=_hn_limit(plan),
                 )
                 if plan.params.get("comments") == "true":
                     return await self._expand_comments(stories, plan)

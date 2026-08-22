@@ -718,3 +718,69 @@ async def test_the_hiring_thread_survives_the_title_filter(rig):
     result = await harvester.run(_job(plan))
 
     assert {p["url"] for _, p in result.follow_on} == {"https://acme.io"}
+
+
+def test_no_algolia_template_uses_boolean_syntax(scout: Scout):
+    """Five templates returned zero hits for the entire life of the project.
+
+    Algolia is not a boolean engine: `query` is typo-tolerant full text, `OR` is just
+    another word to match, and by default every word must appear. So
+    `raises seed OR "Series A" OR "we raised"` requires all seven tokens in one story
+    and matches nothing. Measured live 2026-08-22: that query returns 0, `Series A`
+    returns a full page.
+
+    The cost was not one template. T2, T3, T4, T6 and T12 could not exist in quantity,
+    so the corpus was 79% T1_AI_SHIP + T8_HYGIENE_GAP and the trigger mean sat at 35
+    against the 75 Tier A needs -- read for weeks as "discovery is hard" rather than
+    "five queries are malformed".
+
+    Scoped to Algolia. SerpAPI and GitHub both support boolean and both return hits, so
+    `serp_funding_bd` and the `gh_*` templates keep theirs.
+    """
+    offenders = [
+        f"{t.id}: {t.query}"
+        for t in scout.templates
+        if t.engine == "hn_algolia" and " OR " in t.query
+    ]
+    assert not offenders, (
+        "Algolia matches every word and has no OR operator; these match nothing:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_a_broad_algolia_template_caps_its_share(scout: Scout):
+    """Weight decides which templates run; `max_hits` decides how much of the corpus
+    each one becomes, and only the second is rationed by a fixed decode budget.
+
+    Unfiltered Show HN reached 250 hits and 85 candidates over five runs -- more than
+    every other template combined -- while converting 1 of 17 companies into a sendable
+    lead. Demoting it alone would not have helped: it returns a full page whenever it
+    runs at all.
+    """
+    show_hn = next(t for t in scout.templates if t.id == "hn_show_ai")
+    assert show_hn.max_hits, "the broadest template in the file must cap its own share"
+    assert show_hn.max_hits <= 20
+
+
+def test_the_hit_cap_reaches_the_cache_key_and_the_fetch(rig):
+    """Both, from one place, because their disagreeing fails silently.
+
+    `hitsPerPage` is part of the fetched URL and therefore part of the cache key. When
+    the Scout's planned key and the client's fetched key diverged once before,
+    `skip_if_cached` stopped firing entirely and nobody noticed -- a cache miss looks
+    exactly like a template whose answer expired.
+    """
+    from cindraleads.sources.cache import cache_key_for
+    from cindraleads.sources.clients import HackerNewsClient
+
+    harvester, _ = rig(hn_payload())
+    plan = QueryPlan(
+        query="Series A",
+        engine="hn_algolia",
+        params={"since_days": "90", "max_hits": "15"},
+    )
+
+    url, params = HackerNewsClient.request_for("Series A", since_days=90, tags="story", limit=15)
+
+    assert params["hitsPerPage"] == "15", "the cap must reach the request"
+    assert harvester.cache_key_for_plan(plan) == cache_key_for("hn_algolia", url, params)
