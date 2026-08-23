@@ -8,6 +8,7 @@ addresses are usable, and what a missing lookup is allowed to imply.
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 import httpx
@@ -740,3 +741,61 @@ def test_an_unforced_reconcile_still_skips_a_fresh_company(store):
         )
 
     assert enqueue_unenriched(store, queue) == 0
+
+
+def test_re_enriching_does_not_duplicate_a_contact(store):
+    """`INSERT OR IGNORE` read as dedupe protection and provided none.
+
+    The primary key is a fresh `uuid4()`, so it can never collide, and until migration
+    0007 nothing constrained `(canonical_domain, email)`. Every re-enrichment therefore
+    appended another copy of the same address -- and `cindra reconcile --force` exists
+    to re-enrich deliberately.
+
+    Invisible to every report: reachability reads the best contact by status, and a
+    duplicate is not better than its original, so no score moved. It surfaced the first
+    time a human pulled a call list to actually email people, by which point GAIA
+    appeared 12 times and xalgorix 9.
+    """
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, ai_surface, "
+            "tech_signals, first_seen_at, last_updated_at) "
+            "VALUES ('acme.io','Acme','[]','[]',?,?)",
+            ("2026-08-15T00:00:00Z", "2026-08-15T00:00:00Z"),
+        )
+        for _ in range(3):
+            conn.execute(
+                "INSERT OR IGNORE INTO contacts (contact_id, canonical_domain, email, "
+                "email_status, pii_basis, first_seen_at) VALUES (?,?,?,?,?,?)",
+                (uuid.uuid4().hex[:16], "acme.io", "hello@acme.io", "verified", "x", "t"),
+            )
+
+    rows = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM contacts WHERE canonical_domain = 'acme.io'"
+    ).fetchone()
+    assert rows["n"] == 1, "three enrichments of the same address are one contact"
+
+
+def test_two_people_without_an_address_are_still_two_people(store):
+    """The bound on the constraint. A NULL email means a name-only contact, and merging
+    those would lose genuinely different people -- a worse outcome than the duplication
+    being fixed. SQLite treats NULLs as distinct in a UNIQUE index, which is the
+    behaviour relied on here rather than an accident."""
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, ai_surface, "
+            "tech_signals, first_seen_at, last_updated_at) "
+            "VALUES ('acme.io','Acme','[]','[]',?,?)",
+            ("2026-08-15T00:00:00Z", "2026-08-15T00:00:00Z"),
+        )
+        for name in ("Nabila R.", "Arif H."):
+            conn.execute(
+                "INSERT OR IGNORE INTO contacts (contact_id, canonical_domain, full_name, "
+                "email_status, pii_basis, first_seen_at) VALUES (?,?,?,?,?,?)",
+                (uuid.uuid4().hex[:16], "acme.io", name, "none", "x", "t"),
+            )
+
+    rows = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM contacts WHERE canonical_domain = 'acme.io'"
+    ).fetchone()
+    assert rows["n"] == 2

@@ -384,6 +384,10 @@ class Enricher:
 
         for contact in outcome.contacts:
             evidence_id = _evidence(conn, contact.source_url, "company_site", contact.email)
+            # `OR IGNORE` is load-bearing only since migration 0007. Before it there was
+            # no constraint for it to fall foul of -- the primary key is a fresh uuid,
+            # which cannot collide -- so it read as dedupe protection and provided none,
+            # and every re-enrichment appended another copy of the same address.
             conn.execute(
                 "INSERT OR IGNORE INTO contacts (contact_id, canonical_domain, full_name, "
                 "role_title, persona, email, email_status, evidence_id, pii_basis, "

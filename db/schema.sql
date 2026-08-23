@@ -217,6 +217,7 @@ CREATE INDEX companies_country ON companies (country);
 CREATE INDEX companies_discovered_by ON companies (discovered_by);
 CREATE INDEX companies_enriched ON companies (enriched_at);
 CREATE INDEX contacts_domain ON contacts (canonical_domain);
+CREATE UNIQUE INDEX contacts_domain_email ON contacts (canonical_domain, email);
 CREATE INDEX contacts_email ON contacts (email);
 CREATE UNIQUE INDEX dispatch_idem ON dispatch_log (idempotency_key);
 CREATE INDEX dispatch_lead ON dispatch_log (lead_id);
