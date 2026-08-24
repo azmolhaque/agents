@@ -153,6 +153,7 @@ def critique(store: Store, *, config: ScoringConfig | None = None) -> Critique:
     report.proposals += _held_back_penalties(diag, cfg)
     report.proposals += _double_charged_penalties(diag, cfg)
     report.proposals += _unproductive_templates(diag)
+    report.proposals += _outperforming_templates(diag)
     report.proposals += _feedback_disagreements(store, cfg, report=report)
     report.proposals += _dead_components(diag, cfg)
 
@@ -336,6 +337,59 @@ def _unproductive_templates(diag: ScoreDiagnosis) -> list[Proposal]:
                     f"mean score {tpl.mean_score:.1f}. The question a weight answers is "
                     f"not what a hit announces but what it proves: a public ATS board "
                     f"implies payroll, a Show HN post implies a weekend."
+                ),
+                evidence=(tpl.template_id,),
+                confidence="high" if tpl.companies >= 25 else "low",
+            )
+        )
+    return out
+
+
+def _outperforming_templates(diag: ScoreDiagnosis) -> list[Proposal]:
+    """The other half of the same question, and it was missing.
+
+    Every other rule here proposes taking something away. With a fixed 12-plan budget
+    per run, promoting a winner and demoting a loser are the same decision seen from
+    two ends -- and only one of them was ever suggested. `hn_ai_agent` sat at weight 52
+    while converting 73% against a 33% corpus rate, below several templates it
+    outperformed threefold, and nothing in this report would ever have said so.
+
+    Deliberately stricter than the demotion rule: it needs twice the corpus rate *and*
+    a mean above it, because raising a weight spends a slot that is currently producing
+    something, whereas lowering one only stops waste.
+    """
+    out: list[Proposal] = []
+    measured = [
+        t
+        for t in diag.by_template
+        if t.companies >= MIN_TEMPLATE_SAMPLE and t.template_id != "(unknown)"
+    ]
+    if len(measured) < 2:
+        return out
+
+    corpus_rate = sum(t.sendable for t in measured) / max(1, sum(t.companies for t in measured))
+    corpus_mean = sum(t.mean_score * t.companies for t in measured) / max(
+        1, sum(t.companies for t in measured)
+    )
+    for tpl in measured:
+        if tpl.hit_rate < corpus_rate * 2 or tpl.mean_score <= corpus_mean:
+            continue
+        out.append(
+            Proposal(
+                target="icp.yaml",
+                key=f"query_templates.{tpl.template_id}.weight",
+                change=(
+                    "Raise the weight so this template wins a plan slot more often, and "
+                    "consider raising its `max_hits` -- it is being rationed below what "
+                    "it earns."
+                ),
+                rationale=(
+                    f"{tpl.companies} companies discovered, {tpl.sendable} sendable "
+                    f"({tpl.hit_rate:.0%} against a corpus rate of {corpus_rate:.0%}), "
+                    f"mean score {tpl.mean_score:.1f} against {corpus_mean:.1f}. Every "
+                    f"other proposal here takes a slot away from something; with a fixed "
+                    f"plan budget, giving one to the best converter is the same decision "
+                    f"from the other end."
                 ),
                 evidence=(tpl.template_id,),
                 confidence="high" if tpl.companies >= 25 else "low",

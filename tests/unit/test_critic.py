@@ -17,6 +17,7 @@ from typing import Any
 from cindraleads.agents.critic import (
     CONSTANT_OFFSET_INCIDENCE,
     MIN_CORPUS,
+    MIN_TEMPLATE_SAMPLE,
     Critique,
     critique,
     render_markdown,
@@ -436,3 +437,61 @@ def test_an_empty_critique_renders_as_agreement_not_as_a_broken_report(store: An
     body = render_markdown(critique(store))
 
     assert "does not disagree with the config" in body
+
+
+def test_the_best_converting_template_is_proposed_for_promotion(store: Any) -> None:
+    """Every other rule here takes something away, and for weeks that was the only
+    direction available. With a fixed 12-plan budget per run, promoting a winner and
+    demoting a loser are the same decision seen from two ends.
+
+    `hn_ai_agent` sat at weight 52 while converting 73% against a 33% corpus rate with a
+    mean of 48.5 against 32.4 -- below several templates it outperformed threefold. No
+    proposal in this report would ever have said so.
+    """
+    for i in range(MIN_TEMPLATE_SAMPLE + 2):
+        _lead(
+            store,
+            f"good{i}.com",
+            score=70,
+            tier="B",
+            discovered_by="winner",
+            **_components(trigger=85.0),
+        )
+    for i in range(MIN_TEMPLATE_SAMPLE + 20):
+        _lead(
+            store,
+            f"meh{i}.com",
+            score=20,
+            tier="REJECT",
+            discovered_by="ordinary",
+            **_components(trigger=10.0),
+        )
+
+    report = critique(store)
+    keys = _keys(report)
+
+    assert "query_templates.winner.weight" in keys
+    proposal = next(p for p in report.proposals if p.key == "query_templates.winner.weight")
+    assert "Raise the weight" in proposal.change
+    assert "query_templates.ordinary.weight" not in keys or any(
+        "Lower the weight" in p.change
+        for p in report.proposals
+        if p.key == "query_templates.ordinary.weight"
+    ), "the weak template may be demoted, but must never be proposed for promotion"
+
+
+def test_a_merely_average_template_is_left_alone(store: Any) -> None:
+    """The bound. Promotion spends a plan slot that is currently producing something,
+    so the bar is deliberately higher than the demotion rule's: twice the corpus rate
+    AND a mean above it. A report that proposes raising every second weight is one
+    nobody reads."""
+    for i in range(MIN_TEMPLATE_SAMPLE + 2):
+        _lead(store, f"a{i}.com", discovered_by="alpha", **_components())
+    for i in range(MIN_TEMPLATE_SAMPLE + 2):
+        _lead(store, f"b{i}.com", discovered_by="beta", **_components())
+
+    report = critique(store)
+
+    assert not [p for p in report.proposals if p.target == "icp.yaml" and "Raise" in p.change], (
+        "two identical templates cannot both be outperforming"
+    )

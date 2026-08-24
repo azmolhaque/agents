@@ -144,17 +144,27 @@ query_templates:
       A company paying for AI engineers is shipping AI and has budget, which is the
       ICP in one query. Narrower than the monthly thread and catches off-cycle posts.
 
+  # DEMOTED 2026-08-24, 90 -> 35, on measured yield rather than argument. `discovered_by`
+  # attributes 11 companies to it: 1 sendable, a 9% hit rate against a 32% corpus rate,
+  # mean 24.1. Two days of data agree and the mechanism is clear -- "Series A" on HN
+  # finds *articles discussing* funding rounds, and the extractor reads the publisher.
+  # France 24, Business Insider and Internet Archive all arrived this way.
+  #
+  # Kept rather than retired: it is the only free source of T2_FUNDING, which the
+  # coverage test requires, and it did raise T2 from 11 live triggers to 25. It simply
+  # must not win a plan slot ahead of templates converting at 70%.
   - id: hn_funding
     engine: hn_algolia
     query: Series A
     max_hits: 15
     since_days: 90
     targets: [T2_FUNDING]
-    weight: 90
+    weight: 35
     rationale: >
       Raised money means investors, a board and runway -- and it dates the event, which
-      is what makes a trigger a reason to call this month. T2 fired 9 times in 148
-      companies; it should be one of the commonest triggers, not one of the rarest.
+      is what makes a trigger a reason to call this month. The premise still holds; the
+      query finds commentary rather than companies, and until that is fixed the weight
+      reflects what it delivers rather than what it promises.
 
   # ---- company-shaped and free: org-owned code -------------------------------
   # `organizations_only` is on by default in the harvester, so these return repos owned
@@ -212,14 +222,26 @@ query_templates:
       nothing. Cut to 25 with `max_hits: 15` because weight alone never controlled it:
       order decides who runs, share decides who fills the corpus.
 
+  # PROMOTED 2026-08-24, 52 -> 88, and this is the first weight in the file set by the
+  # yield table rather than by argument. 15 companies attributed: 11 sendable, a 73% hit
+  # rate against 32% corpus-wide, mean 48.5 against 32.4 -- the best converter measured.
+  # It sat below several templates it outperforms threefold.
+  #
+  # Why it works where `hn_show_ai` does not, despite both being "someone posted about
+  # an AI thing": a team writing about the agent they run in production has a product
+  # and users, while Show HN is where a launch is announced -- often somebody's weekend.
+  # `max_hits` raised with the weight, because rationing the best converter to 10 hits
+  # was throttling the thing that works.
   - id: hn_ai_agent
     engine: hn_algolia
     query: AI agent
-    max_hits: 10
+    max_hits: 20
     since_days: 45
     targets: [T1_AI_SHIP, T11_STACK_RISK]
-    weight: 52
-    rationale: Teams describing an agent they shipped. Same caveat as Show HN.
+    weight: 88
+    rationale: >
+      Teams describing an agent they shipped. Measured as the best-converting template
+      in the file: 73% sendable against a 32% corpus rate, mean 48.5 against 32.4.
 
   # ---- free: intent and context ---------------------------------------------
 

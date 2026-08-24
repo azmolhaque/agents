@@ -447,7 +447,16 @@ def test_company_shaped_templates_outrank_project_shaped_ones():
     # about -- and while a hit was the thread's own news.ycombinator.com URL it implied
     # nothing, which is why 19 hits produced 0 candidates. Now a hit is a comment naming
     # a company, so the premise and the mechanism finally agree.
-    company_shaped = ("hn_who_is_hiring", "hn_hiring_ai_roles", "hn_funding")
+    # `hn_funding` left this list on 2026-08-24 for the same reason `hn_who_is_hiring`
+    # briefly did: the invariant asks what a *hit* implies, not what the source is
+    # about. Its hits are news articles discussing funding rounds -- France 24, Business
+    # Insider, Internet Archive all arrived that way -- and an article implies nothing
+    # about the company it describes. Measured at 11 companies, 1 sendable, mean 24.1
+    # against a 32.4 corpus mean. Company-shaped in premise, publisher-shaped in fact.
+    #
+    # It returns here if the query is ever rewritten to find the company rather than the
+    # coverage, which is the same repair `comments: true` made for the hiring thread.
+    company_shaped = ("hn_who_is_hiring", "hn_hiring_ai_roles")
     # A hit here implies someone shipped something, which anyone can do.
     project_shaped = ("hn_show_ai", "hn_ai_agent")
 
