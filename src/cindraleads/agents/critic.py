@@ -36,7 +36,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from cindraleads.config import load_yaml, settings
 from cindraleads.diagnose import LeadRow, ScoreDiagnosis, diagnose, read_leads
+from cindraleads.errors import ConfigError
 from cindraleads.logging import get_logger
 from cindraleads.models import utcnow
 from cindraleads.scoring import ScoringConfig
@@ -79,6 +81,14 @@ HELD_BACK_SHARE = 0.10
 # tenth of everything. `single_source` at 52% and 18% sits in exactly the band between
 # an ordinary discriminator and CONSTANT_OFFSET_INCIDENCE, which is why no rule saw it.
 HELD_BACK_INCIDENCE = 0.40
+
+# Weights at which a template has already been acted on, so repeating the proposal adds
+# nothing. The Critic reads yield, not `icp.yaml`, and without this it told a human to
+# raise `hn_ai_agent` the day after they raised it to 88, and to lower `hn_show_ai` while
+# it sat at 25 -- the same defect as proposing a penalty that had been deleted from the
+# config. A report that keeps asking for work already done is one you stop reading.
+ALREADY_DEMOTED = 30
+ALREADY_PROMOTED = 85
 
 
 @dataclass(frozen=True)
@@ -206,6 +216,26 @@ def _constant_offset_penalties(
     return out
 
 
+def _template_weights() -> dict[str, int]:
+    """Current `icp.yaml` weights, so a proposal can check its own premise.
+
+    Read here rather than passed in because the Critic's other config is `scoring.yaml`
+    and this is the only rule that needs the discovery file. A missing or unreadable
+    file yields an empty mapping and every template is treated as un-acted-on, which is
+    the pre-existing behaviour rather than a crash.
+    """
+    try:
+        cfg = settings()
+        data = load_yaml("icp", base=cfg.resolve(cfg.config_dir))
+    except (ConfigError, OSError):
+        return {}
+    out: dict[str, int] = {}
+    for entry in data.get("query_templates") or []:
+        if isinstance(entry, dict) and entry.get("id"):
+            out[str(entry["id"])] = int(entry.get("weight", 50))
+    return out
+
+
 def _still_configured(name: str, cfg: ScoringConfig) -> bool:
     """Whether a penalty seen in the corpus still exists in the running config.
 
@@ -317,10 +347,14 @@ def _unproductive_templates(diag: ScoreDiagnosis) -> list[Proposal]:
         return out
 
     corpus_rate = sum(t.sendable for t in measured) / max(1, sum(t.companies for t in measured))
+    weights = _template_weights()
     for tpl in measured:
         if tpl.template_id == "(unknown)":
             continue  # discovered before the column existed; nothing to reweight
         if tpl.hit_rate >= corpus_rate * 0.5:
+            continue
+        if weights.get(tpl.template_id, 50) <= ALREADY_DEMOTED:
+            # Already acted on. Saying it again teaches the reader to skim.
             continue
         out.append(
             Proposal(
@@ -334,7 +368,8 @@ def _unproductive_templates(diag: ScoreDiagnosis) -> list[Proposal]:
                 rationale=(
                     f"{tpl.companies} companies discovered, {tpl.sendable} sendable "
                     f"({tpl.hit_rate:.0%} against a corpus rate of {corpus_rate:.0%}), "
-                    f"mean score {tpl.mean_score:.1f}. The question a weight answers is "
+                    f"mean score {tpl.mean_score:.1f}, at weight "
+                    f"{weights.get(tpl.template_id, 50)}. The question a weight answers is "
                     f"not what a hit announces but what it proves: a public ATS board "
                     f"implies payroll, a Show HN post implies a weekend."
                 ),
@@ -371,8 +406,11 @@ def _outperforming_templates(diag: ScoreDiagnosis) -> list[Proposal]:
     corpus_mean = sum(t.mean_score * t.companies for t in measured) / max(
         1, sum(t.companies for t in measured)
     )
+    weights = _template_weights()
     for tpl in measured:
         if tpl.hit_rate < corpus_rate * 2 or tpl.mean_score <= corpus_mean:
+            continue
+        if weights.get(tpl.template_id, 50) >= ALREADY_PROMOTED:
             continue
         out.append(
             Proposal(
@@ -386,7 +424,8 @@ def _outperforming_templates(diag: ScoreDiagnosis) -> list[Proposal]:
                 rationale=(
                     f"{tpl.companies} companies discovered, {tpl.sendable} sendable "
                     f"({tpl.hit_rate:.0%} against a corpus rate of {corpus_rate:.0%}), "
-                    f"mean score {tpl.mean_score:.1f} against {corpus_mean:.1f}. Every "
+                    f"mean score {tpl.mean_score:.1f} against {corpus_mean:.1f}, at weight "
+                    f"{weights.get(tpl.template_id, 50)}. Every "
                     f"other proposal here takes a slot away from something; with a fixed "
                     f"plan budget, giving one to the best converter is the same decision "
                     f"from the other end."

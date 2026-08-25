@@ -238,14 +238,43 @@ def test_a_template_that_finds_nothing_sendable_is_proposed_for_reweighting(
             store,
             f"bad{i}.com",
             tier="REJECT",
+            discovered_by="weekend_projects",
+            **_components(trigger=5.0),
+        )
+
+    report = critique(store)
+
+    assert "query_templates.weekend_projects.weight" in _keys(report)
+    assert "query_templates.hn_who_is_hiring.weight" not in _keys(report)
+
+
+def test_a_template_already_demoted_is_not_proposed_again(store: Any) -> None:
+    """The Critic reads yield and never read `icp.yaml`, so it told a human to lower
+    `hn_show_ai` while it sat at 25 -- the weight they had already lowered it to the day
+    before -- and to raise `hn_ai_agent` the day after they raised it to 88.
+
+    Same defect as proposing a penalty deleted from the config: arguing about a file it
+    does not read. A report that keeps asking for work already done is one you stop
+    reading, and a proposal-only tool has nothing else to trade on.
+    """
+    from cindraleads.agents.critic import ALREADY_DEMOTED, _template_weights
+
+    assert _template_weights().get("hn_show_ai", 99) <= ALREADY_DEMOTED, "premise"
+
+    for i in range(20):
+        _lead(store, f"good{i}.com", tier="B", discovered_by="hn_who_is_hiring", **_components())
+    for i in range(20):
+        _lead(
+            store,
+            f"bad{i}.com",
+            tier="REJECT",
             discovered_by="hn_show_ai",
             **_components(trigger=5.0),
         )
 
     report = critique(store)
 
-    assert "query_templates.hn_show_ai.weight" in _keys(report)
-    assert "query_templates.hn_who_is_hiring.weight" not in _keys(report)
+    assert "query_templates.hn_show_ai.weight" not in _keys(report)
 
 
 def test_a_template_with_too_few_companies_is_not_judged(store: Any) -> None:
@@ -342,7 +371,7 @@ def test_it_proposes_at_least_three_concrete_changes_each_citing_evidence(
             store,
             f"junk{i}.com",
             tier="REJECT",
-            discovered_by="hn_show_ai",
+            discovered_by="weekend_projects",
             triggers=(weak,),
             **_components(trigger=4.0, reachability=0.0),
             single_source=-12.0,
