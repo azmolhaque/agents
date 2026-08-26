@@ -72,15 +72,28 @@ SPRAWL_TOTAL = 25
 SPRAWL_GROWTH = 8
 SPRAWL_WINDOW_DAYS = 30
 
-# Pages that may carry a human contact, in the order they are worth spending budget on.
-# `/contact` before `/about` and `/team`: it is the page most likely to carry an address
-# and the SPA check below stops the loop early on sites that mirror one shell, so the
-# order decides what we actually get to see.
+# Pages that may carry a human contact, ordered by expected yield per fetch. The order
+# is load-bearing: the loop stops as soon as it has an address, because the only thing
+# that reads the collected text is `extract_contacts`.
 #
-# security.txt is fetched separately because its answer is a published *fact* decided by
-# content -- but its `Contact:` line is read too, since RFC 9116 makes it mandatory and
-# it names the mailbox the company chose for exactly this conversation.
-CONTENT_PATHS = ("/", "/contact", "/about", "/team")
+# `/privacy`, `/imprint` and `/impressum` are new and are the highest-yield additions
+# available: a privacy notice must name a controller contact under GDPR Art. 13, and an
+# Impressum is legally mandatory in DE/AT/CH and always carries an email. They are
+# obligations rather than marketing pages, so they are populated even on sites that
+# publish nothing else useful -- exactly the companies `reachability` scores zero.
+#
+# `/about` and `/team` stay, below them, because they are where a *named* human appears
+# and a named contact outscores a role account.
+CONTACT_PATHS = (
+    "/",
+    "/contact",
+    "/privacy",
+    "/imprint",
+    "/impressum",
+    "/about",
+    "/team",
+    "/legal",
+)
 SECURITY_TXT_PATH = "/.well-known/security.txt"
 
 TRIGGER_DECAY_DAYS = {"T7_SURFACE_SPRAWL": 60, "T8_HYGIENE_GAP": 60}
@@ -252,17 +265,34 @@ class Enricher:
         if "site" not in self.enabled_sources:
             return SiteFindings()
 
+        # security.txt first, and that ordering is a fix rather than a preference. It
+        # was fetched *after* the content loop, so a domain whose budget ran out during
+        # the loop never got one -- and `security_txt` feeds `hygiene_gaps`, so an
+        # exhausted budget silently cost a trigger as well as a contact. It is a fixed
+        # one-fetch cost that answers a published fact either way.
+        found = await self._security_txt(domain)
+
         collected: list[str] = []
-        emails: list[str] = []
+        emails: list[str] = [found.contact] if found.contact else []
         seen: set[str] = set()
 
-        for path in CONTENT_PATHS:
+        for path in CONTACT_PATHS:
+            # Everything below this loop reads `site.text`, and the only thing that
+            # reads it is `extract_contacts`. So once an address is in hand the
+            # remaining fetches cannot change the outcome -- they can only spend a
+            # per-domain budget of 6 per rolling 24 h that tomorrow's evidence re-check
+            # also needs. The old loop always ran all four paths.
+            #
+            # `/` is exempt: it is fetched even when security.txt already gave an
+            # address, because a role account is not a named human and `reachability`
+            # scores those differently.
+            if emails and path != "/":
+                log.debug("site_contact_found_early", canonical_domain=domain, at=path)
+                break
             try:
                 result = await self.egress.fetch("company_site", f"https://{domain}{path}")
             except FetchDenied:
-                # Out of budget for today. Keep what we have and skip security.txt
-                # too -- there is nothing left to spend on it.
-                return SiteFindings(text="\n".join(collected), emails=tuple(emails))
+                break  # out of budget for today; keep what we have
             except (httpx.HTTPError, OSError, CindraError):
                 continue
 
@@ -280,9 +310,14 @@ class Enricher:
             # the mirrored-SPA case gets one pass, which is often where the address is:
             # an app shell with a footer `mailto:` renders no prose worth reading and
             # still publishes a contact.
+            before = len(emails)
             emails.extend(emails_from_markup(result.body))
+            if len(emails) > before:
+                # Which page actually produced the address. Path priority above is an
+                # argument until this says otherwise -- the same reason
+                # `companies.discovered_by` exists for query templates.
+                log.info("site_contact_path", canonical_domain=domain, path=path)
 
-        found = await self._security_txt(domain)
         return SiteFindings(
             text="\n".join(collected),
             emails=(*emails, *([found.contact] if found.contact else [])),

@@ -484,6 +484,19 @@ file to decide whether one exists and discarded the body. RFC 9116 makes the fie
 mandatory, so it is a free address, and the most relevant one available: the mailbox the
 company nominated for security correspondence.
 
+**The contact loop exists only to find a contact, and it kept fetching after it had
+one.** `site.text` has exactly one consumer -- `extract_contacts` -- so every page after
+the first address can only spend budget, and the old loop always ran all four. One
+company could burn the whole 6-per-24h allowance that tomorrow's evidence re-check also
+needs. Stopping early is what makes room for `/privacy`, `/imprint` and `/impressum`,
+which are the highest-yield pages available because they are *legal obligations*: GDPR
+Art. 13 requires a controller contact and an Impressum is mandatory in DE/AT/CH, so they
+are populated even on sites that publish nothing else.
+
+**security.txt is fetched first, and that is a fix.** It ran after the page loop, so a
+domain whose budget ran out mid-loop never got one -- and `security_txt` feeds
+`hygiene_gaps`, so an exhausted budget silently cost a *trigger* as well as a contact.
+
 **RDAP is deliberately not a contact source.** Registrant records are redacted post-GDPR
 and the abuse contact belongs to the registrar, not the prospect -- presenting it as a
 company contact would be wrong rather than merely useless.
