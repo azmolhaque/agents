@@ -16,6 +16,7 @@ import os
 import signal
 import sqlite3
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from types import FrameType
@@ -36,6 +37,7 @@ from cindraleads.agents import (
     enqueue_unextracted,
 )
 from cindraleads.config import settings
+from cindraleads.dedupe import canonical_domain
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
 from cindraleads.metrics import record_heartbeat, source_mtime
@@ -771,6 +773,58 @@ def reconcile(
         )
 
     asyncio.run(_run())
+
+
+@app.command()
+def suppress(
+    domain: Annotated[str, typer.Argument(help="Domain to suppress. Omit with --list.")] = "",
+    reason: Annotated[str, typer.Option(help="Why, for whoever reads this in a month.")] = "",
+    remove: Annotated[bool, typer.Option(help="Un-suppress instead.")] = False,
+    show: Annotated[bool, typer.Option("--list", help="Print the list.")] = False,
+) -> None:
+    """Never contact this domain again.
+
+    Both ends of this were built in Phase 0 and nothing ever wrote to the table. The
+    Scout reads it at *plan* time, so a suppressed company stops costing SerpAPI credits
+    and ~64 s of extraction before anyone decides to reject it; the ComplianceGate reads
+    it again at dispatch and vetoes. Only the writer was missing.
+
+    The case it exists for is the one a rule cannot catch. `under_employee_ceiling`
+    deliberately does not veto when `employee_band` is unknown -- silence is not
+    evidence of size, and vetoing on it would reject every startup with a terse landing
+    page -- so PagerDuty and JetBrains reach Tier B and sit at the top of the call list.
+    They are not mis-scored; they are simply not prospects, and that is a judgement.
+    """
+    store = _open_store()
+    if show:
+        rows = store.conn.execute(
+            "SELECT value, reason, created_at FROM suppression_list "
+            "WHERE kind = 'domain' ORDER BY created_at DESC"
+        ).fetchall()
+        if not rows:
+            typer.echo("nothing suppressed")
+            return
+        for row in rows:
+            typer.echo(f"{row['value']:<32} {row['reason'] or ''}")
+        return
+
+    target = canonical_domain(domain) or domain.strip().lower()
+    if not target:
+        raise typer.BadParameter("need a domain, or --list")
+
+    with store.tx() as conn:
+        if remove:
+            cur = conn.execute(
+                "DELETE FROM suppression_list WHERE kind = 'domain' AND value = ?", (target,)
+            )
+            typer.echo(f"{'un-suppressed' if cur.rowcount else 'was not suppressed'} {target}")
+            return
+        conn.execute(
+            "INSERT OR REPLACE INTO suppression_list (entry_id, kind, value, reason, "
+            "created_at) VALUES (?,?,?,?,?)",
+            (uuid.uuid4().hex[:16], "domain", target, reason or None, to_iso(utcnow())),
+        )
+    typer.echo(f"suppressed {target}")
 
 
 @app.command(name="worklist")

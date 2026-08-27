@@ -172,3 +172,36 @@ def test_it_writes_nothing(store: Any) -> None:
     after = store.conn.execute("SELECT COUNT(*) AS n FROM leads").fetchone()["n"]
     assert before == after
     assert store.conn.execute("SELECT COUNT(*) AS n FROM feedback").fetchone()["n"] == 0
+
+
+def test_a_suppressed_domain_is_vetoed_and_never_replanned(store: Any, tmp_path: Path) -> None:
+    """The table has existed since migration 0001 and both readers were built -- the
+    Scout consults it at plan time so a rejected company stops costing credits, and the
+    ComplianceGate vetoes at dispatch. Nothing ever wrote to it.
+
+    The case it exists for is the one no rule can catch: `under_employee_ceiling`
+    deliberately does not veto on an unknown `employee_band`, so PagerDuty and JetBrains
+    reach Tier B and top the call list. They are not mis-scored, they are simply not
+    prospects -- a judgement, and judgements need somewhere to live.
+    """
+    from cindraleads.compliance import ComplianceGate, LeadFacts
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO suppression_list (entry_id, kind, value, reason, created_at) "
+            "VALUES ('e1','domain','pagerduty.com','enterprise, has its own security org',?)",
+            (to_iso(utcnow()),),
+        )
+
+    gate = ComplianceGate(excluded_sectors=("government",), max_employees=1000)
+    gate.load_suppression(store.conn)
+    verdict = gate.review(
+        LeadFacts(
+            canonical_domain="pagerduty.com",
+            display_name="PagerDuty",
+            trigger_codes=("T1_AI_SHIP",),
+            evidence_urls=("https://pagerduty.com/",),
+        )
+    )
+
+    assert "not_suppressed" in verdict.vetoes
