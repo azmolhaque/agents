@@ -773,6 +773,31 @@ def reconcile(
     asyncio.run(_run())
 
 
+@app.command(name="worklist")
+def worklist_cmd(
+    limit: Annotated[int, typer.Option(help="How many leads to list.")] = 25,
+    tier: Annotated[str, typer.Option(help="Comma-separated tiers to include.")] = "A,B",
+    include_judged: Annotated[
+        bool, typer.Option(help="Keep leads you have already judged.")
+    ] = False,
+) -> None:
+    """The call list: reachable leads worth a personal email, and what to say.
+
+    Everything else here answers "is this a lead?". This answers "what do I send before
+    lunch?" -- one row per company, the best address, the angle the Scorer already
+    wrote, and one URL that proves the trigger.
+
+    Judged leads drop off by default, so the list shrinks as you work it.
+    """
+    from cindraleads.worklist import render_worklist, worklist
+
+    store = _open_store()
+    tiers = tuple(t.strip().upper() for t in tier.split(",") if t.strip())
+    typer.echo(
+        render_worklist(worklist(store, tiers=tiers, limit=limit, include_judged=include_judged))
+    )
+
+
 @app.command()
 def digest(
     limit: Annotated[int, typer.Option(help="Max leads in one run.")] = 40,
