@@ -253,12 +253,7 @@ class Scorer:
             # pasted into a prospect's inbox. `means` is validated non-empty at config
             # load, so the fallback is unreachable and exists only so a future code
             # added without one degrades to a vague angle rather than a crash.
-            triggers="; ".join(
-                f"{self.scoring.triggers[t.code].means} ({_age_phrase(t.observed_at)})"
-                if t.code in self.scoring.triggers and self.scoring.triggers[t.code].means
-                else "published something relevant recently"
-                for t in self._score_input(facts).triggers
-            ),
+            triggers=self._trigger_phrases(self._score_input(facts).triggers),
             offer=result.offer,
             country=facts["country"] or "",
         )
@@ -474,6 +469,34 @@ class Scorer:
             "evidence": evidence,
             "evidence_urls": [e["url"] for e in evidence],
         }
+
+    def _trigger_phrases(self, triggers: Any) -> str:
+        """The triggers as the prospect would recognise them, strongest first.
+
+        Ordered by weight rather than by whatever the query returned, because the model
+        leads with what it is given first and the opening clause is the reason the email
+        gets read. Every angle on the first real call list opened with T1_AI_SHIP --
+        "you announced an AI feature" -- including a lead whose actual news was a
+        customer asking them for a pentest report.
+
+        A derived trigger carries no date. See `DERIVED_TRIGGERS`.
+        """
+        from cindraleads.agents.dispatcher import TRIGGER_ORDER
+
+        ordered = sorted(triggers, key=lambda t: -TRIGGER_ORDER.get(str(t.code), 0))
+        parts: list[str] = []
+        for trig in ordered:
+            rule = self.scoring.triggers.get(trig.code)
+            if rule is None or not rule.means:
+                # Unreachable while every code has a `means`, and deliberately vague if
+                # one is ever added without: a wrong specific is worse than a right vague.
+                parts.append("published something relevant recently")
+                continue
+            if trig.code in DERIVED_TRIGGERS:
+                parts.append(rule.means)
+            else:
+                parts.append(f"{rule.means} ({_age_phrase(trig.observed_at)})")
+        return "; ".join(parts)
 
     def _score_input(self, facts: dict[str, Any]) -> ScoreInput:
         return ScoreInput(
@@ -740,6 +763,19 @@ def _hygiene_gaps(raw: Any) -> list[str]:
         return hygiene_gaps(DnsHygiene.model_validate_json(str(raw)))
     except ValueError:
         return []
+
+
+# Triggers derived from a lookup we ran, rather than from something the company did.
+#
+# Their `observed_at` is *our* observation time, and the prose was printing it as the
+# prospect's: "you published a mail-authentication policy with gaps today" reached the
+# call list on companies whose DMARC record has read `p=none` for years. Not a false
+# claim about scanning -- rule 4 still holds -- but it mistakes when we looked for when
+# they acted, on the one line of prose that goes into somebody's inbox.
+#
+# Scoring is unaffected. `freshness` measures how current our knowledge is, and for a
+# lookup the answer really is "today".
+DERIVED_TRIGGERS = frozenset({"T7_SURFACE_SPRAWL", "T8_HYGIENE_GAP"})
 
 
 def _age_phrase(observed: datetime) -> str:

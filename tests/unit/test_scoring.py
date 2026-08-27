@@ -553,3 +553,61 @@ def test_an_english_lead_is_not_slowed_down_to_fix_a_bengali_problem() -> None:
     assert _prose_budget("US") == PROSE_MAX_TOKENS
     assert _prose_budget(None) == PROSE_MAX_TOKENS
     assert _prose_budget("") == PROSE_MAX_TOKENS
+
+
+def _phrase_scorer():  # type: ignore[no-untyped-def]
+    from cindraleads.agents.scorer import Scorer
+    from cindraleads.config import settings
+
+    cfg = settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+    return Scorer(store=None, llm=None, config=cfg)  # type: ignore[arg-type]
+
+
+def test_a_derived_trigger_carries_no_date_into_the_prose():
+    """`T8_HYGIENE_GAP` comes from a DNS lookup, so its `observed_at` is when *we*
+    looked. The prose printed it as when *they* acted -- "you published a
+    mail-authentication policy with gaps today" reached the call list on companies whose
+    DMARC record has read p=none for years.
+
+    Rule 4 still held; nothing claimed a scan. It simply mistook our observation for
+    their action, on the one line of prose that goes into somebody's inbox. Scoring is
+    unaffected: `freshness` measures how current our knowledge is, and for a lookup the
+    answer really is "today".
+    """
+    from datetime import timedelta
+
+    from cindraleads.models import utcnow
+    from cindraleads.scoring import TriggerObservation
+
+    scorer = _phrase_scorer()
+    old = utcnow() - timedelta(days=400)
+
+    derived = scorer._trigger_phrases([TriggerObservation(code="T8_HYGIENE_GAP", observed_at=old)])
+    observed = scorer._trigger_phrases([TriggerObservation(code="T1_AI_SHIP", observed_at=old)])
+
+    assert "(" not in derived, f"a lookup has no date the prospect would recognise: {derived}"
+    assert "months ago" in observed, "something the company did keeps its date"
+
+
+def test_the_strongest_trigger_is_offered_first():
+    """The model leads with what it is given first, and the opening clause is the reason
+    the email gets read. Every angle on the first real call list opened with "you
+    announced an AI feature" -- including a lead whose actual news was a customer asking
+    them for a pentest report."""
+    from cindraleads.models import utcnow
+    from cindraleads.scoring import TriggerObservation
+
+    scorer = _phrase_scorer()
+    now = utcnow()
+
+    phrases = scorer._trigger_phrases(
+        [
+            TriggerObservation(code="T8_HYGIENE_GAP", observed_at=now),
+            TriggerObservation(code="T10_VENDOR_PRESSURE", observed_at=now),
+        ]
+    )
+
+    heaviest = scorer.scoring.triggers["T10_VENDOR_PRESSURE"].means
+    assert phrases.startswith(heaviest), f"strongest trigger must lead: {phrases}"

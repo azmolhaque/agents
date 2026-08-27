@@ -48,6 +48,14 @@ Observed triggers: {triggers}
    wording. Never invent an identifier, a code, or a label of your own for a trigger --
    if a phrase looks like a code (all caps with underscores), it is a bug, and you must
    describe the thing in plain words instead of repeating it.
+
+   **They are ordered: the first one is the reason to write.** Open with it. The rest
+   are context and most angles are stronger for mentioning at most one of them -- a
+   list of three reads as a report, and the reader stops at the first line either way.
+
+   Some carry a time ("four days ago") and some do not. Where there is no time, do not
+   invent one: those are standing facts about what the company publishes, not things
+   that happened on a date, and "today" would be wrong.
 Recommended offer: {offer}
 Country: {country}
 
