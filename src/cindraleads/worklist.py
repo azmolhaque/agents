@@ -98,7 +98,23 @@ def worklist(
         "FROM leads l "
         "JOIN companies c ON c.canonical_domain = l.canonical_domain "
         "LEFT JOIN (SELECT DISTINCT lead_id FROM feedback) f ON f.lead_id = l.lead_id "
+        # Asked live, not read off the lead. Suppressing a domain does not rewrite the
+        # leads already scored under the old answer: the ComplianceGate quarantines a
+        # vetoed lead but `_upsert_lead` still stores its computed tier, so a suppressed
+        # company keeps Tier B and would sit at the top of this list forever. The first
+        # three domains ever suppressed were still number one, seven and nine.
+        #
+        # A stored verdict answers "was this allowed when we scored it". A call list has
+        # to answer "may I email them now", and only the table can say.
+        "LEFT JOIN suppression_list s "
+        "  ON s.kind = 'domain' AND s.value = l.canonical_domain "
+        # Quarantine covers the other vetoes -- government, competitor, over the
+        # employee ceiling. Same reasoning: the lead keeps its tier, so nothing else
+        # would keep it off the list.
+        "LEFT JOIN (SELECT DISTINCT subject_id FROM quarantine WHERE subject_kind = 'lead') q "
+        "  ON q.subject_id = l.lead_id "
         f"WHERE l.tier IN ({placeholders}) AND l.archived = 0\n{judged_clause}"
+        "  AND s.value IS NULL AND q.subject_id IS NULL "
         "ORDER BY l.score DESC",
         tuple(tiers),
     ).fetchall()

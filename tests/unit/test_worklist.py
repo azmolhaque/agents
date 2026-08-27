@@ -205,3 +205,42 @@ def test_a_suppressed_domain_is_vetoed_and_never_replanned(store: Any, tmp_path:
     )
 
     assert "not_suppressed" in verdict.vetoes
+
+
+def test_a_suppressed_domain_leaves_the_call_list_immediately(store: Any) -> None:
+    """Suppressing a domain does not rewrite the leads already scored under the old
+    answer. The ComplianceGate quarantines a vetoed lead, but `_upsert_lead` still
+    stores its computed tier -- so a suppressed company keeps Tier B, and the first
+    three domains ever suppressed were still sitting at number one, seven and nine.
+
+    A stored verdict answers "was this allowed when we scored it". A call list has to
+    answer "may I email them now", so it asks the table rather than the lead.
+    """
+    _lead(store, "pagerduty.com", score=67)
+    _lead(store, "rtrvr.ai", score=66)
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO suppression_list (entry_id, kind, value, reason, created_at) "
+            "VALUES ('e1','domain','pagerduty.com','enterprise',?)",
+            (to_iso(utcnow()),),
+        )
+
+    assert [i.canonical_domain for i in worklist(store).items] == ["rtrvr.ai"]
+
+
+def test_a_quarantined_lead_is_not_on_the_call_list(store: Any) -> None:
+    """The other vetoes -- government, competitor, over the employee ceiling -- have the
+    same shape: the lead keeps its tier and only dispatch is stopped, so nothing else
+    would keep it off a list of people to email."""
+    lead_id = _lead(store, "defence.gov", score=70)
+    _lead(store, "rtrvr.ai", score=66)
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO quarantine (quarantine_id, subject_kind, subject_id, reason_code, "
+            "detail, created_at) VALUES ('q1','lead',?,'not_government_or_cni','',?)",
+            (lead_id, to_iso(utcnow())),
+        )
+
+    assert [i.canonical_domain for i in worklist(store).items] == ["rtrvr.ai"]
