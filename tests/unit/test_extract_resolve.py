@@ -855,7 +855,7 @@ def test_every_extraction_field_is_asked_for_in_the_prompt():
     )
 
 
-def test_a_fixed_prompt_reaches_what_the_broken_one_wrote():
+async def test_a_fixed_prompt_reaches_what_the_broken_one_wrote(rig):
     """Fixing the prompt does not un-write what the broken one produced.
 
     583 companies were extracted under a prompt that never named `description` or
@@ -865,97 +865,96 @@ def test_a_fixed_prompt_reaches_what_the_broken_one_wrote():
     was behind the prompt that wrote it, so without this the corpus stays null forever
     with a correct prompt on disk and a correct worker running it.
 
-    Third time in this project: `RETIREMENT_RULES`, `enqueue_stale_scores`, this.
-
-    Both predicates are load-bearing, the same pair `prose_version` needed. Without the
-    gap it re-decodes hundreds of pages that are already fine at ~55 s each; without the
-    version a page that genuinely says nothing about what the company does asks again on
-    every pass, forever.
+    **This test drives the real Extractor and the real Resolver**, and that is the
+    point of it. The first version seeded `candidates` by hand with `status =
+    'extracted'` next to a `companies` row -- a pair the pipeline cannot produce,
+    because the Resolver overwrites the status with `resolved` in the very next stage.
+    The query filtered on `extracted` and joined `companies`, so it could never match
+    anything, `cindra reconcile` reported "queued 0 for re-extraction" against 583 null
+    rows, and the test agreed with it. A fixture that supplies the state the code
+    expects proves the code handles that state and nothing else.
     """
     import json as _json
-    import tempfile
-    from pathlib import Path as _Path
 
     from cindraleads.agents.extractor import enqueue_stale_extractions
-    from cindraleads.config import Settings, prompt_version
     from cindraleads.queue import JobQueue
-    from cindraleads.store import Store as _Store
 
-    with tempfile.TemporaryDirectory() as tmp:
-        root = _Path(tmp)
-        (root / "prompts").mkdir()
-        (root / "prompts" / "extract_company.md").write_text("ask for description")
-        cfg = Settings(repo_root=root)
-        current = prompt_version(root / "prompts")
+    extractor, resolver, _backend, store = rig(
+        payload=dict(EXTRACTION, description=None, industry=None)
+    )
+    queue = JobQueue(store)
+    seed_candidate(store, "c1", "https://acme.io/")
 
-        store = _Store(root / "r.db", migrations_dir=MIGRATIONS)
-        store.migrate()
-        queue = JobQueue(store)
-
-        # domain, description, industry, the prompt that extracted it, expectation
-        corpus = [
-            ("gap.io", None, None, "oldhash", True),
-            ("half.io", "does things", None, "oldhash", True),
-            ("filled.io", "does things", "devtools", "oldhash", False),
-            ("asked.io", None, None, current, False),
-        ]
-        with store.tx() as conn:
-            for domain, desc, industry, stamp, _ in corpus:
-                conn.execute(
-                    "INSERT INTO companies (canonical_domain, display_name, description, "
-                    "industry, first_seen_at, last_updated_at) VALUES (?,?,?,?,?,?)",
-                    (
-                        domain,
-                        domain,
-                        desc,
-                        industry,
-                        "2026-08-01T00:00:00Z",
-                        "2026-08-01T00:00:00Z",
-                    ),
-                )
-                conn.execute(
-                    "INSERT INTO candidates (candidate_id, content_sha256, raw_payload, "
-                    "resolved_domain, status, created_at) VALUES (?,?,?,?,?,?)",
-                    (
-                        domain,
-                        "",
-                        _json.dumps(
-                            {
-                                "url": f"https://{domain}/",
-                                "prompt_version": stamp,
-                                "template_id": "hn_ai_agent",
-                                "trigger_codes": ["T1_AI_SHIP"],
-                            }
-                        ),
-                        domain,
-                        "extracted",
-                        "2026-08-01T00:00:00Z",
-                    ),
-                )
-
-        queued = enqueue_stale_extractions(store, queue, config=cfg)
-        assert queued == 2, "the two with a gap and an older stamp, and nothing else"
-
-        payloads = [
-            _json.loads(r["payload"])
-            for r in rows(
-                store,
-                "SELECT payload FROM jobs WHERE kind = ? AND status = 'pending'",
-                EXTRACT_KIND,
-            )
-        ]
-        assert sorted(p["candidate_id"] for p in payloads) == ["gap.io", "half.io"]
-
-        # `discovered_by` is written once and never reassigned, and the Extractor's
-        # carry-forward reads the row this pass is about to overwrite. Losing it to a
-        # backfill would empty the only table that makes a query weight checkable --
-        # the exact defect that reported `(unknown) 201` for weeks.
-        assert all(p["template_id"] == "hn_ai_agent" for p in payloads)
-
-        assert enqueue_stale_extractions(store, queue, config=cfg) == 0, (
-            "a candidate already queued is not queued twice"
+    await extractor.run(
+        Job(
+            job_id="e",
+            kind=EXTRACT_KIND,
+            payload={"candidate_id": "c1", "url": "https://acme.io/", "template_id": "hn_ai_agent"},
         )
-        store.close()
+    )
+    await resolver.run(Job(job_id="r", kind=RESOLVE_KIND, payload={"candidate_id": "c1"}))
+
+    company = rows(store, "SELECT description, industry, discovered_by FROM companies")[0]
+    assert company["description"] is None and company["industry"] is None
+    assert rows(store, "SELECT status FROM candidates")[0]["status"] == "resolved"
+
+    # Extracted by the build that is running, so there is nothing a re-run would do
+    # differently. The gap alone must not be enough, or a page that genuinely says
+    # nothing about what the company does is asked again on every pass forever.
+    assert enqueue_stale_extractions(store, queue) == 0, "same prompt, same answer"
+
+    # Now it was extracted by an older build.
+    with store.tx() as conn:
+        payload = _json.loads(rows(store, "SELECT raw_payload FROM candidates")[0]["raw_payload"])
+        payload["prompt_version"] = "supersededhash"
+        conn.execute(
+            "UPDATE candidates SET raw_payload = ? WHERE candidate_id = ?",
+            (_json.dumps(payload), "c1"),
+        )
+
+    assert enqueue_stale_extractions(store, queue) == 1
+
+    job = _json.loads(
+        rows(store, "SELECT payload FROM jobs WHERE kind = ? AND status = 'pending'", EXTRACT_KIND)[
+            0
+        ]["payload"]
+    )
+    assert job["candidate_id"] == "c1"
+    # `discovered_by` is written once and never reassigned, and the Extractor's
+    # carry-forward reads the row this pass is about to overwrite. Losing it to a
+    # backfill would empty the only table that makes a query weight checkable.
+    assert job["template_id"] == company["discovered_by"] == "hn_ai_agent"
+
+    assert enqueue_stale_extractions(store, queue) == 0, "already queued, not queued twice"
+
+
+async def test_a_company_the_prompt_would_not_improve_is_left_alone(rig):
+    """The other half of the pair. Without the gap predicate this re-decodes every page
+    in the corpus at ~55 s each to arrive at the answer already stored."""
+    from cindraleads.agents.extractor import enqueue_stale_extractions
+    from cindraleads.queue import JobQueue
+
+    extractor, resolver, _backend, store = rig()
+    queue = JobQueue(store)
+    seed_candidate(store, "c1", "https://acme.io/")
+
+    await extractor.run(
+        Job(
+            job_id="e", kind=EXTRACT_KIND, payload={"candidate_id": "c1", "url": "https://acme.io/"}
+        )
+    )
+    await resolver.run(Job(job_id="r", kind=RESOLVE_KIND, payload={"candidate_id": "c1"}))
+
+    company = rows(store, "SELECT description, industry FROM companies")[0]
+    assert company["description"] and company["industry"], "the fixture fills both"
+
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE candidates SET raw_payload = json_set(raw_payload, "
+            "'$.prompt_version', 'supersededhash')"
+        )
+
+    assert enqueue_stale_extractions(store, queue) == 0, "an older build, but nothing to fix"
 
 
 def test_a_backfill_is_bounded_because_the_cost_is_decode():

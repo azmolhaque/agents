@@ -616,6 +616,17 @@ pass because the cost is decode -- a whole corpus is hours of inference in the q
 fresh harvest drains, and a backfill nobody is waiting on must never be what a new lead
 waits behind.
 
+**It shipped filtering on `candidates.status = 'extracted'`, which no row that has a
+company can ever hold.** The Extractor writes `extracted`; the Resolver overwrites it
+with `resolved` in the very next stage, and a `companies` row exists only because the
+Resolver ran -- so the filter and the join were mutually exclusive and the query
+returned zero rows for every possible database state. `cindra reconcile` said "queued 0
+for re-extraction" against 583 null rows and read as *nothing to do*. Its test passed
+because the fixture wrote `extracted` next to a company row by hand, a pair the pipeline
+cannot produce. **Third time now** -- `discovered_by`'s test hand-wrote the one key the
+Harvester never sets, and the HN mock encoded an assumed response shape. The rebuilt
+test drives the real Extractor and the real Resolver and fails against the old query.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

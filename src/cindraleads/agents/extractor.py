@@ -597,10 +597,21 @@ def enqueue_stale_extractions(
     """
     cfg = config or settings()
     current = prompt_version(cfg.resolve(cfg.prompt_dir))
+    # `resolved`, not `extracted`. The Extractor writes `extracted` and the Resolver
+    # overwrites it with `resolved` in the very next stage, and a `companies` row exists
+    # only because the Resolver ran -- so `status = 'extracted'` AND this join were
+    # mutually exclusive and the query returned zero rows for every possible database
+    # state. `cindra reconcile` reported "queued 0 for re-extraction" against 583 null
+    # rows and read as "nothing to do".
+    #
+    # The first test passed because its fixture wrote `extracted` alongside a company
+    # row by hand, which is a pair the pipeline cannot produce. Third time: the same as
+    # `discovered_by`, whose test hand-wrote the one key the Harvester never sets. Both
+    # statuses are matched now because either is a candidate whose extraction is stale.
     rows = store.conn.execute(
         "SELECT c.candidate_id, c.raw_payload FROM candidates c "
         "JOIN companies co ON co.canonical_domain = c.resolved_domain "
-        "WHERE c.status = 'extracted' "
+        "WHERE c.status IN ('extracted', 'resolved') "
         "  AND (co.description IS NULL OR co.industry IS NULL) "
         "  AND COALESCE(json_extract(c.raw_payload, '$.prompt_version'), '') <> ? "
         "  AND NOT EXISTS ("
