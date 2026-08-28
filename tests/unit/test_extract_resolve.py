@@ -841,3 +841,15 @@ def test_every_extraction_field_is_asked_for_in_the_prompt():
         f"asked for in the schema, never mentioned in the prompt: {missing}. "
         "The model is told to null anything the instructions do not cover."
     )
+
+    # Naming them was not enough. Rule 2 required every field to be "supported by text
+    # that literally appears on the page", which contradicts asking for a summary -- and
+    # the model obeyed rule 2. Probed against the real model on rtrvr.ai: it quoted the
+    # company's own tagline verbatim into `evidence_snippets` and returned `description:
+    # null` in the same object. It had the information and the rules forbade writing it.
+    #
+    # So the carve-out is load-bearing, and re-tightening rule 2 would silently empty
+    # both columns again with every test still green.
+    assert "exceptions" in prompt and "Summarising is not inferring" in prompt, (
+        "rule 2 must exempt description and industry, or the model nulls them"
+    )
