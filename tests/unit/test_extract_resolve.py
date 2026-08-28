@@ -957,6 +957,76 @@ async def test_a_company_the_prompt_would_not_improve_is_left_alone(rig):
     assert enqueue_stale_extractions(store, queue) == 0, "an older build, but nothing to fix"
 
 
+async def test_the_backfill_bound_is_on_outstanding_work_not_on_one_pass(rig):
+    """`reconcile.timer` fires every 30 minutes and a batch of 50 is ~46 minutes of
+    decode, so adding a fresh `limit` each pass outruns the worker by construction: the
+    backlog grows every half hour and a freshly harvested lead ends up behind several
+    hundred backfill jobs. That is exactly what the limit was written to prevent, so the
+    limit has to count what is still outstanding rather than what this pass adds.
+
+    A backfill job is otherwise indistinguishable from a fresh extract -- same kind,
+    same shape -- which is why it carries a flag."""
+    import json as _json
+
+    from cindraleads.agents.extractor import enqueue_stale_extractions
+    from cindraleads.queue import JobQueue
+
+    extractor, resolver, backend, store = rig()
+    queue = JobQueue(store)
+
+    for i in range(4):
+        cid = f"c{i}"
+        # Distinct name *and* domain per company, or dedupe rung 2 merges them on a
+        # ~100 name match and the four candidates become one company.
+        backend.payload = dict(
+            EXTRACTION,
+            display_name=f"Acme {i}",
+            canonical_domain=f"acme{i}.io",
+            description=None,
+            industry=None,
+        )
+        seed_candidate(store, cid, f"https://acme{i}.io/")
+        await extractor.run(
+            Job(
+                job_id=f"e{i}",
+                kind=EXTRACT_KIND,
+                payload={"candidate_id": cid, "url": f"https://acme{i}.io/"},
+            )
+        )
+        with store.tx() as conn:
+            conn.execute(
+                "UPDATE candidates SET raw_payload = json_set(raw_payload, "
+                "'$.prompt_version', 'old') WHERE candidate_id = ?",
+                (cid,),
+            )
+        await resolver.run(Job(job_id=f"r{i}", kind=RESOLVE_KIND, payload={"candidate_id": cid}))
+
+    assert len(rows(store, "SELECT 1 FROM companies")) == 4
+
+    assert enqueue_stale_extractions(store, queue, limit=2) == 2
+    assert enqueue_stale_extractions(store, queue, limit=2) == 0, (
+        "the bound counts the two still outstanding, it does not add two more"
+    )
+
+    payloads = [
+        _json.loads(r["payload"])
+        for r in rows(store, "SELECT payload FROM jobs WHERE kind = ?", EXTRACT_KIND)
+    ]
+    assert sum(1 for p in payloads if p.get("backfill")) == 2
+
+    # Drain one and the next pass tops back up to the bound, never past it.
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE jobs SET status = 'done' WHERE kind = ? AND "
+            "json_extract(payload, '$.backfill') = 1 AND status = 'pending' "
+            "AND job_id = (SELECT job_id FROM jobs WHERE kind = ? AND "
+            "json_extract(payload, '$.backfill') = 1 LIMIT 1)",
+            (EXTRACT_KIND, EXTRACT_KIND),
+        )
+
+    assert enqueue_stale_extractions(store, queue, limit=2) == 1, "tops up by exactly one"
+
+
 def test_a_backfill_is_bounded_because_the_cost_is_decode():
     """583 candidates is roughly nine hours of inference on this box, in the same queue
     a fresh harvest drains. Unbounded, the backfill is what a new lead waits behind."""

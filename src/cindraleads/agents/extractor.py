@@ -344,6 +344,11 @@ class Extractor:
                             "targets": list(outcome.targets),
                             "deferrals": outcome.deferrals,
                             "pauses": outcome.pauses,
+                            # Carried, or a deferred backfill stops counting against
+                            # its own budget and the next reconcile tops up over it --
+                            # the leak `_delay_seconds` makes most likely, since a
+                            # hot box defers many jobs at once.
+                            "backfill": bool(job.payload.get("backfill")),
                             "_delay_seconds": outcome.defer_seconds,
                         },
                     )
@@ -597,6 +602,27 @@ def enqueue_stale_extractions(
     """
     cfg = config or settings()
     current = prompt_version(cfg.resolve(cfg.prompt_dir))
+
+    # The bound is on work *outstanding*, not on work added per pass, and the
+    # difference is the whole point of having one. `reconcile.timer` fires every 30
+    # minutes; a batch of 50 is ~46 minutes of decode. Adding 50 a pass therefore
+    # outruns the worker by design -- the backlog grows every half hour and a freshly
+    # harvested lead ends up queued behind several hundred backfill jobs, which is
+    # precisely what the limit was written to prevent. Topping *up* to the limit drains
+    # the corpus in the same total time while never putting more than `limit` re-extracts
+    # in front of new work.
+    outstanding = int(
+        store.conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = ? "
+            "AND status IN ('pending', 'in_flight') "
+            "AND json_extract(payload, '$.backfill') = 1",
+            (EXTRACT_KIND,),
+        ).fetchone()["n"]
+    )
+    budget = limit - outstanding
+    if budget <= 0:
+        return 0
+
     # `resolved`, not `extracted`. The Extractor writes `extracted` and the Resolver
     # overwrites it with `resolved` in the very next stage, and a `companies` row exists
     # only because the Resolver ran -- so `status = 'extracted'` AND this join were
@@ -619,7 +645,7 @@ def enqueue_stale_extractions(
         "      AND j.status IN ('pending', 'in_flight') "
         "      AND json_extract(j.payload, '$.candidate_id') = c.candidate_id) "
         "ORDER BY co.last_updated_at DESC LIMIT ?",
-        (current, EXTRACT_KIND, limit),
+        (current, EXTRACT_KIND, budget),
     ).fetchall()
 
     queued = 0
@@ -644,10 +670,19 @@ def enqueue_stale_extractions(
                     # costs nothing; losing `discovered_by` to a backfill would undo the
                     # only table that makes a query weight checkable.
                     "template_id": str(payload.get("template_id") or ""),
+                    # What makes the next pass able to see this one's work. A backfill
+                    # job is otherwise indistinguishable from a freshly harvested
+                    # extract, and the whole bound rests on telling them apart.
+                    "backfill": True,
                 },
                 conn=conn,
             )
             queued += 1
     if queued:
-        log.info("extract_stale_requeued", candidates=queued, prompt_version=current)
+        log.info(
+            "extract_stale_requeued",
+            candidates=queued,
+            outstanding=outstanding + queued,
+            prompt_version=current,
+        )
     return queued

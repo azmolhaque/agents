@@ -627,6 +627,15 @@ cannot produce. **Third time now** -- `discovered_by`'s test hand-wrote the one 
 Harvester never sets, and the HN mock encoded an assumed response shape. The rebuilt
 test drives the real Extractor and the real Resolver and fails against the old query.
 
+**A bound per pass is not a bound when something else decides how often a pass runs.**
+`reconcile.timer` fires every 30 minutes and 50 re-extracts is ~46 minutes of decode, so
+adding 50 a pass outruns the worker by construction -- the backlog grows every half hour
+and a freshly harvested lead ends up behind hundreds of backfill jobs, which is the one
+thing the limit existed to prevent. It counts jobs still *outstanding* and tops up to
+the limit instead. A backfill job is otherwise indistinguishable from a fresh extract --
+same kind, same shape -- so it carries a `backfill` flag, and the defer path carries the
+flag too or a thermal pause silently frees budget the next pass spends again.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
