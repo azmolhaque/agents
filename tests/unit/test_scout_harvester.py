@@ -793,3 +793,31 @@ def test_the_hit_cap_reaches_the_cache_key_and_the_fetch(rig):
 
     assert params["hitsPerPage"] == "15", "the cap must reach the request"
     assert harvester.cache_key_for_plan(plan) == cache_key_for("hn_algolia", url, params)
+
+
+def test_a_monthly_thread_is_not_asked_hourly(scout: Scout):
+    """The cache TTL decides how often a template is *asked*: `skip_if_cached` refuses
+    to plan a query whose answer is still fresh. One TTL per source assumes every query
+    against it moves at the same speed, and Show HN turns over hourly while "Ask HN: Who
+    is hiring" is one thread posted once a month.
+
+    Measured before the override existed: `hn_who_is_hiring` ran 27 times in seven days
+    for 567 hits and zero new candidates -- every hit a URL already seen.
+    """
+    template = next(t for t in scout.templates if t.id == "hn_who_is_hiring")
+    source_ttl = scout.registry.get("hn_algolia").cache_ttl_hours
+
+    plan = template.to_plan(cache_ttl_hours=source_ttl)
+
+    assert template.cache_ttl_hours > source_ttl, "a monthly thread outlives the source default"
+    assert plan.cache_ttl_hours == template.cache_ttl_hours, "the override must reach the plan"
+
+
+def test_a_template_without_an_override_keeps_the_source_ttl(scout: Scout):
+    """The bound. Only a template that knows its source moves slowly should override,
+    and everything else must keep inheriting."""
+    template = next(t for t in scout.templates if t.id == "hn_show_ai")
+    source_ttl = scout.registry.get("hn_algolia").cache_ttl_hours
+
+    assert template.cache_ttl_hours == 0
+    assert template.to_plan(cache_ttl_hours=source_ttl).cache_ttl_hours == source_ttl

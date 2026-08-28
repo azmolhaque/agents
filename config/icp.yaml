@@ -128,6 +128,12 @@ query_templates:
     query: Who is hiring
     tags: story,author_whoishiring
     title_contains: "Who is hiring"
+    # Asked once a day, not every hour. The thread is posted monthly, and `explain`
+    # measured what hourly costs: 27 runs, 567 hits, 0 candidates, 0 dropped -- every
+    # hit a URL already seen. The query is not broken, its source simply moves at a
+    # different speed from Show HN, and one TTL for the whole `hn_algolia` source
+    # assumed they were the same.
+    cache_ttl_hours: 24
     since_days: 120
     comments: true
     targets: [T3_HIRING_SEC, T4_HIRING_AI_ONLY]

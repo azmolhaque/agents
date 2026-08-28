@@ -686,7 +686,11 @@ def explain(
         typer.echo("\nharvest yield by template (last 7 days, worst first)")
         typer.echo(f"  {'template':<24} {'runs':>5} {'hits':>6} {'candidates':>11} {'dropped':>8}")
         for harvested in report.by_harvest:
-            flag = "  <-- returns nothing usable" if harvested.is_barren else ""
+            flag = ""
+            if harvested.is_barren:
+                flag = "  <-- returns nothing usable"
+            elif harvested.is_exhausted:
+                flag = "  <-- nothing new; source has stopped producing"
             typer.echo(
                 f"  {harvested.template_id[:24]:<24} {harvested.runs:>5} "
                 f"{harvested.hits:>6} {harvested.candidates:>11} "
@@ -700,6 +704,19 @@ def explain(
                 f"\n  Every hit was a platform URL with no company site behind it. Lower "
                 f"the weight in icp.yaml, add a site: filter, or retire them -- they cost "
                 f"credits and a plan slot on every run."
+            )
+        # Deliberately a different paragraph with different advice. Both cases convert
+        # nothing; only one of them is the template's fault, and telling a working
+        # template to retire is how you delete the best source you have.
+        spent = [r.template_id for r in report.by_harvest if r.is_exhausted]
+        if spent:
+            typer.echo(
+                f"\n  {len(spent)} template(s) found only URLs already seen: "
+                f"{', '.join(spent)}."
+                f"\n  Nothing was dropped, so the query still works -- its source has "
+                f"stopped producing anything new. Do not retire it. Raise its "
+                f"`cache_ttl_hours` so it is asked less often, or leave it and wait for "
+                f"the source to move."
             )
 
     typer.echo(f"\nclosest to the Tier C floor of {report.floor:.0f}")

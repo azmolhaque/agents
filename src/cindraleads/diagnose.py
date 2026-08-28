@@ -235,8 +235,32 @@ class HarvestYield:
         return (self.dropped_platform / self.hits) if self.hits else 0.0
 
     @property
+    def is_exhausted(self) -> bool:
+        """Converted nothing because it found nothing *new*, not because it found junk.
+
+        `dropped_platform` tells the two apart and the advice is opposite. All hits
+        dropped means the query returns URLs with no company behind them -- retire it.
+        Nothing dropped and nothing converted means every hit was a URL we already have,
+        so the query works and its source has stopped producing.
+
+        `hn_who_is_hiring` reached 567 hits, 0 candidates, 0 dropped: it found its 21
+        companies from three monthly threads and now re-reads the same comments every
+        hour. Flagged as barren it read as "retire the strongest free company-shaped
+        source in the file", which would have been exactly wrong.
+        """
+        return (
+            self.runs > 0
+            and self.hits >= MIN_HITS_TO_JUDGE
+            and self.candidates == 0
+            and self.dropped_platform == 0
+        )
+
+    @property
     def is_barren(self) -> bool:
         """Ran, found enough hits to judge by, and turned none into a candidate.
+
+        Excludes the exhausted case above: a template whose hits were all already-known
+        URLs is working, not failing.
 
         `MIN_HITS_TO_JUDGE` is the whole difference between a finding and a coincidence.
         Without it this flagged `hn_ai_agent` on a single hit across two runs, in the
@@ -246,7 +270,12 @@ class HarvestYield:
         Critic's `MIN_TEMPLATE_SAMPLE`: two companies and one sendable lead is not a
         50% hit rate.
         """
-        return self.runs > 0 and self.hits >= MIN_HITS_TO_JUDGE and self.candidates == 0
+        return (
+            self.runs > 0
+            and self.hits >= MIN_HITS_TO_JUDGE
+            and self.candidates == 0
+            and self.dropped_platform > 0
+        )
 
 
 def harvest_yield(store: Store, *, days: float = 7.0) -> list[HarvestYield]:

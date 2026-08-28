@@ -535,3 +535,40 @@ def test_the_ceiling_finds_leads_a_contact_would_actually_promote(store: Any) ->
 
     assert report.tiers_with_contact.get("REJECT", 0) == 0
     assert report.tiers_with_contact.get("A", 0) + report.tiers_with_contact.get("B", 0) > 0
+
+
+def test_a_template_that_found_only_known_urls_is_not_called_barren(store: Any) -> None:
+    """`dropped_platform` tells the two failures apart, and the advice is opposite.
+
+    All hits dropped means the query returns URLs with no company behind them -- retire
+    it. Nothing dropped and nothing converted means every hit was a URL we already have:
+    the query works and its source has stopped producing.
+
+    `hn_who_is_hiring` reached 567 hits, 0 candidates, 0 dropped -- it found its 21
+    companies from three monthly threads and now re-reads the same comments hourly. The
+    report called it barren and told a reader to retire the strongest free
+    company-shaped source in the file.
+    """
+    from cindraleads.diagnose import harvest_yield
+
+    _harvest_run(store, "exhausted", hits=40, candidates=0, dropped=0)
+    _harvest_run(store, "junk", hits=40, candidates=0, dropped=40)
+
+    found = {y.template_id: y for y in harvest_yield(store)}
+
+    assert found["exhausted"].is_exhausted is True
+    assert found["exhausted"].is_barren is False, "a working query is not a broken one"
+    assert found["junk"].is_barren is True
+    assert found["junk"].is_exhausted is False
+
+
+def test_a_template_dropping_some_but_not_all_is_still_barren(store: Any) -> None:
+    """The bound. A partial drop rate means the query does return company URLs and
+    still converted none of them -- that is the template's problem, not the source's."""
+    from cindraleads.diagnose import harvest_yield
+
+    _harvest_run(store, "mixed", hits=40, candidates=0, dropped=12)
+
+    y = harvest_yield(store)[0]
+    assert y.is_barren is True
+    assert y.is_exhausted is False

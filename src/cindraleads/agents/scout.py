@@ -73,8 +73,18 @@ class QueryTemplate:
     # projects before anything else got a look in. Weight decides *order*; this decides
     # *share*, and share is what a fixed decode budget actually rations.
     max_hits: int = 0
+    # Override the source's cache TTL for this template alone. 0 keeps the source's.
+    #
+    # The TTL decides how often a template is *asked*, because `skip_if_cached` refuses
+    # to plan a query whose answer is still fresh. One TTL for a whole source assumes
+    # every query against it moves at the same speed, and they do not: Show HN turns
+    # over hourly, while "Ask HN: Who is hiring" is one thread posted once a month.
+    # Measured: `hn_who_is_hiring` ran 27 times in seven days for 567 hits and zero new
+    # candidates, because it kept re-reading the same three threads.
+    cache_ttl_hours: int = 0
 
     def to_plan(self, *, cache_ttl_hours: int) -> QueryPlan:
+        """`cache_ttl_hours` is the source default; this template may override it."""
         params: dict[str, str] = {"since_days": str(self.since_days)}
         if self.tags:
             params["tags"] = self.tags
@@ -93,7 +103,7 @@ class QueryTemplate:
             params=params,
             targets=list(self.targets),
             rationale=self.rationale.strip(),
-            cache_ttl_hours=cache_ttl_hours,
+            cache_ttl_hours=self.cache_ttl_hours or cache_ttl_hours,
         )
 
 
@@ -151,6 +161,7 @@ class Scout:
                     comments=bool(entry.get("comments", False)),
                     title_contains=str(entry.get("title_contains", "")),
                     max_hits=int(entry.get("max_hits", 0)),
+                    cache_ttl_hours=int(entry.get("cache_ttl_hours", 0)),
                     since_days=int(entry.get("since_days", 30)),
                     tags=str(entry.get("tags", "")),
                     rationale=str(entry.get("rationale", "")),
