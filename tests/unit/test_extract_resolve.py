@@ -853,3 +853,118 @@ def test_every_extraction_field_is_asked_for_in_the_prompt():
     assert "exceptions" in prompt and "Summarising is not inferring" in prompt, (
         "rule 2 must exempt description and industry, or the model nulls them"
     )
+
+
+def test_a_fixed_prompt_reaches_what_the_broken_one_wrote():
+    """Fixing the prompt does not un-write what the broken one produced.
+
+    583 companies were extracted under a prompt that never named `description` or
+    `industry`, and no reconciler could see them: `enqueue_unextracted` recovers
+    candidates that never ran, `enqueue_unenriched` and `enqueue_stale_scores` both
+    start from state the Extractor already wrote. Nothing asked whether what it wrote
+    was behind the prompt that wrote it, so without this the corpus stays null forever
+    with a correct prompt on disk and a correct worker running it.
+
+    Third time in this project: `RETIREMENT_RULES`, `enqueue_stale_scores`, this.
+
+    Both predicates are load-bearing, the same pair `prose_version` needed. Without the
+    gap it re-decodes hundreds of pages that are already fine at ~55 s each; without the
+    version a page that genuinely says nothing about what the company does asks again on
+    every pass, forever.
+    """
+    import json as _json
+    import tempfile
+    from pathlib import Path as _Path
+
+    from cindraleads.agents.extractor import enqueue_stale_extractions
+    from cindraleads.config import Settings, prompt_version
+    from cindraleads.queue import JobQueue
+    from cindraleads.store import Store as _Store
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _Path(tmp)
+        (root / "prompts").mkdir()
+        (root / "prompts" / "extract_company.md").write_text("ask for description")
+        cfg = Settings(repo_root=root)
+        current = prompt_version(root / "prompts")
+
+        store = _Store(root / "r.db", migrations_dir=MIGRATIONS)
+        store.migrate()
+        queue = JobQueue(store)
+
+        # domain, description, industry, the prompt that extracted it, expectation
+        corpus = [
+            ("gap.io", None, None, "oldhash", True),
+            ("half.io", "does things", None, "oldhash", True),
+            ("filled.io", "does things", "devtools", "oldhash", False),
+            ("asked.io", None, None, current, False),
+        ]
+        with store.tx() as conn:
+            for domain, desc, industry, stamp, _ in corpus:
+                conn.execute(
+                    "INSERT INTO companies (canonical_domain, display_name, description, "
+                    "industry, first_seen_at, last_updated_at) VALUES (?,?,?,?,?,?)",
+                    (
+                        domain,
+                        domain,
+                        desc,
+                        industry,
+                        "2026-08-01T00:00:00Z",
+                        "2026-08-01T00:00:00Z",
+                    ),
+                )
+                conn.execute(
+                    "INSERT INTO candidates (candidate_id, content_sha256, raw_payload, "
+                    "resolved_domain, status, created_at) VALUES (?,?,?,?,?,?)",
+                    (
+                        domain,
+                        "",
+                        _json.dumps(
+                            {
+                                "url": f"https://{domain}/",
+                                "prompt_version": stamp,
+                                "template_id": "hn_ai_agent",
+                                "trigger_codes": ["T1_AI_SHIP"],
+                            }
+                        ),
+                        domain,
+                        "extracted",
+                        "2026-08-01T00:00:00Z",
+                    ),
+                )
+
+        queued = enqueue_stale_extractions(store, queue, config=cfg)
+        assert queued == 2, "the two with a gap and an older stamp, and nothing else"
+
+        payloads = [
+            _json.loads(r["payload"])
+            for r in rows(
+                store,
+                "SELECT payload FROM jobs WHERE kind = ? AND status = 'pending'",
+                EXTRACT_KIND,
+            )
+        ]
+        assert sorted(p["candidate_id"] for p in payloads) == ["gap.io", "half.io"]
+
+        # `discovered_by` is written once and never reassigned, and the Extractor's
+        # carry-forward reads the row this pass is about to overwrite. Losing it to a
+        # backfill would empty the only table that makes a query weight checkable --
+        # the exact defect that reported `(unknown) 201` for weeks.
+        assert all(p["template_id"] == "hn_ai_agent" for p in payloads)
+
+        assert enqueue_stale_extractions(store, queue, config=cfg) == 0, (
+            "a candidate already queued is not queued twice"
+        )
+        store.close()
+
+
+def test_a_backfill_is_bounded_because_the_cost_is_decode():
+    """583 candidates is roughly nine hours of inference on this box, in the same queue
+    a fresh harvest drains. Unbounded, the backfill is what a new lead waits behind."""
+    import inspect
+
+    from cindraleads.agents.extractor import DEFAULT_RESTALE_LIMIT, enqueue_stale_extractions
+
+    assert 0 < DEFAULT_RESTALE_LIMIT <= 100
+    default = inspect.signature(enqueue_stale_extractions).parameters["limit"].default
+    assert default == DEFAULT_RESTALE_LIMIT, "the bound must apply without being asked for"

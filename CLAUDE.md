@@ -37,7 +37,7 @@ cindra health                            # what the thermal governor sees
 cindra queue release [--kind K]          # pull deferred jobs forward
 cindra status                            # candidates, companies, live triggers
 cindra maintain [--dry-run] [--no-network]  # nightly: retire, decay, resample, purge
-cindra reconcile                         # enqueue-only: unenriched + stale scores
+cindra reconcile                         # enqueue-only: lost/superseded extracts, unenriched, stale scores
 cindra explain [--near-misses N]         # scores, penalties, and yield per query template
 cindra digest [--dry-run] [--limit N]    # batch the Tier C backlog to Discord
 cindra serve [--port 9109]               # /healthz, /metrics, HTML view (localhost)
@@ -342,8 +342,16 @@ long-lived Python processes; they keep the modules imported at boot while the ne
 sits on disk, draining jobs and reporting healthy. Deploying is
 `git pull && cindra db migrate && sudo systemctl restart cindraleads-worker cindraleads-health`.
 `/healthz` reports the gap as `worker:build` -- the worker stamps `source_mtime` on its
-heartbeat and health compares it against the newest `.py` on disk. Timers are exempt:
+heartbeat and health compares it against the newest file on disk. Timers are exempt:
 each firing is a fresh process.
+
+**That check scanned `*.py` only, and the two directories this project changes most are
+not code.** `config/*.yaml` and `prompts/` are read exactly once, at stage construction
+-- `load_prompt` in the Extractor's `__post_init__`, `icp.yaml` in `Scout.from_config`,
+`scoring.yaml` for the Scorer's lifetime -- so a long-lived worker pins an edited prompt
+exactly as firmly as an edited module. `source_mtime` now covers all three trees,
+resolved through `Settings` rather than guessed from `__file__`. **A staleness probe
+blind to the file you just edited is worse than none, because it answers confidently.**
 
 **Phase 8 code complete; the loop has no real reactions in it yet.** A gateway bot
 (`cindraleads-feedback.service`, optional) turns Discord reactions into `feedback` rows,
@@ -579,6 +587,34 @@ guard is now mechanical: every optional free-text field in `CompanyExtraction` m
 named in `prompts/extract_company.md`. `trigger_codes` and `evidence_snippets` are
 exempt and populate fine, because an enum and a self-describing list name carry their
 own semantics through the schema.
+
+Naming them was not enough on its own: rule 2 required every field to be "supported by
+text that literally appears on the page", and the model obeyed rule 2 over rule 10.
+Probed against the real model, it quoted the company's own tagline verbatim into
+`evidence_snippets` and returned `description: null` in the same object -- it had the
+information and the rules forbade writing it. Rule 2 now carves out the two summary
+fields, and a test asserts the carve-out, because re-tightening it would silently empty
+both columns with every test still green.
+
+**Two prompt fixes shipped and the next 37 companies came out null as well, which was
+neither fix being wrong.** `scripts/probe_extraction.py` settled it: holding the prompt
+byte-identical and varying only the grammar, the *shipping* schema fills both fields on
+the first attempt. The prompt on disk was correct and the worker was still holding the
+one it loaded at boot -- see the `source_mtime` note above, which is the same defect
+seen from the other end. **Two hypotheses were argued from the corpus before anything
+asked the model; the probe cost three minutes.** Nothing records the bytes a model
+returns, so an omitted key and an explicit `null` reach every log as the same `None`,
+and they are different defects with different fixes.
+
+**And fixing a prompt does not un-write what the broken one produced.**
+`enqueue_stale_extractions` is the fourth reconciler and re-extracts on two predicates,
+the pair `prose_version` needed: the company is missing `description` or `industry`,
+**and** its extraction is stamped by an older `prompt_version`. Without the first it
+re-decodes hundreds of pages that are already fine; without the second a bare login page
+that genuinely says nothing asks again forever. Bounded at `DEFAULT_RESTALE_LIMIT` per
+pass because the cost is decode -- a whole corpus is hours of inference in the queue a
+fresh harvest drains, and a backfill nobody is waiting on must never be what a new lead
+waits behind.
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already

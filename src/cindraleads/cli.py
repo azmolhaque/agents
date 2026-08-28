@@ -32,6 +32,7 @@ from cindraleads.agents import (
     HARVEST_KIND,
     RESOLVE_KIND,
     SCORE_KIND,
+    enqueue_stale_extractions,
     enqueue_stale_scores,
     enqueue_unenriched,
     enqueue_unextracted,
@@ -775,11 +776,16 @@ def reconcile(
             # than merely late work: a candidate whose extract job died never became a
             # company, so no other reconciler here can see it.
             stranded = enqueue_unextracted(store, runtime.queue)
+            # Then the ones that ran under a prompt since fixed. Bounded, because
+            # unlike the three around it this one has a whole corpus to work through
+            # and no reason to be in a hurry about it.
+            superseded = enqueue_stale_extractions(store, runtime.queue, config=cfg)
             fresh = enqueue_unenriched(store, runtime.queue, force=force)
             stale = enqueue_stale_scores(store, runtime.queue, force=force)
         typer.echo(
-            f"queued {stranded} for extraction, {fresh} for enrichment, "
-            f"{stale} for (re)scoring" + (" (forced past dedupe)" if force else "")
+            f"queued {stranded} for extraction, {superseded} for re-extraction, "
+            f"{fresh} for enrichment, {stale} for (re)scoring"
+            + (" (forced past dedupe)" if force else "")
         )
         record_heartbeat(
             store,

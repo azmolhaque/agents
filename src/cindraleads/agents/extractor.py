@@ -57,6 +57,7 @@ __all__ = [
     "RESOLVE_KIND",
     "ExtractOutcome",
     "Extractor",
+    "enqueue_stale_extractions",
     "enqueue_unextracted",
 ]
 
@@ -83,6 +84,12 @@ MAX_DEFERRALS = 4
 # steady state, and something bigger is wrong than one candidate.
 THERMAL_DEFER_SECONDS = 20 * 60
 MAX_THERMAL_PAUSES = 12
+
+# How many superseded extractions one reconcile pass may re-queue. The cost of a
+# backfill is decode, not disk: at ~55 s a page this is roughly 45 minutes of
+# inference, which drains a several-hundred-company corpus over days while never
+# being the reason a freshly harvested lead waits behind it.
+DEFAULT_RESTALE_LIMIT = 50
 
 # The one LLM failure that means "the box is busy", rather than "this page or this
 # prompt is wrong". Matched on the governor's own message.
@@ -547,4 +554,89 @@ def enqueue_unextracted(store: Store, queue: Any, *, limit: int = 0) -> int:
             queued += 1
     if queued:
         log.info("extract_backlog_requeued", candidates=queued)
+    return queued
+
+
+def enqueue_stale_extractions(
+    store: Store,
+    queue: Any,
+    *,
+    limit: int = DEFAULT_RESTALE_LIMIT,
+    config: Settings | None = None,
+) -> int:
+    """Re-extract companies whose gaps a since-fixed prompt would now fill.
+
+    Fixing the prompt does not un-write what the broken one produced -- the same shape
+    as `RETIREMENT_RULES` and `enqueue_stale_scores`, and the third time this project
+    has had to build the backwards-looking half of a forwards-only pipeline. 583
+    companies were extracted under a prompt that never named `description` or
+    `industry`, and every one of them will stay null forever: `enqueue_unextracted`
+    recovers candidates that never ran, `enqueue_unenriched` and `enqueue_stale_scores`
+    both start from state the Extractor already wrote. Nothing asks whether what it
+    wrote is behind the prompt that wrote it.
+
+    **Two predicates, and both are load-bearing** -- exactly the pair `prose_version`
+    needed:
+
+    * *the gap* — the company is missing `description` or `industry`. Without it this
+      re-decodes 583 pages whose extractions are already fine, at ~55 s each.
+    * *the version* — the extraction was stamped by a different prompt build. Without
+      it a page that genuinely says nothing about what the company does (a bare login
+      screen, a holding page) is asked again on every pass, forever. Once re-extracted
+      under the current prompt the stamp matches and it stops asking, whatever the
+      answer was.
+
+    Bounded by default because the cost is decode, not disk: 583 candidates is roughly
+    nine hours of inference on this box, and an unbounded backfill would sit in front of
+    every fresh harvest in the same queue. `DEFAULT_RESTALE_LIMIT` per reconcile pass
+    drains the corpus over days without ever being the reason a new lead waits.
+
+    Re-extraction is safe to repeat: `_upsert_company` fills gaps and never erases, and
+    `_write_triggers` refreshes a live trigger rather than stacking a duplicate. It does
+    write fresh `evidence` rows, which the retention sweep in `cindra maintain` reclaims.
+    """
+    cfg = config or settings()
+    current = prompt_version(cfg.resolve(cfg.prompt_dir))
+    rows = store.conn.execute(
+        "SELECT c.candidate_id, c.raw_payload FROM candidates c "
+        "JOIN companies co ON co.canonical_domain = c.resolved_domain "
+        "WHERE c.status = 'extracted' "
+        "  AND (co.description IS NULL OR co.industry IS NULL) "
+        "  AND COALESCE(json_extract(c.raw_payload, '$.prompt_version'), '') <> ? "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM jobs j WHERE j.kind = ? "
+        "      AND j.status IN ('pending', 'in_flight') "
+        "      AND json_extract(j.payload, '$.candidate_id') = c.candidate_id) "
+        "ORDER BY co.last_updated_at DESC LIMIT ?",
+        (current, EXTRACT_KIND, limit),
+    ).fetchall()
+
+    queued = 0
+    with store.tx() as conn:
+        for row in rows:
+            try:
+                payload = json.loads(row["raw_payload"])
+            except (ValueError, TypeError):
+                continue
+            url = str(payload.get("url") or "")
+            if not url:
+                continue
+            queue.enqueue(
+                EXTRACT_KIND,
+                {
+                    "candidate_id": str(row["candidate_id"]),
+                    "url": url,
+                    "targets": list(payload.get("trigger_codes") or []),
+                    # The Extractor's own carry-forward reads this from the stored
+                    # payload, but that read happens against the row this pass is about
+                    # to overwrite. Passing it on the job is the documented fallback and
+                    # costs nothing; losing `discovered_by` to a backfill would undo the
+                    # only table that makes a query weight checkable.
+                    "template_id": str(payload.get("template_id") or ""),
+                },
+                conn=conn,
+            )
+            queued += 1
+    if queued:
+        log.info("extract_stale_requeued", candidates=queued, prompt_version=current)
     return queued

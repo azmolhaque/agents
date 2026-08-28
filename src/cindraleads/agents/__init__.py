@@ -8,7 +8,11 @@ convention.
 
 from cindraleads.agents.dispatcher import DISPATCH_KIND, Dispatcher
 from cindraleads.agents.enricher import ENRICH_KIND, Enricher, enqueue_unenriched
-from cindraleads.agents.extractor import Extractor, enqueue_unextracted
+from cindraleads.agents.extractor import (
+    Extractor,
+    enqueue_stale_extractions,
+    enqueue_unextracted,
+)
 from cindraleads.agents.harvester import EXTRACT_KIND, HARVEST_KIND, Harvester
 from cindraleads.agents.resolver import RESOLVE_KIND, Resolver
 from cindraleads.agents.scorer import SCORE_KIND, Scorer, enqueue_stale_scores
@@ -30,6 +34,7 @@ __all__ = [
     "Scorer",
     "Scout",
     "ScoutConfig",
+    "enqueue_stale_extractions",
     "enqueue_stale_scores",
     "enqueue_unenriched",
     "enqueue_unextracted",

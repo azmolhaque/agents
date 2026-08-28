@@ -9,6 +9,7 @@ unattended system dangerous.
 from __future__ import annotations
 
 import json
+import os
 import urllib.request
 from datetime import timedelta
 from typing import Any
@@ -706,3 +707,78 @@ def test_an_up_to_date_endpoint_says_so(store: Any, monkeypatch: pytest.MonkeyPa
 
     check = next(c for c in report.checks if c.name == "health:build")
     assert check.status == "ok"
+
+
+# ------------------------------------------------------------- what counts as a build
+
+
+def _settings_at(root: Any) -> Any:
+    from cindraleads.config import Settings
+
+    return Settings(repo_root=root)
+
+
+def test_a_prompt_edit_is_a_new_build(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`source_mtime` scanned `*.py` and nothing else, so the two directories this
+    project changes most were invisible to the one probe built to catch a stale worker.
+
+    That is not hypothetical. `description` and `industry` were null for 583 of 583
+    companies; the fix was two edits to `prompts/extract_company.md`; the next 37
+    companies came out null as well. Probed afterwards against the real model, the
+    fixed prompt fills both fields on the first attempt -- so the prompt was right and
+    the worker was still holding the one it loaded at boot, while `/healthz` compared
+    `.py` mtimes, found nothing newer and reported the build current.
+
+    Every stage caches these at construction: `load_prompt` in the Extractor's
+    `__post_init__`, `icp.yaml` in `Scout.from_config`, `scoring.yaml` for the Scorer's
+    lifetime. A long-lived worker pins an edited prompt exactly as firmly as an edited
+    module, which is what makes a `.py`-only check answer the wrong question
+    confidently.
+    """
+    from cindraleads import metrics as metrics_mod
+
+    (tmp_path / "prompts").mkdir()
+    (tmp_path / "config").mkdir()
+    (tmp_path / "prompts" / "extract_company.md").write_text("v1")
+    (tmp_path / "config" / "icp.yaml").write_text("query_templates: []\n")
+    monkeypatch.setattr(metrics_mod, "settings", lambda: _settings_at(tmp_path))
+
+    baseline = metrics_mod.source_mtime()
+    assert baseline > 0
+
+    for name in ("prompts/extract_company.md", "config/icp.yaml"):
+        path = tmp_path / name
+        os.utime(path, (baseline + 3600, baseline + 3600))
+        assert metrics_mod.source_mtime() > baseline, f"editing {name} did not move the build"
+        os.utime(path, (baseline - 3600, baseline - 3600))
+
+
+def test_the_real_prompt_and_config_directories_are_watched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The deployed layout, not a temporary one. Resolved through `Settings` rather
+    than guessed from `__file__`, so this asserts the resolution actually lands on the
+    directories the running code reads from."""
+    from cindraleads import metrics as metrics_mod
+    from cindraleads.config import settings
+
+    cfg = settings()
+    watched = {root for root, _ in metrics_mod._behaviour_trees()}
+
+    assert cfg.resolve(cfg.prompt_dir) in watched
+    assert cfg.resolve(cfg.config_dir) in watched
+
+
+def test_an_unreadable_config_still_yields_a_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Under-reporting beats raising. `source_mtime()` runs at import time in both the
+    CLI and the health endpoint, so a settings failure here would take `cindra health`
+    down with it -- and `cindra health` is the command you run when something is
+    already wrong."""
+    from cindraleads import metrics as metrics_mod
+
+    def _boom() -> Any:
+        raise RuntimeError("no .env, no repo root, nothing")
+
+    monkeypatch.setattr(metrics_mod, "settings", _boom)
+
+    assert metrics_mod.source_mtime() > 0, "the package tree must still count"

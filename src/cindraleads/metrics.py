@@ -30,6 +30,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from cindraleads.config import settings
 from cindraleads.logging import get_logger
 from cindraleads.models import to_iso, utcnow
 from cindraleads.store import Store
@@ -125,23 +126,60 @@ def record_heartbeat(
     log.debug("heartbeat", unit=unit, ok=ok, **detail)
 
 
-def source_mtime() -> float:
-    """Newest modification time across the package source, or 0 if unreadable.
+def _behaviour_trees() -> list[tuple[Path, tuple[str, ...]]]:
+    """Every directory whose contents decide what a running process does.
 
-    Used to catch a long-running worker still executing the code it imported at boot.
-    `git pull` rewrites these files; the running process keeps its old modules, so
-    every fix sits on disk doing nothing until the unit restarts -- silently, while
-    the worker looks perfectly healthy and drains jobs the whole time.
+    Not just `src/`. CLAUDE.md says it outright -- "config/*.yaml behaviour - edit
+    these, not code; prompts/ all LLM prompts" -- and both are read exactly once, at
+    stage construction: the Extractor calls `load_prompt` in `__post_init__`, the Scout
+    reads `icp.yaml` in `from_config`, the Scorer holds `scoring.yaml` for its lifetime.
+    A long-lived worker therefore pins an edited prompt exactly as firmly as it pins an
+    edited module, and for the same reason.
+
+    Resolved through `Settings` rather than guessed from `__file__`, because a deployed
+    copy need not put `prompts/` two levels above the package. If settings cannot be
+    built the package tree still counts -- an under-reporting staleness check is worth
+    having, and one that raises at import time takes `cindra health` down with it.
+    """
+    trees: list[tuple[Path, tuple[str, ...]]] = [(Path(__file__).resolve().parent, ("*.py",))]
+    try:
+        cfg = settings()
+        trees.append((cfg.resolve(cfg.prompt_dir), ("*.md",)))
+        trees.append((cfg.resolve(cfg.config_dir), ("*.yaml", "*.yml")))
+    except Exception:  # see the docstring; this must never fail an import
+        log.debug("source_mtime_config_unresolved")
+    return trees
+
+
+def source_mtime() -> float:
+    """Newest modification time across everything that decides behaviour, or 0.
+
+    Used to catch a long-running worker still executing what it loaded at boot.
+    `git pull` rewrites these files; the running process keeps its old modules and its
+    old prompt string, so every fix sits on disk doing nothing until the unit restarts
+    -- silently, while the worker looks perfectly healthy and drains jobs the whole
+    time.
+
+    **It scanned `*.py` only, and the two directories it missed are the ones this
+    project changes most.** `description` and `industry` were null for 583 of 583
+    companies; the cause was a prompt that never named them, the fix was two edits to
+    `prompts/extract_company.md`, and the next 37 companies came out null as well.
+    Probed against the real model afterwards, the fixed prompt fills both fields on the
+    first try -- so the prompt was right and the worker was still reading the old one,
+    while `/healthz` compared `.py` mtimes, found nothing newer, and reported the build
+    current. A staleness probe that is blind to the file you just edited is worse than
+    none, because it answers the question confidently.
 
     mtime rather than a git sha: no subprocess (the passive-only rule forbids shelling
     out from the package), no dependency on a `.git` directory that a deployed copy may
     not have, and it catches an edited file as readily as a pulled one.
     """
-    root = Path(__file__).resolve().parent
     newest = 0.0
     try:
-        for path in root.rglob("*.py"):
-            newest = max(newest, path.stat().st_mtime)
+        for root, patterns in _behaviour_trees():
+            for pattern in patterns:
+                for path in root.rglob(pattern):
+                    newest = max(newest, path.stat().st_mtime)
     except OSError:
         return 0.0
     return newest
