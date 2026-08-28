@@ -802,3 +802,42 @@ def test_a_candidate_whose_extract_job_died_is_recoverable():
 
         assert enqueue_unextracted(store, queue) == 0, "and re-running queues nothing new"
         store.close()
+
+
+def test_every_extraction_field_is_asked_for_in_the_prompt():
+    """`description` and `industry` were in the schema and nowhere in the instructions,
+    and rule 2 tells the model that an unstated field is null. So it returned null every
+    time: 0 of 583 companies had either, for the life of the corpus.
+
+    The cost was not two empty columns. `industry` is the text three compliance rules
+    match on -- not_government_or_cni, not_a_competitor, not_an_excluded_sector -- so
+    all three have only ever seen `display_name`. nyc.gov passed as "New York City
+    Public Interest Tech" until a TLD check was added, and a security vendor is caught
+    only if its name gives it away. `description` is handed to the Scorer's prose
+    prompt, so every outreach angle was written without knowing what the company does.
+
+    A field the schema requests and the prompt never mentions is invisible in every
+    test that stubs the model, because a stub returns whatever the fixture says. Only
+    the corpus could show it, and only by counting.
+    """
+    from cindraleads.config import load_prompt
+    from cindraleads.models import CompanyExtraction
+
+    # Scoped to optional free-text scalars, which is where the failure actually lives.
+    # `trigger_codes` carries a self-documenting enum through the schema and
+    # `evidence_snippets` is a list whose name states what it holds; both populate at
+    # scale (248 T1_AI_SHIP triggers, snippets verified against page text) despite the
+    # prompt never naming them. A bare `str | None` has nothing to go on, and rule 2
+    # then tells the model to null it.
+    prompt = load_prompt("extract_company", base=REPO_ROOT / "prompts")
+    free_text = [
+        name
+        for name, field in CompanyExtraction.model_fields.items()
+        if field.annotation in (str, str | None)
+    ]
+    missing = [name for name in free_text if f"`{name}`" not in prompt]
+
+    assert not missing, (
+        f"asked for in the schema, never mentioned in the prompt: {missing}. "
+        "The model is told to null anything the instructions do not cover."
+    )

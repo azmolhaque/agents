@@ -564,6 +564,22 @@ heartbeat now carries `thermal_state`, `temp_c` and `throttled_now`. Before that
 governor kept its state in memory and `/healthz` reported only the instant, so "did it
 engage over those 72 hours, and did it come back" died with each poll.
 
+**`description` and `industry` were in the extraction schema and nowhere in the prompt,
+so the model nulled them 583 times out of 583.** Rule 2 tells it that an unstated field
+is null, and a bare `str | None` with no rule and no enum has nothing to go on. The cost
+was not two empty columns: `industry` is the text `not_government_or_cni`,
+`not_a_competitor` and `not_an_excluded_sector` all match on, so **three compliance rules
+have only ever seen `display_name`** -- which is why nyc.gov passed as "New York City
+Public Interest Tech". `description` is handed to the prose prompt, so every outreach
+angle was written without knowing what the company does.
+
+Invisible to every test, because a stubbed model returns whatever the fixture says. Only
+counting the corpus could show it -- `SUM(industry IS NOT NULL)` over `companies`. The
+guard is now mechanical: every optional free-text field in `CompanyExtraction` must be
+named in `prompts/extract_company.md`. `trigger_codes` and `evidence_snippets` are
+exempt and populate fine, because an enum and a self-describing list name carry their
+own semantics through the schema.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
