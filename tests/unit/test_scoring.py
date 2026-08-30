@@ -611,3 +611,50 @@ def test_the_strongest_trigger_is_offered_first():
 
     heaviest = scorer.scoring.triggers["T10_VENDOR_PRESSURE"].means
     assert phrases.startswith(heaviest), f"strongest trigger must lead: {phrases}"
+
+
+def test_an_offer_slug_leaks_the_same_way_a_trigger_code_does():
+    """`Offer` is a `Literal` of four identifiers handed to the prose prompt with
+    nothing that knows what they mean -- exactly where `T1_AI_SHIP` stood before
+    `means` existed, and it failed the same way.
+
+    Measured on one worklist: eight of ten cards read "an AI-LLM assessment", so the
+    model usually humanises the slug. The ninth read "I'd like to run an
+    ai_llm_assessment for you". *Usually* is why this is a guard and not a prompt fix
+    -- the same prompt will do it again.
+    """
+    from cindraleads.agents.scorer import _leaked_codes
+    from cindraleads.models import LeadProse
+
+    leaky = LeadProse(
+        outreach_angle="I'd like to run an ai_llm_assessment for you, free, under RoE.",
+        rationale="fine",
+    )
+    assert _leaked_codes(leaky) == ["ai_llm_assessment"]
+
+    for slug in ("snapshot_free", "watch", "gig", "ai_llm_assessment"):
+        prose = LeadProse(outreach_angle=f"We offer {slug} today.", rationale="fine")
+        caught = _leaked_codes(prose)
+        # `watch` and `gig` are ordinary English words and must never be withheld --
+        # matching them would empty half the corpus for saying "we watch your surface".
+        assert bool(caught) is ("_" in slug), f"{slug}: {caught}"
+
+
+def test_widening_the_guard_is_a_new_prose_build():
+    """An angle the old build accepted is one this build discards and re-asks for,
+    which is a different answer to the same prompt. Without the stamp moving,
+    `enqueue_stale_scores` correctly reports nothing to do and the bad angles stay --
+    the same half-a-change that left three Tier B cards blank in Discord."""
+    import re
+
+    from cindraleads.agents import scorer as scorer_mod
+
+    base = REPO_ROOT / "prompts"
+    before = scorer_mod.prose_version(base)
+    original = scorer_mod._SLUG_PATTERN
+    try:
+        scorer_mod._SLUG_PATTERN = re.compile(r"(?!x)x")
+        assert scorer_mod.prose_version(base) != before
+    finally:
+        scorer_mod._SLUG_PATTERN = original
+    assert scorer_mod.prose_version(base) == before

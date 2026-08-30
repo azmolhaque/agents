@@ -144,6 +144,10 @@ def prose_version(base: Path | None = None) -> str:
         f"{name}:{_max_length(field)}" for name, field in sorted(LeadProse.model_fields.items())
     )
     digest.update(f"|{bounds}".encode())
+    # What counts as a leak is part of what a good angle is. Widening the guard to the
+    # offer slugs makes an angle the old build accepted one this build would discard
+    # and re-ask for, which is a different answer to the same prompt.
+    digest.update(f"|{_CODE_PATTERN.pattern}|{_SLUG_PATTERN.pattern}".encode())
     return digest.hexdigest()[:16]
 
 
@@ -797,6 +801,17 @@ def _age_phrase(observed: datetime) -> str:
 # genuinely called "T5" in its own name is not caught.
 _CODE_PATTERN = re.compile(r"\bT\d{1,2}_[A-Z][A-Z_]+\b")
 
+# The offer slugs, for the same reason and from the same mistake. `Offer` is a
+# `Literal` of four identifiers handed to the prose prompt with nothing that knows
+# what they mean -- exactly the position `T1_AI_SHIP` was in before `means` existed.
+#
+# The model usually humanises them: eight of ten cards on one worklist read "an
+# AI-LLM assessment". The ninth read "I'd like to run an ai_llm_assessment for you",
+# which is why usually is not a guarantee and why the guard exists rather than a
+# better prompt. Underscores only -- a card saying "watch" or "snapshot" in running
+# English is fine, and matching those words would withhold half the corpus.
+_SLUG_PATTERN = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+
 
 def _leaked_codes(prose: LeadProse) -> list[str]:
     """Internal taxonomy codes that reached prospect-facing text.
@@ -806,4 +821,4 @@ def _leaked_codes(prose: LeadProse) -> list[str]:
     is a single object that gets pasted whole.
     """
     text = " ".join(str(value) for value in (prose.outreach_angle, prose.bengali_angle) if value)
-    return sorted(set(_CODE_PATTERN.findall(text)))
+    return sorted(set(_CODE_PATTERN.findall(text)) | set(_SLUG_PATTERN.findall(text)))

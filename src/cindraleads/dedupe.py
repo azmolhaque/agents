@@ -120,6 +120,43 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         "substack.com",
         "notion.site",
         "notion.so",
+        # Publishers. A news site writes *about* companies, so its registrable domain
+        # names the reporter and never the prospect -- and unlike a GitHub repo, which
+        # resolves to nothing and gets dropped, an article resolves to a real, live,
+        # contactable organization with a real mailbox. That is worse than useless.
+        #
+        # Measured, on the worklist that was about to be emailed: lead #9 read
+        # "Shikho · techcrunch.com", contact `aisha@techcrunch.com`, evidence a
+        # TechCrunch article about a third company's earphones. The Extractor had read
+        # the article and taken its *subject* as the company, the Resolver had
+        # canonicalized the article URL to the publisher, and the Enricher had found a
+        # journalist's address on the publisher's own site. Every stage did its job.
+        # Sending that email pitches a security assessment to a reporter about a story
+        # she wrote, which is the single most expensive thing this system could do to
+        # the brand it exists to build.
+        "techcrunch.com",
+        "wired.com",
+        "theverge.com",
+        "venturebeat.com",
+        "arstechnica.com",
+        "forbes.com",
+        "businessinsider.com",
+        "bloomberg.com",
+        "reuters.com",
+        "cnbc.com",
+        "zdnet.com",
+        "thenextweb.com",
+        "techradar.com",
+        "engadget.com",
+        "axios.com",
+        "theregister.com",
+        "bleepingcomputer.com",
+        "thehackernews.com",
+        "prnewswire.com",
+        "businesswire.com",
+        "globenewswire.com",
+        "dev.to",
+        "hashnode.dev",
         "twitter.com",
         "x.com",
         "linkedin.com",

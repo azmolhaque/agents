@@ -435,7 +435,7 @@ async def send_digest(
 # Any internal trigger code. Kept in step with the Scorer's copy deliberately rather
 # than shared: this one guards what leaves the building, and it must keep working even
 # if the generation-side rule is loosened.
-_INTERNAL_CODE = re.compile(r"\bT\d{1,2}_[A-Z][A-Z_]+\b")
+_INTERNAL_CODE = re.compile(r"\bT\d{1,2}_[A-Z][A-Z_]+\b|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 
 
 def _publishable(text: str | None, lead_id: Any = "") -> Any:

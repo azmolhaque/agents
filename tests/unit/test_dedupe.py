@@ -196,3 +196,42 @@ def test_a_company_careers_page_on_its_own_domain_still_resolves():
     assert canonical_domain("https://creativelens.ai") == "creativelens.ai"
     # A Greenhouse *job id* on the company's own careers host is the company's page.
     assert canonical_domain("https://careers.dat.com/jobs/?gh_jid=6139594004") == "dat.com"
+
+
+def test_a_news_article_is_never_the_company_it_is_about():
+    """The most expensive defect this system has produced, caught one command before
+    the email went out.
+
+    Lead #9 on a worklist read "Shikho · techcrunch.com", contact
+    `aisha@techcrunch.com`, evidence a TechCrunch article about a *third* company's
+    earphones. Every stage worked: the Extractor read the article and took its subject
+    as the company, the Resolver canonicalized the article URL to the publisher, and
+    the Enricher found a real journalist's address on the publisher's own site.
+
+    A publisher is worse than an ATS host, not merely as bad. A GitHub repo
+    canonicalizes to something that resolves to nothing and gets dropped downstream; an
+    article canonicalizes to a live organization with a working mailbox, so the whole
+    pipeline runs to completion and hands you a card that pitches a security assessment
+    to a reporter about a story she wrote.
+    """
+    from cindraleads.dedupe import canonical_domain
+
+    for url in (
+        "https://techcrunch.com/2026/08/27/plauds-new-earphones-esim-ai-agents/",
+        "https://www.wired.com/story/openai-is-developing-a-persistent-ai-agent/",
+        "https://www.theverge.com/2026/8/1/ai-assistant-launch",
+        "https://arstechnica.com/ai/2026/08/model-release/",
+        "https://www.bloomberg.com/news/articles/2026-08-27/funding-round",
+        "https://www.prnewswire.com/news-releases/acme-raises-series-a-123.html",
+        "https://thehackernews.com/2026/08/breach-disclosed.html",
+    ):
+        assert canonical_domain(url) is None, url
+
+
+def test_the_company_named_in_an_article_still_resolves_from_its_own_site():
+    """The filter drops the citation, never the prospect. A company written about in
+    TechCrunch is still a company; it just has to be reached through its own domain,
+    which is also the only place its own claims can be evidenced."""
+    from cindraleads.dedupe import canonical_domain
+
+    assert canonical_domain("https://www.plaud.ai/products/notepin") == "plaud.ai"

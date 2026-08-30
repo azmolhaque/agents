@@ -636,6 +636,27 @@ the limit instead. A backfill job is otherwise indistinguishable from a fresh ex
 same kind, same shape -- so it carries a `backfill` flag, and the defer path carries the
 flag too or a thermal pause silently frees budget the next pass spends again.
 
+**A publisher is not a platform host, it is worse than one.** A worklist about to be
+emailed had lead #9 reading `Shikho · techcrunch.com`, contact `aisha@techcrunch.com`,
+evidence a TechCrunch article about a third company's earphones. Every stage worked: the
+Extractor read the article and took its *subject* as the company, the Resolver
+canonicalized the article URL to the publisher, the Enricher found a real journalist's
+address on the publisher's own site. A GitHub repo canonicalizes to something that
+resolves to nothing and is dropped downstream; **an article canonicalizes to a live
+organization with a working mailbox**, so nothing downstream objects and the card
+pitches an assessment to a reporter about a story she wrote. Publishers and wire
+services are in `PLATFORM_HOSTS` now.
+
+**The offer slugs leak exactly the way the trigger codes did.** `Offer` is a `Literal`
+of four identifiers handed to the prose prompt with nothing that knows what they mean --
+where `T1_AI_SHIP` stood before `means` existed. Eight of ten cards read "an AI-LLM
+assessment" and the ninth read "I'd like to run an ai_llm_assessment for you": *usually*
+is why this is a guard and not a prompt fix. Both guards now match snake_case as well as
+`T\d+_[A-Z_]+`, underscores only -- a card saying "watch" or "snapshot" in running
+English is fine and matching those words would withhold half the corpus. The pattern is
+in `prose_version`, because widening what counts as a leak makes an angle the old build
+accepted one this build re-asks for.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
