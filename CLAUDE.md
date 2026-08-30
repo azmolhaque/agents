@@ -657,6 +657,29 @@ English is fine and matching those words would withhold half the corpus. The pat
 in `prose_version`, because widening what counts as a leak makes an angle the old build
 accepted one this build re-asks for.
 
+**The enterprise veto has never once fired.** `under_employee_ceiling` returns True when
+`employee_band` is None -- "silence is not evidence of size" -- and `_icp_component`
+scores an unknown band at 55 of 100 for the same reason. Both defaults are right for the
+case they were written for. Measured 2026-08-30: **`employee_band` was non-null for 1 of
+616 companies**, so both mechanisms have been off for the life of the project and every
+company is scored as though it might be 11-50. That is how OpenAI reached the top ten of
+a call list at 65 with `disclosure@openai.com` attached.
+
+Unlike `description`, the prompt cannot fix this: a tagline is on the page and a
+headcount genuinely is not, and rule 3 forbidding the model from inventing a number is
+correct and stays. The Enricher was already fetching the company's public ATS board and
+already counting it -- `analyze_postings` reads the postings for hiring triggers and
+drops the list. `companies.open_roles` keeps that count as the fact it is, and the band
+is derived at read time so a threshold edit re-scores through `scoring_version` rather
+than leaving a stale column for `RETIREMENT_RULES` to chase.
+
+**The inference only ever costs points, and that asymmetry is the design.** A wrong
+"small" puts an enterprise in front of a human as a Tier A lead, which is the failure
+being fixed; a wrong "large" drops a real prospect into the digest, where it is still
+read. So only the large bands are inferable and a low count infers nothing -- three open
+roles is a five-person startup or a hundred-person company hiring quietly. A stated band
+always beats an inferred one.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

@@ -251,6 +251,45 @@ def _trigger_component(inp: ScoreInput, cfg: ScoringConfig, now: datetime) -> fl
     return min(100.0, total)
 
 
+def band_from_open_roles(open_roles: int | None, cfg: ScoringConfig) -> str | None:
+    """A size band inferred from the company's own public job board, or None.
+
+    Two mechanisms exist to keep an enterprise off the call list -- the
+    `employee_band_points` gradient here and the `under_employee_ceiling` veto in
+    `compliance.py` -- and both are disabled by the same null. `employee_band` was
+    non-null for **1 of 616 companies** on 2026-08-30, because the extraction rules
+    require a headcount to appear verbatim on the page and almost none do. That rule is
+    right and stays; a 4B asked for a headcount invents one. The information simply is
+    not on a landing page.
+
+    It is on the ATS board, which the Enricher already fetches to read hiring triggers
+    and which already publishes a count. Same shape as `emails_from_markup` and the
+    security.txt `Contact:` line: the data was being fetched and discarded.
+
+    **Inference is downward-only, and that asymmetry is deliberate.** A wrong "small"
+    puts an enterprise in front of a human as a Tier A lead, which is the failure this
+    exists to fix. A wrong "large" drops a genuine prospect into the Tier C digest,
+    where it is still read. So a low role count infers *nothing* -- three open roles is
+    a five-person startup or a hundred-person company hiring quietly, and no passive
+    signal separates them.
+
+    Derived at read time rather than stored, so a threshold edit re-scores through
+    `scoring_version` instead of leaving a stale column behind for `RETIREMENT_RULES`
+    to chase.
+    """
+    if open_roles is None:
+        return None
+    thresholds = cfg.icp_fit.get("inferred_band_from_open_roles") or []
+    for entry in thresholds:
+        try:
+            minimum, band = int(entry[0]), str(entry[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if open_roles >= minimum:
+            return band
+    return None
+
+
 def _icp_component(inp: ScoreInput, cfg: ScoringConfig) -> float:
     bands = cfg.icp_fit.get("employee_band_points") or {}
     if inp.employee_band is None:

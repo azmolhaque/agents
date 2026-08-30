@@ -895,3 +895,61 @@ async def test_security_txt_is_fetched_even_when_the_page_budget_runs_out(tmp_pa
         "the fixed-cost fact goes first so the page loop cannot starve it"
     )
     store.close()
+
+
+async def test_the_open_role_count_is_kept_not_just_the_triggers(tmp_path: Path):
+    """`analyze_postings` reads the board for hiring signals and drops the list, and the
+    length of that same list is the only passive headcount proxy this system has.
+
+    It matters because two mechanisms exist to keep an enterprise off the call list --
+    the `employee_band_points` gradient and the `under_employee_ceiling` veto -- and
+    both are switched off when `employee_band` is None. Measured 2026-08-30: it was
+    non-null for **1 of 616 companies**, so neither has ever run. That is how OpenAI
+    reached the top ten of a call list at 65 with `disclosure@openai.com` attached.
+
+    The extraction prompt cannot fix it the way it fixed `description`: a tagline is on
+    the page and a headcount is not, and the rule forbidding the model from inventing a
+    number is correct and stays. The company's own job board publishes the count, and
+    this stage was already fetching it. Same shape as `emails_from_markup` and the
+    security.txt `Contact:` line -- fetched, parsed, thrown away.
+    """
+    store = Store(tmp_path / "roles.db", migrations_dir=MIGRATIONS)
+    store.migrate()
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, ai_surface, tech_signals, "
+            "first_seen_at, last_updated_at) VALUES ('acme.io','Acme','[]','[]',?,?)",
+            ("2026-08-15T00:00:00Z", "2026-08-15T00:00:00Z"),
+        )
+
+    postings = [
+        {"title": f"Engineer {i}", "absolute_url": f"https://acme.io/jobs/{i}"} for i in range(42)
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "greenhouse" in str(request.url):
+            return httpx.Response(200, json={"jobs": postings})
+        return httpx.Response(404, text="{}")
+
+    registry = SourceRegistry.from_dict(
+        {
+            "sources": [{"id": "greenhouse_boards", "legality_class": "public_web"}],
+            "defaults": {"retries": 1, "backoff_base_seconds": 0.001},
+            "public_web_policy": {"min_interval_seconds": 0.0, "respect_robots": False},
+        }
+    )
+    egress = EgressClient(
+        store=store,
+        registry=registry,
+        cache=DocumentCache(store, cache_dir=tmp_path / "cache"),
+        breakers=SourceBreakers(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    enricher = Enricher(store=store, egress=egress, enabled_sources=frozenset({"ats"}))
+
+    result = await enricher.run(job())
+
+    assert result.ok
+    assert store.conn.execute("SELECT open_roles FROM companies").fetchone()["open_roles"] == 42
+    await egress.aclose()
+    store.close()

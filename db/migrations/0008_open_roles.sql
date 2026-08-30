@@ -1,0 +1,24 @@
+-- The enterprise veto has never once fired.
+--
+-- `under_employee_ceiling` returns True when `employee_band` is None -- "silence is not
+-- evidence of size" -- and `_icp_component` scores an unknown band at 55 of 100 for the
+-- same reason. Both defaults are right for the case they were written for: most landing
+-- pages never state a headcount, and punishing a terse startup for that would reject the
+-- best prospects in the corpus.
+--
+-- Measured 2026-08-30: `employee_band` is non-null for **1 of 616 companies**. So both
+-- mechanisms have been switched off for the life of the project, and every company is
+-- scored as though it might be 11-50. OpenAI reached the top ten of a call list at 65
+-- with `disclosure@openai.com` as its contact.
+--
+-- The prompt cannot fix this the way it fixed `description` and `industry`: a tagline is
+-- on the page and a headcount genuinely is not, and the rule forbidding the model from
+-- inventing a number is correct and stays.
+--
+-- The Enricher already fetches the company's public ATS board and already counts what is
+-- on it -- `analyze_postings` reads the postings for hiring triggers and throws the list
+-- away. An open-role count is a fact, published by the company, directly proportional to
+-- headcount, and free. It is stored here as the fact it is; the band is derived from it
+-- at read time against `scoring.yaml`, so a threshold change re-scores through
+-- `scoring_version` instead of leaving a stale derived column behind.
+ALTER TABLE companies ADD COLUMN open_roles INTEGER;

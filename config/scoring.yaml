@@ -110,6 +110,24 @@ icp_fit:
     "201-1000": 45
     "1000+": 0 # anti-ICP territory; the veto handles the rest
   unknown_band_points: 55 # most pages never state a headcount. Do not punish silence.
+  # When the page states no headcount, infer a band from the company's own public ATS
+  # board. `employee_band` was non-null for 1 of 616 companies on 2026-08-30, so both
+  # the gradient above and the `under_employee_ceiling` veto were switched off for the
+  # life of the project -- every company scored as though it might be 11-50, which is
+  # how OpenAI reached the top ten of a call list at 65.
+  #
+  # **The inference only ever costs points, never awards them**, and that asymmetry is
+  # the whole design. Guessing "small" from thin evidence puts an enterprise on the
+  # call list, which is the failure being fixed. Guessing "large" drops a real prospect
+  # to the digest, where it is still visible and recoverable. So only the large bands
+  # are inferable and a low count infers nothing -- three open roles is a five-person
+  # startup or a hundred-person company that hires quietly, and there is no way to tell.
+  #
+  # Read worst-first: the first threshold whose count is met wins. A stated band always
+  # beats an inferred one; this is the fallback, never an override.
+  inferred_band_from_open_roles:
+    - [40, "1000+"]
+    - [15, "201-1000"]
   sector_bonus: 15 # a sector named in icp.yaml profile.primary
   local_bonus: 10 # BD / South Asia, the local-trust wedge
   no_security_hire_bonus: 15 # T4 present without T3

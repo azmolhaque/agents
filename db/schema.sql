@@ -34,7 +34,7 @@ CREATE TABLE companies (
     funding             TEXT,
     first_seen_at       TEXT NOT NULL,
     last_updated_at     TEXT NOT NULL
-, enriched_at TEXT, discovered_by TEXT);
+, enriched_at TEXT, discovered_by TEXT, open_roles INTEGER);
 CREATE VIRTUAL TABLE companies_fts USING fts5 (
     canonical_domain UNINDEXED,
     display_name,

@@ -43,7 +43,13 @@ from cindraleads.models import (
     to_iso,
     utcnow,
 )
-from cindraleads.scoring import ScoreInput, ScoringConfig, TriggerObservation, score
+from cindraleads.scoring import (
+    ScoreInput,
+    ScoringConfig,
+    TriggerObservation,
+    band_from_open_roles,
+    score,
+)
 from cindraleads.store import Store
 
 __all__ = [
@@ -463,7 +469,12 @@ class Scorer:
             "enriched_at": row["enriched_at"],
             "display_name": str(row["display_name"]),
             "description": row["description"],
-            "employee_band": row["employee_band"],
+            # Stated first, inferred second, and only ever downward. This one key
+            # feeds both the `employee_band_points` gradient and the
+            # `under_employee_ceiling` veto, which is why filling it here fixes both
+            # at once -- and why both were dead while it was null for 615 of 616.
+            "employee_band": row["employee_band"]
+            or band_from_open_roles(row["open_roles"], self.scoring),
             "industry": row["industry"],
             "country": row["country"],
             "ai_surface": json.loads(row["ai_surface"] or "[]"),

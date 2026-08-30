@@ -658,3 +658,67 @@ def test_widening_the_guard_is_a_new_prose_build():
     finally:
         scorer_mod._SLUG_PATTERN = original
     assert scorer_mod.prose_version(base) == before
+
+
+def test_a_size_inference_only_ever_costs_points(cfg: ScoringConfig):
+    """The asymmetry is the design, not a caution.
+
+    A wrong "small" puts an enterprise in front of a human as a Tier A lead, which is
+    the failure this exists to fix. A wrong "large" drops a genuine prospect into the
+    Tier C digest, where it is still read. So only the large bands are inferable and a
+    low role count infers *nothing* -- three open roles is a five-person startup or a
+    hundred-person company hiring quietly, and no passive signal separates them.
+    """
+    from cindraleads.scoring import band_from_open_roles
+
+    assert band_from_open_roles(None, cfg) is None, "never looked is not the same as small"
+    assert band_from_open_roles(0, cfg) is None
+    assert band_from_open_roles(3, cfg) is None, "a low count must never infer a small band"
+    assert band_from_open_roles(15, cfg) == "201-1000"
+    assert band_from_open_roles(42, cfg) == "1000+"
+
+    # Every band it can produce must cost points against the unknown default, or the
+    # inference is capable of promoting a company it knows less about.
+    points = cfg.icp_fit["employee_band_points"]
+    unknown = float(cfg.icp_fit["unknown_band_points"])
+    for _minimum, band in cfg.icp_fit["inferred_band_from_open_roles"]:
+        assert float(points[band]) < unknown, f"{band} would raise the score"
+
+
+def test_the_inferred_band_reaches_the_veto_that_never_fired(cfg: ScoringConfig):
+    """One key feeds both the gradient and `under_employee_ceiling`, which is why
+    filling it fixes both -- and why both were dead while it was null for 615 of 616.
+
+    Driven through the real gate rather than asserted on the helper: this is a field
+    threaded through the Enricher, the Scorer and the compliance rules, and this
+    project has now shipped three defects that lived exactly in that seam with tests
+    passing on both ends of it.
+    """
+    from cindraleads.compliance import ComplianceGate, LeadFacts
+    from cindraleads.scoring import band_from_open_roles
+
+    s = settings()
+    object.__setattr__(s, "config_dir", REPO_ROOT / "config")
+    gate = ComplianceGate.from_config(s)
+
+    unknown = LeadFacts(display_name="Acme", canonical_domain="acme.io", employee_band=None)
+    assert "under_employee_ceiling" not in gate.review(unknown).vetoes, (
+        "silence is still not evidence of size"
+    )
+
+    inferred = LeadFacts(
+        display_name="Acme",
+        canonical_domain="acme.io",
+        employee_band=band_from_open_roles(60, cfg),
+    )
+    assert "under_employee_ceiling" in gate.review(inferred).vetoes
+
+
+def test_a_stated_band_beats_an_inferred_one(cfg: ScoringConfig):
+    """The fallback is a fallback. A page that states a headcount is better evidence
+    than a job board, and an inference must never overwrite a claim."""
+    from cindraleads.scoring import band_from_open_roles
+
+    row = {"employee_band": "11-50", "open_roles": 90}
+
+    assert (row["employee_band"] or band_from_open_roles(row["open_roles"], cfg)) == "11-50"

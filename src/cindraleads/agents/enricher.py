@@ -135,6 +135,9 @@ class EnrichOutcome:
     contacts: tuple[DiscoveredContact, ...] = ()
     hiring_triggers: tuple[str, ...] = ()
     hiring_evidence: str | None = None
+    # How many roles the company's own board lists. A fact, not a band -- the band is
+    # derived at read time so a threshold edit re-scores instead of going stale.
+    open_roles: int | None = None
     age_days: int | None = None
     sources_ok: tuple[str, ...] = ()
     sources_failed: tuple[str, ...] = ()
@@ -198,7 +201,9 @@ class Enricher:
         total, growth = sprawl if sprawl else (None, None)
         site = gathered[1] if isinstance(gathered[1], SiteFindings) else SiteFindings()
         security_txt = site.security_txt
-        hiring_codes, hiring_url = gathered[2] if isinstance(gathered[2], tuple) else ((), None)
+        hiring_codes, hiring_url, open_roles = (
+            gathered[2] if isinstance(gathered[2], tuple) else ((), None, None)
+        )
         age = gathered[3] if isinstance(gathered[3], int) else None
 
         hygiene = (
@@ -223,6 +228,7 @@ class Enricher:
             growth=growth,
             contacts=len(contacts),
             hiring_triggers=list(hiring_codes),
+            open_roles=open_roles,
             dns_gaps=len(hygiene_gaps(hygiene)) if hygiene else None,
             failed=failed,
         )
@@ -234,6 +240,7 @@ class Enricher:
             contacts=contacts,
             hiring_triggers=tuple(hiring_codes),
             hiring_evidence=hiring_url,
+            open_roles=open_roles,
             age_days=age,
             sources_ok=tuple(n for n in names if n not in failed),
             sources_failed=tuple(failed),
@@ -355,14 +362,14 @@ class Enricher:
         # happens to contain an address is not a published security contact.
         return SecurityTxt(present=True, contact=security_txt_contact(result.body))
 
-    async def _boards(self, board_token: str) -> tuple[tuple[str, ...], str | None]:
+    async def _boards(self, board_token: str) -> tuple[tuple[str, ...], str | None, int | None]:
         """Whichever ATS the company uses. This is what makes decision 7 work.
 
         T3/T4/T5/T11 were assigned to paid search in the master prompt and are free
         once the company is known, because every one of these boards publishes JSON.
         """
         if "ats" not in self.enabled_sources:
-            return (), None
+            return (), None, None
 
         # Each vendor names the call differently, so the fetchers are bound here
         # rather than assumed uniform -- Lever's is `postings`, not `jobs`.
@@ -377,8 +384,13 @@ class Enricher:
             except (FetchDenied, httpx.HTTPError, OSError, CindraError):
                 continue
             if postings:
-                return tuple(analyze_postings(postings).triggers), url
-        return (), None
+                # The count as well as the triggers. `analyze_postings` reads the list
+                # for hiring signals and drops it, and the length of that same list is
+                # the only passive headcount proxy this system has -- see
+                # `band_from_open_roles`. Same shape as `site.text`: already fetched,
+                # already parsed, thrown away.
+                return tuple(analyze_postings(postings).triggers), url, len(postings)
+        return (), None, None
 
     async def _age(self, domain: str) -> int | None:
         if "rdap" not in self.enabled_sources:
@@ -406,11 +418,13 @@ class Enricher:
         now = to_iso(utcnow())
         conn.execute(
             "UPDATE companies SET subdomain_count_ct = COALESCE(?, subdomain_count_ct), "
-            "dns_hygiene = COALESCE(?, dns_hygiene), enriched_at = ?, last_updated_at = ? "
+            "dns_hygiene = COALESCE(?, dns_hygiene), open_roles = COALESCE(?, open_roles), "
+            "enriched_at = ?, last_updated_at = ? "
             "WHERE canonical_domain = ?",
             (
                 outcome.subdomain_total,
                 outcome.hygiene.model_dump_json() if outcome.hygiene else None,
+                outcome.open_roles,
                 now,
                 now,
                 domain,
