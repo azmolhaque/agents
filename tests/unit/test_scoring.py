@@ -722,3 +722,71 @@ def test_a_stated_band_beats_an_inferred_one(cfg: ScoringConfig):
     row = {"employee_band": "11-50", "open_roles": 90}
 
     assert (row["employee_band"] or band_from_open_roles(row["open_roles"], cfg)) == "11-50"
+
+
+def test_only_the_snapshot_is_free(cfg: ScoringConfig):
+    """The most expensive copy defect this project has produced.
+
+    Rule 2 of the outreach prompt read: *Write "I'd like to run X for you, free, under a
+    signed RoE"*, and X was `recommended_offer`'s slug substituted blindly. For any
+    company with T1_AI_SHIP and an AI surface -- 487 of 1201 live triggers -- that is
+    `ai_llm_assessment`, a BDT 40k-1.5L / $2k-8k engagement. Every Tier A and B card in
+    the corpus offered it at no charge, in writing, and eight of the first ten on a call
+    list said so in the text a human was about to paste into an email.
+
+    Only the founding-cohort Snapshot is free, which is exactly what its name says.
+    """
+    from typing import get_args
+
+    from cindraleads.models import Offer
+
+    free = {slug for slug in get_args(Offer) if cfg.offer_is_free(slug)}
+    assert free == {"snapshot_free"}, "a paid engagement must never be marked free"
+
+    # The paid phrases still carry the wedge -- the ask stays small without giving the
+    # engagement away -- so each one has to mention the Snapshot as the free step.
+    for slug in get_args(Offer):
+        phrase = cfg.offer_phrase(slug)
+        assert phrase and slug not in phrase, f"{slug} reaches the prompt as a slug"
+        if not cfg.offer_is_free(slug):
+            assert "free" in phrase.lower() and "snapshot" in phrase.lower(), (
+                f"{slug}: a paid offer should still name the free Snapshot as the small "
+                f"first step, or the outreach ask stops being tiny"
+            )
+
+
+def test_an_offer_with_no_phrase_fails_closed(tmp_path: Path):
+    """Same rule as `means`, one type over, and fail closed for the same reason: the
+    default that was there before was the word "free"."""
+    import shutil
+
+    import pytest as _pytest
+    import yaml as _yaml
+
+    from cindraleads.config import Settings
+    from cindraleads.errors import ConfigError
+
+    (tmp_path / "config").mkdir()
+    for name in ("scoring.yaml", "icp.yaml"):
+        shutil.copy(REPO_ROOT / "config" / name, tmp_path / "config" / name)
+    path = tmp_path / "config" / "scoring.yaml"
+    data = _yaml.safe_load(path.read_text())
+    del data["offers"]["ai_llm_assessment"]
+    path.write_text(_yaml.safe_dump(data))
+
+    with _pytest.raises(ConfigError, match="ai_llm_assessment"):
+        ScoringConfig.load(Settings(repo_root=tmp_path))
+
+
+def test_the_prompt_no_longer_hardcodes_free_around_the_offer():
+    """The prompt is the other half. A correct `offers` map cannot save a card if the
+    instruction wrapping it still says the word."""
+    from cindraleads.config import load_prompt
+
+    prompt = load_prompt("outreach_angle", base=REPO_ROOT / "prompts")
+
+    # Precise, because the replacement rule quotes the old wording to explain itself.
+    # What must be gone is the *instruction*, not every mention of it.
+    assert "Write \"I'd like to run X for you, free" not in prompt
+    assert "under a\n   signed RoE" in prompt
+    assert 'never add the word "free"' in prompt

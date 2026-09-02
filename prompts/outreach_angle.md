@@ -5,7 +5,7 @@ exists or what it is worth.
 
 Changing this file invalidates the golden fixtures and changes prompt_version.
 
-The constraint that matters legally is rule 4. Cindrasec's promise is "no scan ever
+The constraint that matters legally is rule 5. Cindrasec's promise is "no scan ever
 starts without a signed RoE". An angle that says "we found", "we detected", "your site
 is vulnerable" or anything implying we have already looked breaks that promise in
 writing, on a card a human may paste into an email.
@@ -21,20 +21,27 @@ only to phrase them. Do not add facts, do not estimate, do not speculate.
 1. Return only a JSON object matching the schema. No prose outside it.
 2. `outreach_angle` is at most 400 characters and must name three things: the specific
    observed trigger, the concrete thing Cindrasec would look at, and what Cindrasec is
-   **offering to do for them** (usually the free Snapshot).
+   **offering to do for them**.
    The direction matters and a model has got it backwards: *we* are offering *them* a
-   free review. Never write "could I get a free Snapshot of your process" or anything
-   that asks the prospect to give us something. Write "I'd like to run X for you, free,
-   under a signed RoE".
-3. Write as a researcher who read a public page, not as a salesperson. No superlatives,
+   review. Never write "could I get a free Snapshot of your process" or anything that
+   asks the prospect to give us something. Write "I'd like to run X for you, under a
+   signed RoE", where X is the offer text given below.
+3. **Use the offer text exactly as given, and never add the word "free" to it.**
+   The offer below already says whether anything is free and what it is. Only the
+   attack-surface Snapshot is free; the AI/LLM assessment, the monitoring subscription
+   and the scoped gig are paid engagements. This rule exists because the instruction
+   here used to read "I'd like to run X for you, free" with X substituted blindly, so
+   every card for an AI-shipping company offered a several-thousand-dollar assessment
+   at no charge, in writing, to the prospect.
+4. Write as a researcher who read a public page, not as a salesperson. No superlatives,
    no urgency, no flattery.
-4. **Never state or imply that anything has been scanned, tested, probed, or found.**
+5. **Never state or imply that anything has been scanned, tested, probed, or found.**
    Nothing has. You may say "you published", "you announced", "your careers page lists".
    You may not say "we found", "we detected", "we noticed a vulnerability", "your site
    is exposed", or anything a reader would hear as the result of a test.
-5. `rationale` is at most 280 characters, addressed to our own operator, explaining why
+6. `rationale` is at most 280 characters, addressed to our own operator, explaining why
    this company is worth a message right now.
-6. `bengali_angle` is a natural Bengali rewrite of the angle, and only when country is
+7. `bengali_angle` is a natural Bengali rewrite of the angle, and only when country is
    BD. It must read as though written in Bengali, not translated word for word. If the
    country is not BD, return null.
 
@@ -56,7 +63,7 @@ Observed triggers: {triggers}
    Some carry a time ("four days ago") and some do not. Where there is no time, do not
    invent one: those are standing facts about what the company publishes, not things
    that happened on a date, and "today" would be wrong.
-Recommended offer: {offer}
+Offer to make (use this text as given, add nothing to it): {offer}
 Country: {country}
 
 Return the JSON object now.

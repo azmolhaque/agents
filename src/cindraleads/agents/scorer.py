@@ -264,7 +264,10 @@ class Scorer:
             # load, so the fallback is unreachable and exists only so a future code
             # added without one degrades to a vague angle rather than a crash.
             triggers=self._trigger_phrases(self._score_input(facts).triggers),
-            offer=result.offer,
+            # The phrase, never the slug -- and the phrase carries the price. Handing
+            # the model `ai_llm_assessment` under a prompt that hardcoded "free" put a
+            # $2k-8k engagement on every Tier A and B card at no charge.
+            offer=self.scoring.offer_phrase(result.offer),
             country=facts["country"] or "",
         )
         try:

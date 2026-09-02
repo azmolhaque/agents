@@ -152,3 +152,44 @@ reachability:
 freshness:
   # Full marks for a trigger observed today, zero at this age.
   zero_at_days: 120
+
+# ---------------------------------------------------------------------------
+# What each offer is, in words a prospect would recognise, and whether it costs
+# them anything. Outside the fingerprint for the same reason `means` is: this
+# changes prose, never a number.
+#
+# `free` is load-bearing and was wrong for the life of the project. Rule 2 of the
+# outreach prompt hardcoded "I'd like to run X for you, free, under a signed RoE",
+# and X is whatever `recommended_offer` returned. For any company with T1_AI_SHIP
+# and an AI surface -- 487 of 1201 live triggers -- that is `ai_llm_assessment`, a
+# BDT 40k-1.5L / $2k-8k engagement. **Every Tier A and B card in the corpus offered
+# it at no charge, in writing**, and eight of the first ten on a call list said so.
+#
+# Only `snapshot_free` is free, which is what its name says. The founding-cohort
+# Snapshot is the wedge, so a paid offer names it as the small first step rather
+# than dropping the free framing entirely -- the ask stays tiny without giving away
+# the engagement.
+# ---------------------------------------------------------------------------
+
+offers:
+  snapshot_free:
+    free: true
+    means: >-
+      a free external attack-surface and exposed-secrets Snapshot, with a verified
+      report and a walkthrough call
+  watch:
+    free: false
+    means: >-
+      continuous monitoring of that surface with a monthly diff report, and a free
+      Snapshot first if they would rather start there
+  ai_llm_assessment:
+    free: false
+    means: >-
+      an AI/LLM security assessment covering prompt injection, data leakage, agent
+      tool abuse and the MCP tool surface, and a free attack-surface Snapshot first
+      if they would rather start small
+  gig:
+    free: false
+    means: >-
+      one tightly scoped check at a fixed price, or a free attack-surface Snapshot
+      if they would rather start there

@@ -696,6 +696,22 @@ The measurement to run before building anything: how many companies have a name 
 fails a `name_similarity` check against their own domain, and what share of those are
 real. Until that exists the list is the patch and it is known to be losing.
 
+**Only the Snapshot is free, and for the life of the project every card said otherwise.**
+Rule 2 of `outreach_angle.md` read *Write "I'd like to run X for you, free, under a
+signed RoE"*, with X substituted blindly from `recommended_offer`. For any company with
+T1_AI_SHIP and an AI surface -- 487 of 1201 live triggers -- that is
+`ai_llm_assessment`, a BDT 40k-1.5L / $2k-8k engagement. **Every Tier A and B card
+offered it at no charge, in writing**, and eight of the first ten on a call list said so
+in text a human was about to paste into an email.
+
+The slug reaching the prompt bare was the same defect as `T1_AI_SHIP` before `means`
+existed -- and the comment two lines above that call said exactly that while passing
+`result.offer` anyway. `scoring.yaml` now carries an `offers` map with a `means` phrase
+and a `free` flag, load fails closed on a missing phrase, and a paid phrase still names
+the free Snapshot as the small first step so the ask stays tiny without giving the
+engagement away. `offers` is outside the fingerprint for the same reason `means` is: it
+changes prose, never a number.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

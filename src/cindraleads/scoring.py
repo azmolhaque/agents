@@ -79,6 +79,26 @@ class ScoringConfig:
     reachability: dict[str, float]
     freshness_zero_at_days: float
     sanctioned_countries: frozenset[str]
+    # Offer slug -> {"means": phrase, "free": bool}. Prose only, like `means`.
+    offers: dict[str, dict[str, Any]]
+
+    def offer_phrase(self, offer: str) -> str:
+        """The offer in words a prospect would recognise, priced honestly.
+
+        `recommended_offer` returns a slug and the Scorer handed it straight to the
+        prose prompt -- exactly where `T1_AI_SHIP` stood before `means` existed, and it
+        failed the same two ways. It leaked verbatim ("I'd like to run an
+        ai_llm_assessment for you"), and, worse, rule 2 of the prompt hardcoded "free"
+        around it. Only `snapshot_free` is free; `ai_llm_assessment` is a BDT 40k-1.5L /
+        $2k-8k engagement, and every Tier A and B card in the corpus offered it at no
+        charge in writing.
+        """
+        entry = self.offers.get(offer) or {}
+        phrase = str(entry.get("means") or "").strip()
+        return phrase or "a free external attack-surface Snapshot"
+
+    def offer_is_free(self, offer: str) -> bool:
+        return bool((self.offers.get(offer) or {}).get("free", False))
 
     def fingerprint(self) -> str:
         """Identifies the calibration that produced a score.
@@ -105,6 +125,9 @@ class ScoringConfig:
             "reachability": dict(sorted(self.reachability.items())),
             "freshness_zero_at_days": self.freshness_zero_at_days,
             "sanctioned": sorted(self.sanctioned_countries),
+            # `offers` is absent for the same reason `means` is: it is prose. A
+            # reworded offer must not force a corpus-wide rescore; `prose_version`
+            # tracks it, because what the card *says* did change.
         }
         blob = json.dumps(shape, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
@@ -157,6 +180,22 @@ class ScoringConfig:
                 f"Without it the outreach angle names the internal code to the prospect."
             )
 
+        # Same rule, same reason, one type over. An offer with no phrase reaches the
+        # prompt as a slug, and the model writes the slug -- observed as "I'd like to
+        # run an ai_llm_assessment for you". Fail closed on a missing entry rather than
+        # defaulting, because the default that was there before was "free".
+        offers = {str(k): dict(v or {}) for k, v in (data.get("offers") or {}).items()}
+        missing_offers = sorted(
+            slug
+            for slug in get_args(Offer)
+            if not str((offers.get(slug) or {}).get("means", "")).strip()
+        )
+        if missing_offers:
+            raise ConfigError(
+                f"scoring.yaml offers need a human `means` phrase: {missing_offers}. "
+                f"Without it the outreach angle names the internal slug to the prospect."
+            )
+
         return cls(
             triggers=triggers,
             components=components,
@@ -169,6 +208,7 @@ class ScoringConfig:
             sanctioned_countries=frozenset(
                 str(c).upper() for c in (data.get("sanctioned_countries") or [])
             ),
+            offers=offers,
         )
 
 
