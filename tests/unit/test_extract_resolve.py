@@ -1037,3 +1037,80 @@ def test_a_backfill_is_bounded_because_the_cost_is_decode():
     assert 0 < DEFAULT_RESTALE_LIMIT <= 100
     default = inspect.signature(enqueue_stale_extractions).parameters["limit"].default
     assert default == DEFAULT_RESTALE_LIMIT, "the bound must apply without being asked for"
+
+
+async def test_re_reading_a_page_does_not_re_date_what_the_company_did(rig):
+    """`observed_at` reaches the prospect as "you announced an AI feature (today)".
+
+    Moving it on every re-observation asserts an act on a date. The re-extraction
+    backfill re-read tavus.io and turned a four-day-old Sparrow-2 announcement into one
+    made today -- the same defect as dating a DNS lookup as though the prospect acted
+    that morning, arriving by a route that did not exist when that one was fixed.
+
+    `decays_at` still moves. The trigger is true today; freezing it would retire a live
+    fact for the crime of having been re-read.
+    """
+
+    extractor, resolver, _backend, store = rig()
+    seed_candidate(store, "c1", "https://acme.io/")
+
+    async def run_once(job_suffix: str) -> None:
+        await extractor.run(
+            Job(
+                job_id=f"e{job_suffix}",
+                kind=EXTRACT_KIND,
+                payload={"candidate_id": "c1", "url": "https://acme.io/"},
+            )
+        )
+        await resolver.run(
+            Job(job_id=f"r{job_suffix}", kind=RESOLVE_KIND, payload={"candidate_id": "c1"})
+        )
+
+    await run_once("1")
+    first = rows(store, "SELECT observed_at, decays_at FROM triggers")[0]
+
+    # Backdate the row to stand in for "we saw this four days ago", then re-read the
+    # same page exactly as the backfill does.
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE triggers SET observed_at = ?, decays_at = ?",
+            ("2026-08-29T00:00:00+00:00", "2026-09-20T00:00:00+00:00"),
+        )
+    await run_once("2")
+
+    second = rows(store, "SELECT observed_at, decays_at FROM triggers")[0]
+    assert second["observed_at"] == "2026-08-29T00:00:00+00:00", (
+        "re-reading the same page moved the date the company acted"
+    )
+    assert second["decays_at"] > "2026-09-20T00:00:00+00:00", "the trigger is still live"
+    assert len(rows(store, "SELECT 1 FROM triggers")) == 1, "and it is still one row"
+    assert first is not None
+
+
+async def test_a_new_url_is_new_news_and_does_move_the_date(rig):
+    """The other half. A company that announces again in September is genuinely fresh,
+    and the trigger codes are coarse enough that both announcements share one row --
+    so the discriminator has to be the evidence, not the code."""
+
+    extractor, resolver, backend, store = rig()
+
+    for n, url in ((1, "https://acme.io/"), (2, "https://acme.io/blog/again")):
+        seed_candidate(store, f"c{n}", url)
+        # Same company, same trigger; a second page saying it.
+        backend.payload = dict(EXTRACTION, evidence_snippets=EXTRACTION["evidence_snippets"])
+        await extractor.run(
+            Job(
+                job_id=f"e{n}",
+                kind=EXTRACT_KIND,
+                payload={"candidate_id": f"c{n}", "url": url},
+            )
+        )
+        if n == 1:
+            await resolver.run(Job(job_id="r1", kind=RESOLVE_KIND, payload={"candidate_id": "c1"}))
+            with store.tx() as conn:
+                conn.execute("UPDATE triggers SET observed_at = ?", ("2026-08-29T00:00:00+00:00",))
+
+    await resolver.run(Job(job_id="r2", kind=RESOLVE_KIND, payload={"candidate_id": "c2"}))
+
+    observed = rows(store, "SELECT observed_at FROM triggers")[0]["observed_at"]
+    assert observed > "2026-08-29T00:00:00+00:00", "a second page is a second sighting"

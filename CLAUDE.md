@@ -760,6 +760,21 @@ page whose bytes it hashed. An empty hash means we composed the sentence. **The 
 found this in one second and no card had shipped yet** -- which is the argument for
 rendering a prompt rather than reading the code that builds it.
 
+**Re-reading a page is not the company doing something again.** `observed_at` reaches
+the prospect as "you announced an AI feature (today)", so moving it on every
+re-observation asserts an act on a date. The re-extraction backfill re-read tavus.io and
+turned a four-day-old Sparrow-2 announcement into one made today -- **the same defect as
+dating a DNS lookup as though the prospect acted that morning, arriving by a route that
+did not exist when that one was fixed.** Caught by the preview, before any card shipped.
+
+The discriminator is the evidence URL, not the code: a company that announces again in
+September is genuinely fresh, and the codes are coarse enough that both announcements
+share one row. Same URL, same story, whatever the page says today. `decays_at` is pushed
+out either way -- the trigger is still true, and freezing that would retire a live fact
+for the crime of being re-read. The Enricher's `_trigger` is deliberately left alone:
+its triggers are standing facts re-derived from a fresh lookup, and freezing those would
+decay away a DMARC gap that is still open.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

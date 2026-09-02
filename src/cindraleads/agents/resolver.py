@@ -289,10 +289,37 @@ class Resolver:
             ).fetchone()
             if fresh is not None:
                 trigger_id = str(fresh["trigger_id"])
-                conn.execute(
-                    "UPDATE triggers SET observed_at = ?, decays_at = ? WHERE trigger_id = ?",
-                    (to_iso(now), to_iso(now + timedelta(days=decay_days)), trigger_id),
-                )
+                # **Re-reading a page is not the company doing something again.**
+                # `observed_at` is rendered to the prospect as "you announced an AI
+                # feature (today)", so moving it on every re-observation asserts an act
+                # on a date. The re-extraction backfill re-read tavus.io and turned a
+                # four-day-old Sparrow-2 announcement into one made today -- the same
+                # defect as dating a DNS lookup as though the prospect acted that
+                # morning, arriving by a route that did not exist when that was fixed.
+                #
+                # A *different* URL is different news and does move the date: a company
+                # that announces again in September is genuinely fresh, and the codes
+                # are coarse enough that both announcements share one row. Same URL,
+                # same story, whatever the page says today.
+                #
+                # `decays_at` is pushed out either way. The trigger is still true, and
+                # freezing that would retire a live fact for the crime of being re-read.
+                seen_before = conn.execute(
+                    "SELECT 1 FROM trigger_evidence te JOIN evidence e "
+                    "ON e.evidence_id = te.evidence_id "
+                    "WHERE te.trigger_id = ? AND e.url = ? LIMIT 1",
+                    (trigger_id, url),
+                ).fetchone()
+                if seen_before is None:
+                    conn.execute(
+                        "UPDATE triggers SET observed_at = ?, decays_at = ? WHERE trigger_id = ?",
+                        (to_iso(now), to_iso(now + timedelta(days=decay_days)), trigger_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE triggers SET decays_at = ? WHERE trigger_id = ?",
+                        (to_iso(now + timedelta(days=decay_days)), trigger_id),
+                    )
             else:
                 trigger_id = uuid.uuid4().hex[:16]
                 conn.execute(
