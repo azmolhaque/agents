@@ -680,3 +680,72 @@ def test_a_standing_fact_keeps_its_refreshed_date(store):
         store.conn.execute("SELECT observed_at FROM triggers").fetchone()["observed_at"]
         == "2026-09-02T00:00:00+00:00"
     )
+
+
+def test_the_extract_to_resolve_gap_is_not_damage(store):
+    """Extraction and resolution are separate jobs, so `evidence.observed_at` is always
+    a little earlier than the trigger's. An unscoped rule fired on 838 of 1201 live
+    triggers on its first dry run -- almost the whole corpus, almost all of it minutes
+    -- which buries the day-scale damage it was written to find."""
+    from cindraleads.maintenance import restore_first_observation
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+            "last_updated_at) VALUES ('acme.io','Acme','2026-08-01','2026-08-01')"
+        )
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at, rationale, active) "
+            "VALUES ('t1','acme.io','T1_AI_SHIP',0.7,?,?,'',1)",
+            ("2026-09-02T00:11:00+00:00", "2027-01-01T00:00:00+00:00"),
+        )
+        conn.execute(
+            "INSERT INTO evidence (evidence_id, url, source_id, snippet, observed_at, "
+            "content_sha256) VALUES ('e1','https://acme.io/','company_site','x',?,'abc')",
+            ("2026-09-02T00:00:00+00:00",),
+        )
+        conn.execute("INSERT INTO trigger_evidence VALUES ('t1','e1')")
+
+    assert restore_first_observation(store) == 0, "eleven minutes is the queue, not a claim"
+
+
+def test_a_second_announcement_keeps_its_own_date(store):
+    """The repair must not fight the Resolver. That rule says a *different* URL is new
+    news and moves the date forward; pulling back to the oldest evidence ever joined
+    would drag it to the first announcement every night and undo the fix.
+
+    Scoped to the URL that currently justifies the date, so the newest sighting's page
+    decides and the earliest time we saw *that* page is the answer.
+    """
+    from cindraleads.maintenance import restore_first_observation
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+            "last_updated_at) VALUES ('acme.io','Acme','2026-06-01','2026-06-01')"
+        )
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at, rationale, active) "
+            "VALUES ('t1','acme.io','T1_AI_SHIP',0.7,?,?,'',1)",
+            ("2026-09-02T00:00:00+00:00", "2027-01-01T00:00:00+00:00"),
+        )
+        rows_in = (
+            ("e1", "https://acme.io/blog/march", "2026-06-01T00:00:00+00:00"),
+            ("e2", "https://acme.io/blog/march", "2026-07-01T00:00:00+00:00"),
+            ("e3", "https://acme.io/blog/september", "2026-09-02T00:00:00+00:00"),
+        )
+        for eid, url, seen in rows_in:
+            conn.execute(
+                "INSERT INTO evidence (evidence_id, url, source_id, snippet, observed_at, "
+                "content_sha256) VALUES (?,?,'company_site','x',?,'abc')",
+                (eid, url, seen),
+            )
+            conn.execute("INSERT INTO trigger_evidence VALUES (?,?)", ("t1", eid))
+
+    assert restore_first_observation(store) == 0, "September is the page that dates it"
+    assert (
+        store.conn.execute("SELECT observed_at FROM triggers").fetchone()["observed_at"]
+        == "2026-09-02T00:00:00+00:00"
+    )

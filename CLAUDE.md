@@ -785,6 +785,16 @@ would drift: only the Extractor stamps it, and only a page sighting is an event 
 date. It runs before decay, so a trigger pulled back past its own `decays_at` expires in
 the same pass.
 
+**Its first dry run reported 838 of 1201 live triggers, which was the query being wrong
+rather than the damage being that large.** Extraction and resolution are separate jobs,
+so `evidence.observed_at` is always earlier than `triggers.observed_at` by the queue
+latency between them, and an unscoped `MIN` fires on nearly every trigger by minutes.
+Worse, it would have fought the Resolver nightly: that rule moves the date forward for a
+*new* URL, and pulling back to the oldest evidence ever joined would undo it. It now
+takes the newest sighting's URL and the earliest time we saw *that* page, and ignores
+differences under `REDATE_TOLERANCE_DAYS`. **A repair whose count is dominated by noise
+cannot tell you whether it worked.**
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

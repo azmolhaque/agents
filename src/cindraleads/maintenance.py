@@ -213,6 +213,12 @@ def retire_superseded_triggers(
     return len(doomed), per_code, domains
 
 
+# Below this, the difference is the gap between the extract job and the resolve job
+# rather than anything about the prospect. Half a day is far under the smallest unit
+# `_age_phrase` renders ("today" vs "yesterday") and far over any queue latency.
+REDATE_TOLERANCE_DAYS = 0.5
+
+
 def restore_first_observation(store: Store, *, dry_run: bool = False) -> int:
     """Pull `observed_at` back to the earliest page sighting that supports it.
 
@@ -232,18 +238,43 @@ def restore_first_observation(store: Store, *, dry_run: bool = False) -> int:
     being true. They have no page evidence, so they are excluded by construction rather
     than by a list of codes that would drift.
 
-    Only ever moves a date *backwards*, and only when the evidence disagrees with it.
+    Only ever moves a date *backwards*, only when the evidence disagrees by more than
+    `REDATE_TOLERANCE_DAYS`, and only to a time we can point at a page for.
     """
+    # Scoped to the URL that currently justifies the date, not to all evidence ever
+    # joined. Two reasons, and the second is the one that bites:
+    #
+    #  * Extraction and resolution are separate jobs, so `evidence.observed_at` is
+    #    always earlier than `triggers.observed_at` by the queue latency between them.
+    #    An unscoped `MIN` therefore fires on essentially every trigger in the corpus --
+    #    838 of them on the first dry run -- which drowns the day-scale damage in
+    #    minute-scale noise and makes the count useless as a measure of anything.
+    #  * It would fight the Resolver. That rule says a *different* URL is new news and
+    #    moves the date forward; an unscoped pull-back would drag it to the oldest
+    #    evidence every night and quietly undo the fix.
+    #
+    # Taking the newest sighting's URL and the earliest time we saw *that* page gives
+    # both: the backfill's re-read of one page collapses back to when the page first
+    # appeared, and a genuine second announcement keeps its own date.
     sql = (
-        "SELECT t.trigger_id, t.observed_at, MIN(e.observed_at) AS first_seen "
+        "SELECT t.trigger_id, MIN(e.observed_at) AS first_seen "
         "FROM triggers t "
         "JOIN trigger_evidence te ON te.trigger_id = t.trigger_id "
         "JOIN evidence e ON e.evidence_id = te.evidence_id "
         "WHERE t.active = 1 AND COALESCE(e.content_sha256, '') != '' "
+        "  AND e.url = ("
+        "    SELECT e2.url FROM trigger_evidence te2 "
+        "    JOIN evidence e2 ON e2.evidence_id = te2.evidence_id "
+        "    WHERE te2.trigger_id = t.trigger_id "
+        "      AND COALESCE(e2.content_sha256, '') != '' "
+        "    ORDER BY e2.observed_at DESC LIMIT 1) "
         "GROUP BY t.trigger_id "
-        "HAVING MIN(e.observed_at) < t.observed_at"
+        # Only material moves. A trigger dated a few minutes after the page it cites is
+        # the extract-to-resolve gap, not a claim about what the prospect did, and
+        # rewriting 800 rows a night to chase it would bury the ones that matter.
+        "HAVING julianday(t.observed_at) - julianday(MIN(e.observed_at)) > ?"
     )
-    rows = store.conn.execute(sql).fetchall()
+    rows = store.conn.execute(sql, (REDATE_TOLERANCE_DAYS,)).fetchall()
     if dry_run or not rows:
         return len(rows)
 
