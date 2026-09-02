@@ -775,6 +775,16 @@ for the crime of being re-read. The Enricher's `_trigger` is deliberately left a
 its triggers are standing facts re-derived from a fresh lookup, and freezing those would
 decay away a DMARC gap that is still open.
 
+**The rows already re-dated were written off as unrecoverable before anyone checked the
+database, and they were not.** Re-extraction *inserts* evidence rows and never deletes
+them, and `trigger_evidence` accumulates -- so the original sighting is still there
+under the trigger it belongs to. `restore_first_observation` in `cindra maintain` pulls
+`observed_at` back to `MIN(evidence.observed_at)` and is the other half, the same shape
+as `RETIREMENT_RULES`. Scoped by `content_sha256` rather than by a list of codes that
+would drift: only the Extractor stamps it, and only a page sighting is an event with a
+date. It runs before decay, so a trigger pulled back past its own `decays_at` expires in
+the same pass.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

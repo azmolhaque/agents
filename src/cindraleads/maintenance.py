@@ -59,6 +59,7 @@ __all__ = [
     "expire_decayed_triggers",
     "purge_retention",
     "resample_evidence",
+    "restore_first_observation",
     "retire_superseded_triggers",
     "retire_unevidenced_triggers",
     "run_maintenance",
@@ -118,6 +119,7 @@ class MaintenanceReport:
 
     superseded: int = 0
     superseded_codes: dict[str, int] = field(default_factory=dict)
+    redated: int = 0
     decayed: int = 0
     evidence_sampled: int = 0
     evidence_checked: int = 0
@@ -132,6 +134,7 @@ class MaintenanceReport:
     def changed(self) -> bool:
         return bool(
             self.superseded
+            or self.redated
             or self.decayed
             or self.evidence_dead
             or self.unevidenced
@@ -208,6 +211,50 @@ def retire_superseded_triggers(
             )
         log.info("triggers_superseded", count=len(doomed), by_code=per_code)
     return len(doomed), per_code, domains
+
+
+def restore_first_observation(store: Store, *, dry_run: bool = False) -> int:
+    """Pull `observed_at` back to the earliest page sighting that supports it.
+
+    The re-extraction backfill re-read pages and both `_write_triggers` paths moved
+    `observed_at` unconditionally, so a four-day-old Sparrow-2 announcement became one
+    made today -- rendered to the prospect as "you announced an AI feature (today)".
+    The Resolver no longer does that. **This is the other half**, and it was written
+    off as unrecoverable before anyone checked: re-extraction *inserts* evidence rows
+    and never deletes them, and `trigger_evidence` accumulates, so the original
+    sighting is still in the database under the trigger it belongs to.
+
+    Scoped to page-verified evidence by the same discriminator the quotes use. Only the
+    Extractor stamps `content_sha256`, and only a page sighting is an event with a date
+    the prospect would recognise. The Enricher's triggers are standing facts re-derived
+    from a live lookup -- a DMARC gap that is still open today *should* read as current,
+    and pinning those to their first sighting would decay away a fact that never stopped
+    being true. They have no page evidence, so they are excluded by construction rather
+    than by a list of codes that would drift.
+
+    Only ever moves a date *backwards*, and only when the evidence disagrees with it.
+    """
+    sql = (
+        "SELECT t.trigger_id, t.observed_at, MIN(e.observed_at) AS first_seen "
+        "FROM triggers t "
+        "JOIN trigger_evidence te ON te.trigger_id = t.trigger_id "
+        "JOIN evidence e ON e.evidence_id = te.evidence_id "
+        "WHERE t.active = 1 AND COALESCE(e.content_sha256, '') != '' "
+        "GROUP BY t.trigger_id "
+        "HAVING MIN(e.observed_at) < t.observed_at"
+    )
+    rows = store.conn.execute(sql).fetchall()
+    if dry_run or not rows:
+        return len(rows)
+
+    with store.tx() as conn:
+        for row in rows:
+            conn.execute(
+                "UPDATE triggers SET observed_at = ? WHERE trigger_id = ?",
+                (str(row["first_seen"]), str(row["trigger_id"])),
+            )
+    log.info("triggers_redated", count=len(rows))
+    return len(rows)
 
 
 def expire_decayed_triggers(store: Store, *, dry_run: bool = False) -> int:
@@ -549,6 +596,10 @@ async def run_maintenance(
         store, dry_run=dry_run
     )
     dirty.extend(superseded_domains)
+
+    # Before decay, because it moves dates backwards and a trigger pulled back past
+    # its own `decays_at` should expire in the same pass rather than next night.
+    report.redated = restore_first_observation(store, dry_run=dry_run)
 
     report.decayed = expire_decayed_triggers(store, dry_run=dry_run)
 

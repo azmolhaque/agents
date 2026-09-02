@@ -984,6 +984,7 @@ def maintain(
         typer.echo(f"  {'superseded':>14}: {report.superseded}")
         for code, count in sorted(report.superseded_codes.items()):
             typer.echo(f"  {'':>14}  {code}: {count}")
+        typer.echo(f"  {'redated':>14}: {report.redated}")
         typer.echo(f"  {'decayed':>14}: {report.decayed}")
         typer.echo(f"  {'unevidenced':>14}: {report.unevidenced}")
 

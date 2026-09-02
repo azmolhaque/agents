@@ -596,3 +596,87 @@ async def test_run_without_network_still_purges(store: Any) -> None:
 async def test_quiet_run_reports_no_change(store: Any) -> None:
     report = await run_maintenance(store, queue=_Queue(), egress=None, cache=None)
     assert not report.changed
+
+
+def test_a_re_dated_trigger_is_pulled_back_to_its_first_sighting(store):
+    """Written off as unrecoverable before anyone checked the database.
+
+    The backfill re-read pages and moved `observed_at` forward, so a four-day-old
+    announcement rendered as "you announced an AI feature (today)". Re-extraction
+    *inserts* evidence rows and never deletes them, and `trigger_evidence` accumulates,
+    so the original sighting was still there under the trigger it belongs to.
+    """
+    from cindraleads.maintenance import restore_first_observation
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+            "last_updated_at) VALUES ('acme.io','Acme','2026-08-01','2026-08-01')"
+        )
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at, rationale, active) "
+            "VALUES ('t1','acme.io','T1_AI_SHIP',0.7,?,?,'',1)",
+            ("2026-09-02T00:00:00+00:00", "2027-01-01T00:00:00+00:00"),
+        )
+        # Two sightings of the same page: the original, and the backfill's re-read.
+        for eid, seen in (("e1", "2026-08-29T00:00:00+00:00"), ("e2", "2026-09-02T00:00:00+00:00")):
+            conn.execute(
+                "INSERT INTO evidence (evidence_id, url, source_id, snippet, observed_at, "
+                "content_sha256) VALUES (?,?,?,?,?,?)",
+                (eid, "https://acme.io/", "company_site", "we shipped an agent", seen, "abc"),
+            )
+            conn.execute(
+                "INSERT INTO trigger_evidence (trigger_id, evidence_id) VALUES (?,?)", ("t1", eid)
+            )
+
+    assert restore_first_observation(store, dry_run=True) == 1, "dry run counts, changes nothing"
+    assert (
+        store.conn.execute("SELECT observed_at FROM triggers").fetchone()["observed_at"]
+        == "2026-09-02T00:00:00+00:00"
+    )
+
+    assert restore_first_observation(store) == 1
+    assert (
+        store.conn.execute("SELECT observed_at FROM triggers").fetchone()["observed_at"]
+        == "2026-08-29T00:00:00+00:00"
+    )
+
+    assert restore_first_observation(store) == 0, "and it is idempotent"
+
+
+def test_a_standing_fact_keeps_its_refreshed_date(store):
+    """The Enricher's triggers are re-derived from a live lookup, and a DMARC gap that
+    is still open today should read as current. Pinning those to a first sighting would
+    decay away a fact that never stopped being true.
+
+    Excluded by construction rather than by a list of codes: only the Extractor stamps
+    `content_sha256`, because only a page sighting is an event with a date."""
+    from cindraleads.maintenance import restore_first_observation
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+            "last_updated_at) VALUES ('acme.io','Acme','2026-08-01','2026-08-01')"
+        )
+        conn.execute(
+            "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at, rationale, active) "
+            "VALUES ('t8','acme.io','T8_HYGIENE_GAP',0.7,?,?,'',1)",
+            ("2026-09-02T00:00:00+00:00", "2027-01-01T00:00:00+00:00"),
+        )
+        for eid, seen in (("d1", "2026-08-01T00:00:00+00:00"), ("d2", "2026-09-02T00:00:00+00:00")):
+            conn.execute(
+                "INSERT INTO evidence (evidence_id, url, source_id, snippet, observed_at, "
+                "content_sha256) VALUES (?,?,?,?,?,'')",
+                (eid, "https://acme.io/", "dns_public", "DMARC p=none", seen),
+            )
+            conn.execute(
+                "INSERT INTO trigger_evidence (trigger_id, evidence_id) VALUES (?,?)", ("t8", eid)
+            )
+
+    assert restore_first_observation(store) == 0
+    assert (
+        store.conn.execute("SELECT observed_at FROM triggers").fetchone()["observed_at"]
+        == "2026-09-02T00:00:00+00:00"
+    )
