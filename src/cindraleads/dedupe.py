@@ -157,6 +157,30 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         "globenewswire.com",
         "dev.to",
         "hashnode.dev",
+        # The list is Western-centric and the corpus said so within one report:
+        # `Chaya · dhakatribune.com` is the Shikho/TechCrunch defect exactly, in
+        # Bangladesh, which is 40% of the ICP's geography and therefore the *most*
+        # likely place for it to recur. `terminaltrove.com` is not a publisher at all
+        # but a directory of other people's tools -- a third shape with the same
+        # failure: a live organization that writes about the company we wanted.
+        #
+        # A denylist cannot be complete and this is not the fix, only the patch. See
+        # the note in CLAUDE.md on why the obvious general rule -- the display name not
+        # matching the domain -- is unsafe as written.
+        "france24.com",
+        "dhakatribune.com",
+        "thedailystar.net",
+        "bdnews24.com",
+        "prothomalo.com",
+        "weetracker.com",
+        "techinasia.com",
+        "yourstory.com",
+        "inc42.com",
+        "entrackr.com",
+        "terminaltrove.com",
+        "alternativeto.net",
+        "slashdot.org",
+        "lobste.rs",
         "twitter.com",
         "x.com",
         "linkedin.com",

@@ -680,6 +680,22 @@ read. So only the large bands are inferable and a low count infers nothing -- th
 roles is a five-person startup or a hundred-person company hiring quietly. A stated band
 always beats an inferred one.
 
+**A publisher denylist cannot be complete, and the obvious general rule is unsafe.**
+One report after the first 25 hosts shipped, the corpus produced `Chaya ·
+dhakatribune.com` -- the TechCrunch defect again, in Bangladesh, which is 40% of the
+ICP's geography and so the likeliest place for it to recur -- plus `France 24`,
+`WeeTracker`, and `linecast · terminaltrove.com`, a *directory* rather than a publisher
+and a third shape of the same failure.
+
+The tempting general rule is "the display name does not match the canonical domain".
+**`Rover · rtrvr.ai` kills it**: one of the best leads in the corpus, a real company
+whose name genuinely does not resemble its domain. A mismatch is a signal worth
+quarantining for review, never a veto, and nothing here should auto-reject on it.
+
+The measurement to run before building anything: how many companies have a name that
+fails a `name_similarity` check against their own domain, and what share of those are
+real. Until that exists the list is the patch and it is known to be losing.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
