@@ -737,6 +737,15 @@ A test now asserts the prompt's placeholders and the format kwargs are the same 
 both directions: the reverse is the quieter half, and it is exactly how four facts sat
 unused for a month.
 
+**Every prose defect this project shipped was visible in the prompt text and invisible
+in the code.** `T1_AI_SHIP` in a prospect's inbox, `ai_llm_assessment` wrapped in a
+hardcoded "free", four assembled facts never passed -- and in the last case the comment
+directly above the offending `format()` call described the exact defect it was
+committing. `scripts/preview_angle.py <domain>` renders the real prompt from the real
+database with no inference and no queue, so "did the fact arrive" is a one-second
+question instead of a wait for a score job to reach the front of 770. Read it for what
+is *populated*: an empty block is silent in a finished card, which is the whole problem.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
