@@ -712,6 +712,31 @@ the free Snapshot as the small first step so the ask stays tiny without giving t
 engagement away. `offers` is outside the fingerprint for the same reason `means` is: it
 changes prose, never a number.
 
+**The prose prompt was handed five facts while thirteen sat next to it.** `_facts`
+builds name, domain, description, industry, country, employee_band, ai_surface,
+subdomain_count, hygiene_gaps, contacts, triggers, evidence and evidence_urls. The
+`format()` call passed six. So every card opened "you announced an AI feature" -- true
+of half the internet -- while the *verified quote from the company's own page*, the
+specific surface they shipped, the concrete DNS gap and the reader's own name were each
+one argument away.
+
+Four now reach it. The quotes are the strongest of them and the safest: a snippet only
+survives the Extractor if it appears in the fetched page character for character, so a
+4B quoting one cannot invent a claim. Prefill is 42 tok/s against 3.7 for decode, so
+~100 extra prompt tokens costs ~2 s on an 18 s call -- specificity is nearly free at
+this end and it is the whole difference between a mail that is read and one that is not.
+
+`ai_surface` values are identifiers and got a phrase map like `means` and `offers`, the
+third time. Unlike `offers` it does **not** fail closed: those come from the model
+rather than a `Literal`, so an unknown value is dropped instead of taking the config
+down -- vague costs a clause, a slug in a prospect's inbox costs the mail.
+
+**A `{placeholder}` the Scorer does not supply raises inside `prepare()`**, which would
+fail every score job in the queue on a stage designed so prose failures are survivable.
+A test now asserts the prompt's placeholders and the format kwargs are the same set, in
+both directions: the reverse is the quieter half, and it is exactly how four facts sat
+unused for a month.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

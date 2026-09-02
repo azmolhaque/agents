@@ -193,3 +193,23 @@ offers:
     means: >-
       one tightly scoped check at a fixed price, or a free attack-surface Snapshot
       if they would rather start there
+
+# ---------------------------------------------------------------------------
+# What an `ai_surface` value is, in words. Prose only, outside the fingerprint.
+#
+# The Extractor emits these as identifiers -- `agent_with_tools`, `mcp_server` --
+# and an identifier handed to the prose prompt is the `T1_AI_SHIP` defect for the
+# third time. An unknown value is dropped rather than defaulted: the angle is
+# better vague than wrong, and a slug in a prospect's inbox is wrong.
+#
+# These matter more than they look. "You announced an AI feature" is what every
+# card said and it is true of half the internet. "An agent that calls tools on a
+# user's behalf" is a different security conversation from a chatbot, and it is the
+# difference between a mail that gets read and one that does not.
+# ---------------------------------------------------------------------------
+
+surfaces:
+  public_chatbot: "a chatbot your users can talk to"
+  agent_with_tools: "an agent that calls tools on a user's behalf"
+  mcp_server: "an MCP server exposing tools to a model"
+  ai_api: "an AI API other people build against"

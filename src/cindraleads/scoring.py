@@ -81,6 +81,8 @@ class ScoringConfig:
     sanctioned_countries: frozenset[str]
     # Offer slug -> {"means": phrase, "free": bool}. Prose only, like `means`.
     offers: dict[str, dict[str, Any]]
+    # `ai_surface` value -> the phrase a prospect would recognise. Prose only.
+    surfaces: dict[str, str]
 
     def offer_phrase(self, offer: str) -> str:
         """The offer in words a prospect would recognise, priced honestly.
@@ -99,6 +101,21 @@ class ScoringConfig:
 
     def offer_is_free(self, offer: str) -> bool:
         return bool((self.offers.get(offer) or {}).get("free", False))
+
+    def surface_phrases(self, surfaces: Any) -> list[str]:
+        """The AI surfaces in words, unknown values dropped rather than defaulted.
+
+        Not fail-closed like `offers`, because these come from the model rather than
+        from a `Literal`: a new surface the Extractor invents must not take the whole
+        config down. Dropping it costs the angle one clause; passing it through would
+        put `agent_with_tools` in a prospect's inbox.
+        """
+        out: list[str] = []
+        for value in surfaces or ():
+            phrase = self.surfaces.get(str(value), "").strip()
+            if phrase and phrase not in out:
+                out.append(phrase)
+        return out
 
     def fingerprint(self) -> str:
         """Identifies the calibration that produced a score.
@@ -209,6 +226,9 @@ class ScoringConfig:
                 str(c).upper() for c in (data.get("sanctioned_countries") or [])
             ),
             offers=offers,
+            surfaces={
+                str(k): str(v).strip() for k, v in (data.get("surfaces") or {}).items()
+            },
         )
 
 

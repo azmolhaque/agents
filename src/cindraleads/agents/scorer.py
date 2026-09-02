@@ -269,6 +269,20 @@ class Scorer:
             # $2k-8k engagement on every Tier A and B card at no charge.
             offer=self.scoring.offer_phrase(result.offer),
             country=facts["country"] or "",
+            # Four facts that were sitting in `_facts` and reaching nothing. The prompt
+            # was handed a name, a domain, a description and a list of trigger phrases,
+            # so every card said "you announced an AI feature" -- true of half the
+            # internet -- while the verified quote from the company's own page, the
+            # specific surface they shipped, the concrete DNS gap and the reader's own
+            # name all sat one `format()` argument away.
+            #
+            # Prefill is 42 tok/s against 3.7 for decode, so ~100 extra prompt tokens
+            # costs about 2 s against an 18 s call. Specificity is nearly free here and
+            # it is the whole difference between a mail that is read and one that is not.
+            quotes=_quote_block(facts["evidence"]),
+            surfaces=", ".join(self.scoring.surface_phrases(facts["ai_surface"])),
+            published_gaps=", ".join(facts["hygiene_gaps"][:2]),
+            recipient=_recipient_name(facts["contacts"]),
         )
         try:
             structured = await self.llm.generate(
@@ -771,6 +785,44 @@ def _is_prose_retry(job: Job) -> bool:
 def _has_angle(conn: sqlite3.Connection, lead_id: str) -> bool:
     row = conn.execute("SELECT outreach_angle FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
     return bool(row and str(row["outreach_angle"] or "").strip())
+
+
+# At most this many verified quotes reach the prompt, and each is already bounded at
+# 120 characters by `CompanyExtraction`. Two is the point where an angle capped at 400
+# characters can still say something of its own.
+MAX_QUOTES = 2
+
+
+def _quote_block(evidence: Any) -> str:
+    """The company's own words, already proved to appear on their page.
+
+    The strongest sentence an outreach mail can contain is one the reader wrote. These
+    snippets survived the Extractor's literal-match check -- a snippet that does not
+    appear verbatim in the fetched page is dropped -- so quoting one cannot invent a
+    claim, which is exactly why it is safe to hand a 4B.
+    """
+    seen: list[str] = []
+    for row in evidence or ():
+        snippet = str((row or {}).get("snippet") or "").strip()
+        if snippet and snippet not in seen:
+            seen.append(snippet)
+        if len(seen) >= MAX_QUOTES:
+            break
+    return "\n".join(f'  - "{q}"' for q in seen)
+
+
+def _recipient_name(contacts: Any) -> str:
+    """The first contact's given name, or empty. Never a role account's local part.
+
+    `contacts` is ordered verified-first by the query that builds it, so the best
+    address is the first row. A name only helps if it is a person's: "Hi Support" is
+    worse than no greeting, and `full_name` is null for a role account.
+    """
+    for row in contacts or ():
+        name = str((row or {}).get("full_name") or "").strip()
+        if name:
+            return name.split()[0]
+    return ""
 
 
 def _hygiene_gaps(raw: Any) -> list[str]:

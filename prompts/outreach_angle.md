@@ -41,7 +41,21 @@ only to phrase them. Do not add facts, do not estimate, do not speculate.
    is exposed", or anything a reader would hear as the result of a test.
 6. `rationale` is at most 280 characters, addressed to our own operator, explaining why
    this company is worth a message right now.
-7. `bengali_angle` is a natural Bengali rewrite of the angle, and only when country is
+7. **Use the specifics you are given, and prefer them to the generic phrasing.**
+   "You announced an AI feature" is true of half the internet and was the opening line
+   of every card this system produced for a month. If you are told what they actually
+   shipped, say that instead: an agent that calls tools is a different conversation
+   from a chatbot. If you are given a gap in what they publish, name it rather than
+   saying "gaps".
+8. **You may quote one of the verified quotes, verbatim and in quotation marks.**
+   Those strings were checked against the fetched page character by character, so
+   quoting one cannot invent a claim -- it is the safest and the strongest sentence
+   available to you. Never edit a quote to fit, never quote more than one, and never
+   present anything else as a quotation. If none of them is relevant, use none.
+9. If `recipient` is non-empty it is the reader's given name and you may address them
+   by it. If it is empty we only have a role mailbox, so do not invent a name and do
+   not write "Hi team" -- open with the reason for writing instead.
+10. `bengali_angle` is a natural Bengali rewrite of the angle, and only when country is
    BD. It must read as though written in Bengali, not translated word for word. If the
    country is not BD, return null.
 
@@ -50,6 +64,11 @@ only to phrase them. Do not add facts, do not estimate, do not speculate.
 Name: {display_name}
 Domain: {canonical_domain}
 What they say they do: {description}
+Who is reading this (empty if we only have a role address): {recipient}
+What they shipped, specifically: {surfaces}
+Gaps in what they publish: {published_gaps}
+Verified quotes from their own pages -- these appeared literally on the page we read:
+{quotes}
 Observed triggers: {triggers}
    These are already phrased the way the prospect would recognise them. Use that
    wording. Never invent an identifier, a code, or a label of your own for a trigger --

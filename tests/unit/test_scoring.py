@@ -790,3 +790,88 @@ def test_the_prompt_no_longer_hardcodes_free_around_the_offer():
     assert "Write \"I'd like to run X for you, free" not in prompt
     assert "under a\n   signed RoE" in prompt
     assert 'never add the word "free"' in prompt
+
+
+def test_the_prompt_asks_for_nothing_the_scorer_does_not_supply():
+    """A `{placeholder}` with no matching keyword makes `str.format` raise, and it
+    raises inside `prepare()` -- so a one-word prompt edit would fail every score job
+    in the queue, on a stage whose whole design is that prose failures are survivable.
+
+    The reverse matters too and is quieter: a fact passed and never referenced is a
+    fact that reaches nothing, which is precisely how `evidence`, `ai_surface`,
+    `hygiene_gaps` and the contact's name sat in `_facts` for a month while every card
+    opened with "you announced an AI feature".
+    """
+    import string
+
+    from cindraleads.config import load_prompt
+
+    prompt = load_prompt("outreach_angle", base=REPO_ROOT / "prompts")
+    placeholders = {name for _, name, _, _ in string.Formatter().parse(prompt) if name}
+
+    supplied = {
+        "display_name",
+        "canonical_domain",
+        "description",
+        "triggers",
+        "offer",
+        "country",
+        "quotes",
+        "surfaces",
+        "published_gaps",
+        "recipient",
+    }
+
+    assert placeholders - supplied == set(), (
+        f"the prompt asks for {sorted(placeholders - supplied)}, which the Scorer does "
+        f"not pass -- every score job would raise KeyError"
+    )
+    assert supplied - placeholders == set(), (
+        f"the Scorer passes {sorted(supplied - placeholders)}, which the prompt never "
+        f"mentions -- the model cannot use a fact it is not shown"
+    )
+
+
+def test_only_verified_quotes_reach_the_prompt():
+    """The snippets survived the Extractor's literal-match check, so quoting one cannot
+    invent a claim. That is the entire reason a 4B is allowed to quote at all."""
+    from cindraleads.agents.scorer import MAX_QUOTES, _quote_block
+
+    block = _quote_block(
+        [
+            {"snippet": "We ship an AI customer engineer", "url": "https://a"},
+            {"snippet": "We ship an AI customer engineer", "url": "https://b"},
+            {"snippet": "Our agent browses on your behalf", "url": "https://c"},
+            {"snippet": "A third thing entirely", "url": "https://d"},
+            {"snippet": "", "url": "https://e"},
+        ]
+    )
+
+    assert block.count("\n") + 1 == MAX_QUOTES, "an angle capped at 400 chars fits two"
+    assert "We ship an AI customer engineer" in block
+    assert "Our agent browses on your behalf" in block
+    assert "A third thing entirely" not in block
+    assert '""' not in block, "an empty snippet must not become an empty quotation"
+
+    assert _quote_block([]) == ""
+    assert _quote_block(None) == ""
+
+
+def test_a_role_mailbox_yields_no_first_name():
+    """ "Hi Support" is worse than no greeting, and `full_name` is null for a role
+    account by construction."""
+    from cindraleads.agents.scorer import _recipient_name
+
+    assert _recipient_name([{"email": "support@acme.io", "full_name": None}]) == ""
+    assert _recipient_name([{"email": "a@acme.io", "full_name": "Aisha Rahman"}]) == "Aisha"
+    # Ordered verified-first by the query that builds it, so the first row wins.
+    assert (
+        _recipient_name(
+            [
+                {"email": "a@acme.io", "full_name": "Aisha Rahman"},
+                {"email": "b@acme.io", "full_name": "Someone Else"},
+            ]
+        )
+        == "Aisha"
+    )
+    assert _recipient_name([]) == ""
