@@ -454,7 +454,7 @@ class Scorer:
             evidence.extend(
                 dict(r)
                 for r in active.execute(
-                    "SELECT e.url, e.source_id, e.snippet FROM evidence e "
+                    "SELECT e.url, e.source_id, e.snippet, e.content_sha256 FROM evidence e "
                     "JOIN trigger_evidence te ON te.evidence_id = e.evidence_id "
                     "WHERE te.trigger_id = ?",
                     (trigger["trigger_id"],),
@@ -796,16 +796,38 @@ MAX_QUOTES = 2
 def _quote_block(evidence: Any) -> str:
     """The company's own words, already proved to appear on their page.
 
-    The strongest sentence an outreach mail can contain is one the reader wrote. These
-    snippets survived the Extractor's literal-match check -- a snippet that does not
-    appear verbatim in the fetched page is dropped -- so quoting one cannot invent a
-    claim, which is exactly why it is safe to hand a 4B.
+    The strongest sentence an outreach mail can contain is one the reader wrote. A
+    snippet only reaches the evidence table from the Extractor if it appears in the
+    fetched page character for character, so quoting one cannot invent a claim -- which
+    is exactly why it is safe to hand a 4B and tell it to reproduce the string.
+
+    **`content_sha256` is what says a string has that property, and the filter is not
+    cosmetic.** The Enricher writes evidence rows too, and their snippets are *ours*:
+    "85 certificate names, 20 new in 30d", "no SPF record published", a contact address.
+    Nobody published those sentences -- we composed them from public records. The first
+    preview of this prompt handed exactly that certificate line to the model as a
+    verified quote from Tavus's own page, and a model told to reproduce it verbatim
+    writes a sentence that reads as the result of a scan. That is the one promise this
+    project is built on, breached in prose, on a card meant to be pasted into an email.
+
+    Only the Extractor stamps the page hash, because only the Extractor did the literal
+    match. An empty hash means the sentence is ours.
     """
     seen: list[str] = []
+    keys: set[str] = set()
     for row in evidence or ():
-        snippet = str((row or {}).get("snippet") or "").strip()
-        if snippet and snippet not in seen:
-            seen.append(snippet)
+        row = row or {}
+        if not str(row.get("content_sha256") or "").strip():
+            continue
+        snippet = str(row.get("snippet") or "").strip()
+        # Normalised only for the *comparison*. rtrvr.ai published the same tagline
+        # twice, once with a full stop, and two near-identical quotes spent both slots
+        # an angle capped at 400 characters has.
+        key = " ".join(snippet.lower().split()).rstrip(".!?,;:")
+        if not key or key in keys:
+            continue
+        keys.add(key)
+        seen.append(snippet)
         if len(seen) >= MAX_QUOTES:
             break
     return "\n".join(f'  - "{q}"' for q in seen)

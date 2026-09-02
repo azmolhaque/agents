@@ -746,6 +746,20 @@ database with no inference and no queue, so "did the fact arrive" is a one-secon
 question instead of a wait for a score job to reach the front of 770. Read it for what
 is *populated*: an empty block is silent in a finished card, which is the whole problem.
 
+**A quote must be something they wrote, and the first rendered prompt proved it was
+not.** The Enricher writes evidence rows too, and their snippets are *ours*: "85
+certificate names, 20 new in 30d", "no SPF record published", a contact address. Nobody
+published those sentences. That certificate line was handed to the model as a verified
+quote from Tavus's own page, and a model told to reproduce a quote verbatim writes a
+sentence that reads as the result of a scan -- the one promise this project rests on,
+breached in prose, on a card meant to be pasted into an email.
+
+`content_sha256` is the discriminator and it was already in the schema: only the
+Extractor stamps it, because only the Extractor literal-matched the string against a
+page whose bytes it hashed. An empty hash means we composed the sentence. **The preview
+found this in one second and no card had shipped yet** -- which is the argument for
+rendering a prompt rather than reading the code that builds it.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

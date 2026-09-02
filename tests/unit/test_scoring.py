@@ -832,29 +832,64 @@ def test_the_prompt_asks_for_nothing_the_scorer_does_not_supply():
     )
 
 
-def test_only_verified_quotes_reach_the_prompt():
-    """The snippets survived the Extractor's literal-match check, so quoting one cannot
-    invent a claim. That is the entire reason a 4B is allowed to quote at all."""
-    from cindraleads.agents.scorer import MAX_QUOTES, _quote_block
+def test_only_page_verified_text_is_quotable():
+    """The filter is not cosmetic, and the preview that found this proves it.
+
+    The Enricher writes evidence rows too, and their snippets are *ours*: "85
+    certificate names, 20 new in 30d", "no SPF record published", a contact address.
+    Nobody published those sentences -- we composed them from public records. The first
+    rendered prompt handed that certificate line to the model as a verified quote from
+    Tavus's own page, and a model told to reproduce a quote verbatim writes a sentence
+    that reads as the result of a scan. That is the promise the whole project rests on,
+    breached in prose, on a card written to be pasted into an email.
+
+    `content_sha256` is the discriminator and it was already in the schema: only the
+    Extractor stamps it, because only the Extractor literal-matched the string against
+    a page whose bytes it hashed. An empty hash means we wrote the sentence.
+    """
+    from cindraleads.agents.scorer import _quote_block
 
     block = _quote_block(
         [
-            {"snippet": "We ship an AI customer engineer", "url": "https://a"},
-            {"snippet": "We ship an AI customer engineer", "url": "https://b"},
-            {"snippet": "Our agent browses on your behalf", "url": "https://c"},
-            {"snippet": "A third thing entirely", "url": "https://d"},
-            {"snippet": "", "url": "https://e"},
+            {"snippet": "85 certificate names, 20 new in 30d", "content_sha256": ""},
+            {"snippet": "no SPF record published", "content_sha256": ""},
+            {"snippet": "hello@acme.io", "content_sha256": ""},
+            {"snippet": "Sparrow-2 is here: next-gen turn-taking.", "content_sha256": "abc123"},
         ]
     )
 
-    assert block.count("\n") + 1 == MAX_QUOTES, "an angle capped at 400 chars fits two"
-    assert "We ship an AI customer engineer" in block
-    assert "Our agent browses on your behalf" in block
-    assert "A third thing entirely" not in block
-    assert '""' not in block, "an empty snippet must not become an empty quotation"
+    assert block == '  - "Sparrow-2 is here: next-gen turn-taking."'
+    assert "certificate names" not in block, "our summary of CT logs is not their words"
+    assert "SPF" not in block
+    assert "@" not in block
+
+
+def test_two_near_identical_quotes_do_not_spend_both_slots():
+    """rtrvr.ai published the same tagline twice, once with a full stop. Exact-string
+    dedupe kept both, and an angle capped at 400 characters has only two slots."""
+    from cindraleads.agents.scorer import _quote_block
+
+    block = _quote_block(
+        [
+            {"snippet": "Rover The AI customer engineer for your product.", "content_sha256": "a"},
+            {"snippet": "Rover  The AI customer engineer for your product", "content_sha256": "b"},
+            {"snippet": "Works across the open web.", "content_sha256": "c"},
+        ]
+    )
+
+    assert block.count("\n") + 1 == 2
+    assert "Works across the open web." in block
+
+
+def test_the_quote_block_is_bounded_and_survives_nothing():
+    from cindraleads.agents.scorer import MAX_QUOTES, _quote_block
+
+    many = [{"snippet": f"Sentence number {i}.", "content_sha256": "h"} for i in range(6)]
+    assert _quote_block(many).count("\n") + 1 == MAX_QUOTES
 
     assert _quote_block([]) == ""
     assert _quote_block(None) == ""
+    assert _quote_block([{"snippet": "", "content_sha256": "h"}]) == ""
 
 
 def test_a_role_mailbox_yields_no_first_name():
