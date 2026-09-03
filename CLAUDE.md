@@ -343,13 +343,22 @@ sits on disk, draining jobs and reporting healthy. Deploying is
 `git pull && cindra db migrate && sudo systemctl daemon-reload && sudo systemctl restart
 cindraleads-worker cindraleads-health`.
 
-**`daemon-reload` is not optional and the omission is silent.** systemd serves unit
-files from its own cache, so `git pull` followed by `restart` reloads the *code* and
-keeps the *old unit* -- which is how `TimeoutStopSec=960` was pulled, restarted, and
-still ran at 180. It is the same defect as a long-lived worker pinning an edited prompt,
-one layer down, and `source_mtime` cannot see it either: that scans `src/`, `prompts/`
-and `config/`, and a `.service` file is in none of them. Verify with
-`systemctl show cindraleads-worker -p TimeoutStopUSec` rather than assuming.
+**A unit change is not deployed by `git pull`, and `daemon-reload` does not rescue it.**
+`deploy/systemd/*.service` is a *template*: `install_pi.sh` rewrites the paths and user
+and copies the result into `/etc/systemd/system/`. So the live unit is a copy, a pull
+never touches it, and a reload faithfully reloads the old one. `TimeoutStopSec=960` was
+pulled, reloaded and restarted, and `systemctl show` still reported `3min` through all
+three. Deploying a unit change is:
+
+```
+./deploy/install_pi.sh --install-units
+systemctl show cindraleads-worker -p TimeoutStopUSec   # verify, do not assume
+```
+
+Third layer of the same defect: a long-lived worker pins the prompt it imported, systemd
+pins the unit it cached, and the installed unit is a copy of a file nobody edits twice.
+`source_mtime` catches none of it -- it scans `src/`, `prompts/` and `config/`, and a
+`.service` file is in none of them.
 `/healthz` reports the gap as `worker:build` -- the worker stamps `source_mtime` on its
 heartbeat and health compares it against the newest file on disk. Timers are exempt:
 each firing is a fresh process.
