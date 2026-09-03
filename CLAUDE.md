@@ -696,6 +696,18 @@ The measurement to run before building anything: how many companies have a name 
 fails a `name_similarity` check against their own domain, and what share of those are
 real. Until that exists the list is the patch and it is known to be losing.
 
+**Adding a host to the list is half a change.** It stops the next candidate and does
+nothing about the rows already written: a day after the regional publishers were
+blocked, `France 24`, `Chaya`, `WeeTracker` and `linecast · terminaltrove.com` were all
+still on the near-miss list and `The Financial Times · ft.com` had joined them.
+`suppress_platform_companies` in `cindra maintain` re-runs the rule over what the old
+one produced, the same shape as `RETIREMENT_RULES`. It suppresses rather than deletes,
+through the table the rest of the system already consults -- the Scout skips a
+suppressed domain at plan time, `worklist` joins it live, `is_suppressed` is -100 in the
+arithmetic -- so the company row and its evidence survive and the record of what we
+believed is kept. **The list will keep growing; what this removes is the manual step
+after each addition, which is the one nobody performs twice.**
+
 **Only the Snapshot is free, and for the life of the project every card said otherwise.**
 Rule 2 of `outreach_angle.md` read *Write "I'd like to run X for you, free, under a
 signed RoE"*, with X substituted blindly from `recommended_offer`. For any company with

@@ -749,3 +749,63 @@ def test_a_second_announcement_keeps_its_own_date(store):
         store.conn.execute("SELECT observed_at FROM triggers").fetchone()["observed_at"]
         == "2026-09-02T00:00:00+00:00"
     )
+
+
+def test_a_host_added_to_the_denylist_retires_what_it_already_let_through(store):
+    """Adding a host to `PLATFORM_HOSTS` stops the next candidate and does nothing
+    about the rows already written.
+
+    A day after the regional publishers were blocked, `France 24`, `Chaya ·
+    dhakatribune.com`, `WeeTracker` and `linecast · terminaltrove.com` were all still on
+    the near-miss list, and `The Financial Times · ft.com` had joined them. Same shape
+    as `RETIREMENT_RULES`: the rule changed and something has to re-run it over what the
+    old rule produced -- otherwise every late addition needs a human to remember
+    `cindra suppress` for each company it already admitted, which is exactly the manual
+    step nobody performs twice.
+    """
+    from cindraleads.maintenance import suppress_platform_companies
+
+    with store.tx() as conn:
+        for domain in ("techcrunch.com", "rtrvr.ai", "ft.com"):
+            conn.execute(
+                "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+                "last_updated_at) VALUES (?,?,?,?)",
+                (domain, domain, "2026-08-01", "2026-08-01"),
+            )
+
+    count, domains = suppress_platform_companies(store, dry_run=True)
+    assert domains == ["ft.com", "techcrunch.com"], "a real company is left alone"
+    assert count == 2
+    assert store.conn.execute("SELECT COUNT(*) AS n FROM suppression_list").fetchone()["n"] == 0
+
+    count, domains = suppress_platform_companies(store)
+    assert count == 2
+    suppressed = {
+        str(r["value"])
+        for r in store.conn.execute("SELECT value FROM suppression_list WHERE kind='domain'")
+    }
+    assert suppressed == {"ft.com", "techcrunch.com"}
+
+    # The company row and its evidence survive: the record of what we believed is worth
+    # keeping, and deletion would lose it.
+    assert store.conn.execute("SELECT COUNT(*) AS n FROM companies").fetchone()["n"] == 3
+
+    assert suppress_platform_companies(store) == (0, []), "and it is idempotent"
+
+
+def test_a_domain_a_human_already_suppressed_is_not_re_reported(store):
+    """`cindra suppress techcrunch.com` typed by hand and this pass must not fight, or
+    the count reads as new damage on every nightly run."""
+    from cindraleads.maintenance import suppress_platform_companies
+
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+            "last_updated_at) VALUES ('techcrunch.com','TC','2026-08-01','2026-08-01')"
+        )
+        conn.execute(
+            "INSERT INTO suppression_list (entry_id, kind, value, reason, created_at) "
+            "VALUES ('x','domain','techcrunch.com','by hand','2026-08-01')"
+        )
+
+    assert suppress_platform_companies(store) == (0, [])

@@ -178,6 +178,17 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         "inc42.com",
         "entrackr.com",
         "terminaltrove.com",
+        # Fourth report, third batch. `The Financial Times · ft.com` at 39 -- and the
+        # cost of adding one is a line, while the cost of missing one is a card that
+        # pitches a security assessment to a newsroom.
+        "ft.com",
+        "wsj.com",
+        "nytimes.com",
+        "economist.com",
+        "bbc.co.uk",
+        "cnn.com",
+        "theguardian.com",
+        "fortune.com",
         "alternativeto.net",
         "slashdot.org",
         "lobste.rs",

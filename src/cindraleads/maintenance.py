@@ -39,12 +39,14 @@ from __future__ import annotations
 import hashlib
 import random
 import sqlite3
+import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any
 
 from cindraleads.config import Settings, load_yaml, settings
+from cindraleads.dedupe import canonical_domain
 from cindraleads.dns_hygiene import mail_auth_weakness
 from cindraleads.errors import ConfigError
 from cindraleads.logging import get_logger
@@ -63,6 +65,7 @@ __all__ = [
     "retire_superseded_triggers",
     "retire_unevidenced_triggers",
     "run_maintenance",
+    "suppress_platform_companies",
 ]
 
 log = get_logger("cindraleads.maintenance")
@@ -119,6 +122,7 @@ class MaintenanceReport:
 
     superseded: int = 0
     superseded_codes: dict[str, int] = field(default_factory=dict)
+    platform_suppressed: int = 0
     redated: int = 0
     decayed: int = 0
     evidence_sampled: int = 0
@@ -134,6 +138,7 @@ class MaintenanceReport:
     def changed(self) -> bool:
         return bool(
             self.superseded
+            or self.platform_suppressed
             or self.redated
             or self.decayed
             or self.evidence_dead
@@ -217,6 +222,64 @@ def retire_superseded_triggers(
 # rather than anything about the prospect. Half a day is far under the smallest unit
 # `_age_phrase` renders ("today" vs "yesterday") and far over any queue latency.
 REDATE_TOLERANCE_DAYS = 0.5
+
+
+def suppress_platform_companies(store: Store, *, dry_run: bool = False) -> tuple[int, list[str]]:
+    """Retire companies whose domain has since become a platform host.
+
+    **Adding a host to `PLATFORM_HOSTS` is half a change.** It stops the next candidate
+    and does nothing about the rows already written, so `France 24`, `Chaya ·
+    dhakatribune.com`, `WeeTracker` and `linecast · terminaltrove.com` were still on the
+    near-miss list a day after the hosts that produce them were blocked -- and
+    `The Financial Times · ft.com` had joined them. Same shape as `RETIREMENT_RULES`:
+    the rule changed, and something has to re-run it over what the old rule produced.
+
+    A denylist will keep growing, because publishers and directories are a category
+    rather than a list. What this fixes is the *second* cost of a late addition: without
+    it every entry needs a human to remember `cindra suppress` for each company it
+    already let through, which is exactly the manual step nobody performs twice.
+
+    Suppression rather than deletion, and through the table the rest of the system
+    already consults: the Scout skips a suppressed domain at plan time, `worklist` joins
+    it live, and `is_suppressed` is -100 in the arithmetic. The company row and its
+    evidence stay, so the record of what we thought survives, which deletion would lose.
+    """
+    rows = store.conn.execute("SELECT canonical_domain FROM companies").fetchall()
+    stale = sorted(
+        domain
+        for row in rows
+        if (domain := str(row["canonical_domain"] or "").strip())
+        and canonical_domain(f"https://{domain}/") is None
+    )
+    if not stale:
+        return 0, []
+
+    already = {
+        str(r["value"]).lower()
+        for r in store.conn.execute(
+            "SELECT value FROM suppression_list WHERE kind = 'domain'"
+        ).fetchall()
+    }
+    fresh = [d for d in stale if d.lower() not in already]
+    if dry_run or not fresh:
+        return len(fresh), fresh
+
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        for domain in fresh:
+            conn.execute(
+                "INSERT OR REPLACE INTO suppression_list (entry_id, kind, value, reason, "
+                "created_at) VALUES (?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:16],
+                    "domain",
+                    domain,
+                    "platform or publisher host, not a company",
+                    now,
+                ),
+            )
+    log.info("platform_companies_suppressed", count=len(fresh), domains=fresh[:10])
+    return len(fresh), fresh
 
 
 def restore_first_observation(store: Store, *, dry_run: bool = False) -> int:
@@ -627,6 +690,13 @@ async def run_maintenance(
         store, dry_run=dry_run
     )
     dirty.extend(superseded_domains)
+
+    # Before the date repair and before decay: a company that is not a company should
+    # not have its triggers carefully re-dated first.
+    report.platform_suppressed, platform_domains = suppress_platform_companies(
+        store, dry_run=dry_run
+    )
+    dirty.extend(platform_domains)
 
     # Before decay, because it moves dates backwards and a trigger pulled back past
     # its own `decays_at` should expire in the same pass rather than next night.
