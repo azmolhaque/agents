@@ -340,7 +340,16 @@ constant, not a discriminator, exactly like `single_source` at 96% incidence.
 **A `git pull` does not change what is running.** The worker and health units are
 long-lived Python processes; they keep the modules imported at boot while the new code
 sits on disk, draining jobs and reporting healthy. Deploying is
-`git pull && cindra db migrate && sudo systemctl restart cindraleads-worker cindraleads-health`.
+`git pull && cindra db migrate && sudo systemctl daemon-reload && sudo systemctl restart
+cindraleads-worker cindraleads-health`.
+
+**`daemon-reload` is not optional and the omission is silent.** systemd serves unit
+files from its own cache, so `git pull` followed by `restart` reloads the *code* and
+keeps the *old unit* -- which is how `TimeoutStopSec=960` was pulled, restarted, and
+still ran at 180. It is the same defect as a long-lived worker pinning an edited prompt,
+one layer down, and `source_mtime` cannot see it either: that scans `src/`, `prompts/`
+and `config/`, and a `.service` file is in none of them. Verify with
+`systemctl show cindraleads-worker -p TimeoutStopUSec` rather than assuming.
 `/healthz` reports the gap as `worker:build` -- the worker stamps `source_mtime` on its
 heartbeat and health compares it against the newest file on disk. Timers are exempt:
 each firing is a fresh process.
