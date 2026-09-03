@@ -12,6 +12,7 @@ import json
 import os
 import urllib.request
 from datetime import timedelta
+from pathlib import Path as _Path
 from typing import Any
 
 import pytest
@@ -782,3 +783,32 @@ def test_an_unreadable_config_still_yields_a_build(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(metrics_mod, "settings", _boom)
 
     assert metrics_mod.source_mtime() > 0, "the package tree must still count"
+
+
+def test_systemd_waits_longer_than_a_stage_may_run() -> None:
+    """`MAX_STAGE_SECONDS` and `TimeoutStopSec` are one decision made in two files, and
+    nothing at runtime checks they agree -- the same shape as the prose bound and its
+    token budget, and as `WatchdogSec` against the lease.
+
+    At 900 against 180, systemd stopped waiting five times sooner than the worker was
+    permitted to take, so a deploy landing during a slow stage was SIGKILL rather than
+    a shutdown. Measured over 24 h: 3 builds, 1 announced exit, 2 worker gaps. Nothing
+    was lost -- the lease reclaim is what covers this -- but the job sat unclaimed for
+    up to the lease and charged a reclaim against a ceiling that exists to catch a
+    genuinely broken job.
+    """
+    import re
+
+    from cindraleads.cli import MAX_STAGE_SECONDS
+
+    repo_root = _Path(__file__).resolve().parents[2]
+    unit = (repo_root / "deploy" / "systemd" / "cindraleads-worker.service").read_text()
+    match = re.search(r"^TimeoutStopSec=(\d+)", unit, re.MULTILINE)
+    assert match, "the worker unit must set TimeoutStopSec"
+
+    stop_seconds = int(match.group(1))
+    assert stop_seconds > MAX_STAGE_SECONDS, (
+        f"TimeoutStopSec={stop_seconds} is under MAX_STAGE_SECONDS={MAX_STAGE_SECONDS}, "
+        f"so a deploy during a long stage is a SIGKILL and the worker never records "
+        f"that it was shutting down"
+    )

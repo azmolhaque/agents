@@ -807,6 +807,21 @@ takes the newest sighting's URL and the earliest time we saw *that* page, and ig
 differences under `REDATE_TOLERANCE_DAYS`. **A repair whose count is dominated by noise
 cannot tell you whether it worked.**
 
+**Two deadlines run during a stage, and it happened a second time.** `MAX_STAGE_SECONDS`
+is 900 and the worker unit's `TimeoutStopSec` was 180, so systemd stopped waiting five
+times sooner than the worker was permitted to take -- any deploy landing during a slow
+stage was SIGKILL rather than a shutdown. Measured over 24 h: **3 builds, 1 announced
+exit, 2 worker gaps**, and the two missing goodbyes are the two gaps. `no_job_lost`
+still passed, because the lease reclaim is exactly what covers this, but the job sat
+unclaimed for up to `--lease 600` and charged a reclaim against a ceiling meant for
+genuinely broken work. The box being warm or hot 76% of the window is what stretches an
+ordinary stage past 180 s in the first place.
+
+Identical in shape to `WatchdogSec` against the lease, and to the prose bound against
+its token budget: **one decision made in two files with nothing at runtime checking they
+agree.** `test_systemd_waits_longer_than_a_stage_may_run` is that check, and it fails
+against the old value.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

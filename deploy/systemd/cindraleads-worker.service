@@ -36,7 +36,17 @@ StartLimitIntervalSec=300
 # can take ~64 s and a cold model load ~32 s, so the grace period has to clear both or
 # a routine `systemctl restart` would SIGKILL mid-stage every time.
 KillSignal=SIGTERM
-TimeoutStopSec=180
+# **Must exceed `MAX_STAGE_SECONDS`, and a test asserts it.** The worker is allowed to
+# run one stage for 900 s; at 180 s systemd stopped waiting and sent SIGKILL, so any
+# deploy landing during a slow stage was a hard kill rather than a shutdown. Measured
+# over 24 h: 3 builds, 1 announced exit, 2 worker gaps -- the two missing goodbyes are
+# the two gaps. `no_job_lost` still passed, because the lease reclaim is exactly what
+# covers this, but the job sat unclaimed for up to `--lease 600` and charged a reclaim.
+#
+# Same shape as `WatchdogSec` versus the lease: two deadlines run during a stage and
+# only one of them is ours. The cost of the larger value is that a deploy landing
+# mid-stage waits; the common case is an idle poll, which stops immediately.
+TimeoutStopSec=960
 
 # Two resident models are Ollama's memory, not ours. This bounds the Python side, so
 # a leak here cannot push the models out of RAM.
