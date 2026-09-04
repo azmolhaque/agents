@@ -32,6 +32,7 @@ __all__ = [
     "classify_email",
     "emails_from_markup",
     "extract_contacts",
+    "name_from_local_part",
     "persona_for",
     "security_txt_contact",
 ]
@@ -184,6 +185,39 @@ def _same_company(host: str, company_domain: str) -> bool:
     return host == company_domain or host.endswith(f".{company_domain}")
 
 
+# A local part that is a person's name, with the separator making it one. `sarah.chen`
+# is a name; `jdoe` is a guess, and `info` is not a person at all.
+_NAMED_LOCAL = re.compile(r"^([a-z]{2,20})[._-]([a-z]{2,20})$")
+
+
+def name_from_local_part(email: str) -> str | None:
+    """A person's name derived from the address they published, or None.
+
+    `full_name` has one reader (`worklist`) and, until now, **zero writers** -- so
+    `has_named_contact` (+10 of the reachability component) has never fired, `persona_for`
+    has never been given anything to route on, and every outreach angle opened cold
+    because `recipient` was empty on every card in the corpus. The field, the bonus and
+    the prompt slot were all built and wired to nothing.
+
+    **Only the separated forms.** `sarah.chen@` is structurally a name: the company chose
+    to publish first-and-last with a separator, and reading it back is not a guess.
+    `jdoe@` is an initial and a surname, or a nickname, or neither -- and "Hi Jdoe" is
+    worse than no greeting, exactly as "Hi Support" is. Same asymmetry as the employee
+    band: act only where the evidence has structure, and infer nothing where it does not.
+
+    This is derivation from an address the company published, not a scrape of a team
+    page. It costs no fetch and adds no claim: the name was already on the card, spelled
+    out, in the address a human is about to write to.
+    """
+    local = email.split("@", 1)[0].strip().lower()
+    if local in ROLE_LOCAL_PARTS:
+        return None
+    match = _NAMED_LOCAL.match(local)
+    if match is None:
+        return None
+    return " ".join(part.capitalize() for part in match.groups())
+
+
 def persona_for(role_title: str | None) -> str | None:
     if not role_title:
         return None
@@ -273,7 +307,12 @@ def extract_contacts(
             continue
         seen.add(email)
         status = classify_email(email, domain_has_mx=domain_has_mx, company_domain=company_domain)
-        contact = DiscoveredContact(email=email, status=status, source_url=source_url)
+        contact = DiscoveredContact(
+            email=email,
+            status=status,
+            source_url=source_url,
+            full_name=name_from_local_part(email),
+        )
         if contact.is_usable:
             found.append(contact)
 
