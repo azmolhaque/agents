@@ -264,8 +264,12 @@ elif historic:
         print("             under-voltage => power supply. Use the official 27W USB-C PSU.")
     else:
         print("             no under-voltage, so this is COOLING, not power.")
-        print("             Phase 7 requires zero throttle events over 72h. An active")
-        print("             cooler is required by the hardware budget; check yours.")
+        print("             The Phase 7 gate does NOT require zero throttling -- that")
+        print("             version asserted a heatsink rather than this system, and")
+        print("             demanded the thermal governor never do its job. `cindra")
+        print("             acceptance` reports heat and grades only whether the")
+        print("             governor recovered. Use the peak temperature to decide")
+        print("             about cooling; use that table to decide about the software.")
     print("             These bits are sticky until reboot. For a clean baseline:")
     print("               sudo reboot && vcgencmd get_throttled   # expect 0x0")
 else:
