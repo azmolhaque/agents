@@ -226,9 +226,7 @@ class ScoringConfig:
                 str(c).upper() for c in (data.get("sanctioned_countries") or [])
             ),
             offers=offers,
-            surfaces={
-                str(k): str(v).strip() for k, v in (data.get("surfaces") or {}).items()
-            },
+            surfaces={str(k): str(v).strip() for k, v in (data.get("surfaces") or {}).items()},
         )
 
 
