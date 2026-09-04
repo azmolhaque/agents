@@ -840,25 +840,32 @@ its token budget: **one decision made in two files with nothing at runtime check
 agree.** `test_systemd_waits_longer_than_a_stage_may_run` is that check, and it fails
 against the old value.
 
-**`full_name` had one reader and zero writers.** `worklist` read it,
-`has_named_contact` was worth +10 of the reachability component, `persona_for` routed on
-it, and `_recipient_name` fed it to the outreach prompt as `recipient` -- and nothing in
-the codebase ever assigned a value. Measured 2026-09-04: **289 contacts, 0 names**, so
-every angle in the corpus opened cold and a scoring bonus had never once fired. Fourth
-instance of built-wired-never-connected, after `digest_pages`, `extend_lease` and
-`open_roles`.
+**`full_name` has one reader and zero writers, and the obvious fix does not work.**
+`worklist` reads it, `has_named_contact` is worth +10 of the reachability component,
+`persona_for` routes on it, and `_recipient_name` feeds it to the outreach prompt as
+`recipient` -- and nothing ever assigns a value. **289 contacts, 0 names**, so every
+angle opens cold and that bonus has never fired. Fifth instance of
+built-wired-never-connected, after `digest_pages`, `extend_lease`, `open_roles` and
+`discovered_by`.
 
-`name_from_local_part` reads it back off the address the company published. **Only the
-separated forms**: `sarah.chen@` is structurally a name, while `jdoe@` is an initial and
-a surname or a nickname or neither, and "Hi Jdoe" is worse than no greeting in exactly
-the way "Hi Support" is. Same asymmetry as the employee band -- act where the evidence
-has structure, infer nothing where it does not. `role_title` stays null, and so does
-`persona`: knowing someone is called Sarah Chen says nothing about whether she is the
-CTO, and that needs the team page this does not read.
+Deriving the name from the local part was tried and **reverted after one measurement**.
+The argument was that a separator means the company published first-and-last, so
+`sarah.chen@` is structural rather than a guess. Against the real corpus that rule
+produced 13 names, of which **seven were role mailboxes wearing a separator** --
+`customer-service@`, `cyber.security@`, `analyst-relations@`, `info-us@`,
+`security-alert@` -- four were journalists at publishers we suppress, and **two** were a
+real person at a real prospect. A 54% false-positive rate, and "Hi Cyber," to the FT is
+the same defect as "Hi Jdoe" that the strictness existed to prevent.
 
-`scripts/preview_contact_names.py` renders what the rule would derive from the real
-corpus, read-only, before any of it reaches prose -- the same argument as
-`preview_angle.py`, and the coverage number is the thing nobody can guess.
+It was also backwards. The real names in the corpus are the *bare* tokens the rule
+excluded -- `aarik@`, `abu@`, `beni@`, `bon@` -- sitting alongside `dev@`, `demo@`,
+`bugs@`, `blog@`, `alerts@`, which are equally bare and not people. No regex separates a
+given name from a role word without a name list.
+
+**And the ceiling is not the filter.** 200 of 289 contacts are role mailboxes: this
+corpus barely publishes personal addresses, so a perfect rule wins two contacts. Names
+need the team page, and a team page needs a fetch and a parser -- not a cleverer regex
+on an address. Do not retry the address route.
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
