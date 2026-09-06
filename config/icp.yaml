@@ -26,6 +26,24 @@ profile:
       - critical national infrastructure
       - security vendor
       - penetration testing firm
+      # Publications. A site that writes *about* companies is not one, and the
+      # `PLATFORM_HOSTS` denylist provably cannot reach the ones on their own domain --
+      # `thenewway.ai`, `karlsnotes.com`, `schneier.com`. This catches them by what the
+      # page says it is rather than by where it is hosted, which is the general rule
+      # the host list was failing to be.
+      #
+      # Multi-word on purpose. Bare "media" would veto a social-media platform and bare
+      # "news" a news-reader app -- both fine prospects. These are the labels the model
+      # actually produced across 482 companies, so extending the list is a query away:
+      #   SELECT industry, COUNT(*) FROM companies GROUP BY industry ORDER BY 2 DESC;
+      - news publisher
+      - technology news
+      - technology media
+      - technology journalism
+      - technology commentary
+      - technology blog
+      - news media
+      - online publication
     exclude_domains: [] # seeded from the suppression list at runtime
     notes: >
       Enterprises with a named CISO and an in-house red team are not prospects, they

@@ -22,6 +22,7 @@ control, and no amount of scoring replaces it.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import uuid
 from collections.abc import Callable
@@ -244,6 +245,27 @@ class ComplianceGate:
             excluded_sectors=tuple(str(s) for s in anti.get("exclude_sectors") or ()),
             max_employees=int(anti.get("max_employees", 1000)),
         )
+
+    def fingerprint(self) -> str:
+        """Identity of the veto *rules*, for the scoring stamp.
+
+        A veto is arithmetic: `anti_icp` is -100, so changing `exclude_sectors` changes
+        what score a lead gets, from 66 to 0. But the list lives in `icp.yaml` and
+        `ScoringConfig.fingerprint()` hashes `scoring.yaml`, so **editing the veto list
+        has never invalidated a single stored lead.** `schneier.com` sat at Tier B 66
+        with `industry = "security consultancy"` -- a sector already on the list --
+        because the lead was scored before `industry` was populated, and nothing could
+        find it afterwards: the calibration matched, no trigger moved, the angle was
+        present. Same shape as `RETIREMENT_RULES` and `prose_version`.
+
+        `suppressed_domains` is deliberately *not* in here. It changes every time a
+        human types `cindra suppress`, and rescoring 780 leads to reject one domain is
+        the wrong trade -- suppression is already applied live by `worklist` and at plan
+        time by the Scout. What belongs here is the part that is a *rule* rather than a
+        row: which sectors we refuse, and how large is too large.
+        """
+        shape = f"{sorted(s.lower() for s in self.excluded_sectors)}|{self.max_employees}"
+        return hashlib.sha256(shape.encode()).hexdigest()[:16]
 
     def load_suppression(self, conn: sqlite3.Connection) -> None:
         rows = conn.execute("SELECT value FROM suppression_list WHERE kind = 'domain'").fetchall()

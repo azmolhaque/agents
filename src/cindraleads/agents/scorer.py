@@ -57,6 +57,7 @@ __all__ = [
     "SCORE_KIND",
     "ScoreOutcome",
     "Scorer",
+    "calibration_version",
     "enqueue_stale_scores",
 ]
 
@@ -157,6 +158,24 @@ def prose_version(base: Path | None = None) -> str:
     return digest.hexdigest()[:16]
 
 
+def calibration_version(scoring: ScoringConfig, gate: ComplianceGate) -> str:
+    """The stamp a lead carries: the arithmetic *and* the vetoes.
+
+    Both are arithmetic -- `anti_icp` is -100 -- but they live in different files, and
+    only `scoring.yaml` was ever hashed. So editing `exclude_sectors` invalidated
+    nothing and a lead scored before a sector was excluded kept its tier forever, with
+    no reconciler able to see it. `schneier.com` sat at Tier B 66 with
+    `industry = "security consultancy"`, a sector already on the list.
+
+    **Computed here and nowhere else.** The Scorer writes this stamp and
+    `enqueue_stale_scores` compares against it; if the two ever disagreed, every lead
+    would read as stale on every pass and the corpus would rescore forever. That is the
+    same one-decision-in-two-files shape as the prose bound against its budget and
+    `MAX_STAGE_SECONDS` against `TimeoutStopSec`, so it gets one function.
+    """
+    return f"{scoring.fingerprint()}:{gate.fingerprint()}"
+
+
 def _max_length(field: Any) -> int | None:
     """The `max_length` off a Pydantic field, wherever this version keeps it."""
     for entry in getattr(field, "metadata", ()) or ():
@@ -198,8 +217,8 @@ class Scorer:
         # Stamped on every lead so a later calibration change can find the leads it
         # invalidated. Read once here rather than per lead: it is a hash of config
         # already in memory, but the Scorer writes it on a path that runs per company.
-        self._scoring_version = self.scoring.fingerprint()
         self.gate = self.gate or ComplianceGate.from_config(cfg)
+        self._scoring_version = calibration_version(self.scoring, self.gate)
         base = cfg.resolve(cfg.prompt_dir)
         # The *prose* version, not the bare prompt hash. What this column means on a
         # lead is "which build wrote this angle" -- and the budget that decides whether
@@ -615,6 +634,7 @@ def enqueue_stale_scores(
     *,
     limit: int = 0,
     config: ScoringConfig | None = None,
+    gate: ComplianceGate | None = None,
     force: bool = False,
 ) -> int:
     """Queue a score job for every company whose lead is behind its triggers.
@@ -643,7 +663,9 @@ def enqueue_stale_scores(
     to do — so the reconciler skips those companies forever. No query over this data
     can detect it; it needs a human saying "recompute anyway".
     """
-    fingerprint = (config or ScoringConfig.load()).fingerprint()
+    fingerprint = calibration_version(
+        config or ScoringConfig.load(), gate or ComplianceGate.from_config()
+    )
     prose_ver = prose_version()
     now = to_iso(utcnow())
     rows = store.conn.execute(

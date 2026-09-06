@@ -32,6 +32,21 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO_ROOT / "db" / "migrations"
 
 
+def _current_calibration() -> str:
+    """The stamp the Scorer actually writes, not half of it.
+
+    These tests used `ScoringConfig.load().fingerprint()`, which *was* the stamp until
+    the vetoes joined it -- `anti_icp` is -100, so `exclude_sectors` is arithmetic and
+    belongs in the same hash. Writing the old half here would assert that a lead
+    stamped with something the Scorer never writes is not stale.
+    """
+    from cindraleads.agents.scorer import calibration_version
+    from cindraleads.compliance import ComplianceGate
+    from cindraleads.scoring import ScoringConfig
+
+    return calibration_version(ScoringConfig.load(), ComplianceGate.from_config())
+
+
 def card(**kwargs) -> CardData:  # type: ignore[no-untyped-def]
     base = {
         "lead_id": "abc123",
@@ -461,7 +476,6 @@ def test_a_company_already_scored_is_left_alone(rig):
     """The lead row is newer than every trigger, so there is nothing to recompute."""
     from cindraleads.agents.scorer import enqueue_stale_scores
     from cindraleads.queue import JobQueue
-    from cindraleads.scoring import ScoringConfig
 
     build, _posts, store = rig
     build(tier="A")
@@ -472,7 +486,7 @@ def test_a_company_already_scored_is_left_alone(rig):
         # calibration, so nothing can vouch that its number matches the current rules.
         conn.execute(
             "UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z', scoring_version = ?",
-            (ScoringConfig.load().fingerprint(),),
+            (_current_calibration(),),
         )
 
     assert enqueue_stale_scores(store, JobQueue(store)) == 0
@@ -516,13 +530,12 @@ def test_a_company_with_no_live_trigger_is_not_scored(rig):
 
 
 def _blank_angle(store, prompt_version: str = "old-build") -> None:
-    from cindraleads.scoring import ScoringConfig
 
     with store.tx() as conn:
         conn.execute(
             "UPDATE leads SET outreach_angle = '', last_updated_at = '2099-01-01T00:00:00Z', "
             "scoring_version = ?, prompt_version = ?",
-            (ScoringConfig.load().fingerprint(), prompt_version),
+            (_current_calibration(), prompt_version),
         )
 
 
@@ -551,7 +564,6 @@ def test_a_lead_that_has_an_angle_is_not_re_decoded(rig):
     of the queue to fix three leads."""
     from cindraleads.agents.scorer import enqueue_stale_scores
     from cindraleads.queue import JobQueue
-    from cindraleads.scoring import ScoringConfig
 
     build, _posts, store = rig
     build(tier="B")  # the fixture's lead carries an angle
@@ -559,7 +571,7 @@ def test_a_lead_that_has_an_angle_is_not_re_decoded(rig):
         conn.execute(
             "UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z', "
             "scoring_version = ?, prompt_version = 'old-build'",
-            (ScoringConfig.load().fingerprint(),),
+            (_current_calibration(),),
         )
 
     assert enqueue_stale_scores(store, JobQueue(store)) == 0
@@ -981,7 +993,7 @@ def test_a_calibration_change_makes_every_lead_stale(rig):
     with store.tx() as conn:
         conn.execute(
             "UPDATE leads SET last_updated_at = '2099-01-01T00:00:00Z', scoring_version = ?",
-            (cfg.fingerprint(),),
+            (_current_calibration(),),
         )
     assert enqueue_stale_scores(store, JobQueue(store), config=cfg) == 0
 

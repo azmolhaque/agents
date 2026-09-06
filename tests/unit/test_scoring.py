@@ -910,3 +910,63 @@ def test_a_role_mailbox_yields_no_first_name():
         == "Aisha"
     )
     assert _recipient_name([]) == ""
+
+
+def test_changing_a_veto_makes_the_leads_it_would_reject_stale():
+    """`anti_icp` is -100, so `exclude_sectors` is arithmetic -- and it lives in
+    `icp.yaml`, which `ScoringConfig.fingerprint()` does not hash.
+
+    So editing the veto list invalidated nothing. `schneier.com` sat at Tier B 66 with
+    `industry = "security consultancy"`, a sector already on the list, because the lead
+    was scored before `industry` was populated and no reconciler could find it
+    afterwards: the calibration matched, no trigger had moved, the angle was present.
+    Same shape as `RETIREMENT_RULES` and `prose_version` -- changing a rule is half a
+    change.
+    """
+    from dataclasses import replace
+
+    from cindraleads.agents.scorer import calibration_version
+    from cindraleads.compliance import ComplianceGate
+
+    s = settings()
+    object.__setattr__(s, "config_dir", REPO_ROOT / "config")
+    scoring = ScoringConfig.load(s)
+    gate = ComplianceGate.from_config(s)
+
+    before = calibration_version(scoring, gate)
+    widened = replace(gate, excluded_sectors=(*gate.excluded_sectors, "llm observability"))
+    assert calibration_version(scoring, widened) != before
+
+    # And the arithmetic half still moves it, or folding the two together would have
+    # cost the thing it already did.
+    retuned = replace(scoring, penalties={**scoring.penalties, "single_source": -8.0})
+    assert calibration_version(retuned, gate) != before
+
+    # Suppression is deliberately absent: it changes on every `cindra suppress`, and
+    # rescoring the whole corpus to reject one domain is the wrong trade. `worklist`
+    # joins it live and the Scout checks it at plan time.
+    suppressed = replace(gate, suppressed_domains=frozenset({"acme.io"}))
+    assert calibration_version(scoring, suppressed) == before
+
+
+def test_a_publication_is_not_a_prospect():
+    """The general rule the host denylist could not be. `thenewway.ai` is an AI news
+    blog on its own domain, so `ghost.io` in `PLATFORM_HOSTS` never saw it; the page
+    says what it is and `industry` now carries that.
+
+    Multi-word on purpose: bare "media" would veto a social-media platform and bare
+    "news" a news-reader app, both of which are real prospects.
+    """
+    from cindraleads.compliance import ComplianceGate, LeadFacts
+
+    s = settings()
+    object.__setattr__(s, "config_dir", REPO_ROOT / "config")
+    gate = ComplianceGate.from_config(s)
+
+    for industry in ("news publisher", "technology journalism", "technology blog"):
+        facts = LeadFacts(display_name="Some Site", canonical_domain="x.io", industry=industry)
+        assert "not_an_excluded_sector" in gate.review(facts).vetoes, industry
+
+    for industry in ("social media platform", "news reader app", "developer tools"):
+        facts = LeadFacts(display_name="Acme", canonical_domain="acme.io", industry=industry)
+        assert "not_an_excluded_sector" not in gate.review(facts).vetoes, industry

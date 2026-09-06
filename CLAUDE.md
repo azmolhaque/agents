@@ -867,6 +867,35 @@ corpus barely publishes personal addresses, so a perfect rule wins two contacts.
 need the team page, and a team page needs a fetch and a parser -- not a cleverer regex
 on an address. Do not retry the address route.
 
+**A veto is arithmetic, and the veto list was never in the stamp.** `anti_icp` is -100,
+so `exclude_sectors` decides whether a lead scores 66 or 0 -- but it lives in `icp.yaml`
+and `ScoringConfig.fingerprint()` hashes `scoring.yaml`, so **editing the veto list has
+never invalidated a single stored lead.** Found through `schneier.com`: Tier B at 66
+with `industry = "security consultancy"`, a sector already on the list, because the lead
+was scored before `industry` was populated and nothing could find it afterwards -- the
+calibration matched, no trigger had moved, the angle was present.
+
+`calibration_version(scoring, gate)` is now the stamp, computed in **one** function used
+by the Scorer that writes it and `enqueue_stale_scores` that compares against it. Two
+copies would mark every lead stale on every pass and rescore the corpus forever -- the
+same one-decision-in-two-files shape as the prose bound against its budget and
+`MAX_STAGE_SECONDS` against `TimeoutStopSec`. `suppressed_domains` is deliberately
+excluded: it changes on every `cindra suppress`, and rescoring 780 leads to reject one
+domain is the wrong trade when `worklist` joins it live and the Scout checks it at plan
+time.
+
+**The publication exclusion is the general rule the host denylist could not be.**
+`thenewway.ai` is an AI news blog on its own domain, so `ghost.io` in `PLATFORM_HOSTS`
+never saw it; the page says what it is and `industry` finally carries that. Multi-word
+terms on purpose -- bare "media" would veto a social-media platform and bare "news" a
+news-reader app, both real prospects. The labels came from the corpus rather than
+imagination, and extending them is a query:
+`SELECT industry, COUNT(*) FROM companies GROUP BY industry ORDER BY 2 DESC`.
+
+That query is also a warning: **`developer tools` is 153 of 482.** `industry` is the
+model's loose summary, not a taxonomy, so it is a usable compliance input only for
+labels specific enough to mean one thing.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
