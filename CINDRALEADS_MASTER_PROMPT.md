@@ -265,54 +265,58 @@ agent boundary is typed; no dicts cross a stage.
 ```python
 class Evidence(BaseModel):
     url: HttpUrl
-    source_id: str              # 'serpapi_news' | 'crtsh' | 'github' | ...
+    source_id: str  # 'serpapi_news' | 'crtsh' | 'github' | ...
     snippet: str = Field(max_length=500)
     observed_at: datetime
-    content_sha256: str         # provenance: prove what we saw, when
+    content_sha256: str  # provenance: prove what we saw, when
+
 
 class Trigger(BaseModel):
-    code: Literal['T1_AI_SHIP', ...]     # from §2 taxonomy
+    code: Literal["T1_AI_SHIP", ...]  # from §2 taxonomy
     confidence: float = Field(ge=0, le=1)
     observed_at: datetime
     decays_at: datetime
-    evidence: list[Evidence] = Field(min_length=1)   # never a bare assertion
+    evidence: list[Evidence] = Field(min_length=1)  # never a bare assertion
     rationale: str = Field(max_length=280)
+
 
 class Contact(BaseModel):
     full_name: str | None
     role_title: str | None
-    persona: Literal['founder_cto','head_eng','compliance','ai_lead','generic'] | None
+    persona: Literal["founder_cto", "head_eng", "compliance", "ai_lead", "generic"] | None
     email: EmailStr | None
-    email_status: Literal['verified','role_account','catch_all','risky','unverified','none']
+    email_status: Literal["verified", "role_account", "catch_all", "risky", "unverified", "none"]
     linkedin_url: HttpUrl | None
     source: Evidence
-    pii_basis: Literal['public_business_contact']    # §12
+    pii_basis: Literal["public_business_contact"]  # §12
+
 
 class Company(BaseModel):
-    canonical_domain: str        # registrable domain, lowercase, punycode-normalized. THE KEY.
+    canonical_domain: str  # registrable domain, lowercase, punycode-normalized. THE KEY.
     legal_name: str | None
     display_name: str
-    country: str | None          # ISO-3166-1 alpha-2
+    country: str | None  # ISO-3166-1 alpha-2
     hq_city: str | None
-    employee_band: Literal['1-10','11-50','51-200','201-1000','1000+'] | None
+    employee_band: Literal["1-10", "11-50", "51-200", "201-1000", "1000+"] | None
     industry: str | None
-    tech_signals: list[str]      # ['langchain','nextjs','supabase','mcp-server']
-    ai_surface: list[str]        # ['public_chatbot','agent_with_tools','mcp_server']
-    subdomain_count_ct: int | None       # from Certificate Transparency
-    dns_hygiene: DnsHygiene | None       # passive lookups only
+    tech_signals: list[str]  # ['langchain','nextjs','supabase','mcp-server']
+    ai_surface: list[str]  # ['public_chatbot','agent_with_tools','mcp_server']
+    subdomain_count_ct: int | None  # from Certificate Transparency
+    dns_hygiene: DnsHygiene | None  # passive lookups only
     funding: FundingInfo | None
 
+
 class Lead(BaseModel):
-    lead_id: str                 # sha256(canonical_domain)[:16] — stable forever
+    lead_id: str  # sha256(canonical_domain)[:16] — stable forever
     company: Company
     contacts: list[Contact] = Field(max_length=3)
-    triggers: list[Trigger] = Field(min_length=1)     # NO TRIGGER, NO LEAD.
+    triggers: list[Trigger] = Field(min_length=1)  # NO TRIGGER, NO LEAD.
     score: int = Field(ge=0, le=100)
     score_breakdown: dict[str, float]
-    tier: Literal['A','B','C','REJECT']
-    recommended_offer: Literal['snapshot_free','watch','ai_llm_assessment','gig']
-    outreach_angle: str = Field(max_length=400)       # the specific, evidenced opener
-    bengali_angle: str | None                          # only when country == 'BD'
+    tier: Literal["A", "B", "C", "REJECT"]
+    recommended_offer: Literal["snapshot_free", "watch", "ai_llm_assessment", "gig"]
+    outreach_angle: str = Field(max_length=400)  # the specific, evidenced opener
+    bengali_angle: str | None  # only when country == 'BD'
     risk_notes: list[str]
     compliance: ComplianceVerdict
     first_seen_at: datetime

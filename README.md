@@ -64,8 +64,8 @@ commit in the same transaction.**
 
 ```python
 with store.tx() as conn:
-    conn.execute("INSERT INTO results ...")   # the work
-    queue.complete(job.job_id, conn=conn)     # the bookkeeping
+    conn.execute("INSERT INTO results ...")  # the work
+    queue.complete(job.job_id, conn=conn)  # the bookkeeping
 ```
 
 Killed before the COMMIT, both roll back and the job's lease expires so another worker
