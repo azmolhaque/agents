@@ -160,7 +160,8 @@ fi
 # ----------------------------------------------------------------- test suite
 
 say "Test suite + Phase 0 durability gate"
-make check
+# `gate` depends on `check`, so naming both ran ruff, mypy and 863 tests twice --
+# ~2.5 minutes of a Pi on every install, for an identical second answer.
 make gate
 
 # --------------------------------------------------------------- systemd units
