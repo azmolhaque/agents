@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import random
 import time
 import urllib.robotparser
@@ -367,7 +368,31 @@ class EgressClient:
                     if attempt < defaults.retries - 1:
                         # Obey Retry-After when the server bothered to send one;
                         # guessing is how you get rate-limited harder.
+                        #
+                        # But obeying it is not the same as waiting for it. `_backoff`
+                        # is capped at `backoff_max_seconds` because there is a length
+                        # of time past which we would rather fail the fetch than hold a
+                        # worker -- and this branch stepped straight around that cap,
+                        # so `Retry-After: 3600` slept for an hour inside one stage.
+                        # That is how `enrich.company` reached `MAX_STAGE_SECONDS` and
+                        # was cancelled: a fetch of a company's own page, waiting out a
+                        # rate limit nobody had bounded.
+                        #
+                        # Past the ceiling we stop asking rather than ask sooner. The
+                        # server named a number; retrying inside it would be exactly
+                        # the hammering the header exists to prevent, and the fetch is
+                        # already free to fail -- every caller here treats a dead
+                        # source as a missing field, not a dead company.
                         retry_after = _retry_after(response)
+                        if retry_after is not None and retry_after > defaults.backoff_max_seconds:
+                            log.info(
+                                "egress_retry_after_too_long",
+                                url=url,
+                                status=status,
+                                retry_after_s=round(retry_after, 3),
+                                ceiling_s=defaults.backoff_max_seconds,
+                            )
+                            break
                         wait = (
                             retry_after if retry_after is not None else _backoff(attempt, defaults)
                         )
@@ -402,9 +427,15 @@ def _retry_after(response: httpx.Response) -> float | None:
     if not raw:
         return None
     try:
-        return float(raw)
+        seconds = float(raw)
     except ValueError:
         return None
+    # A header is whatever the remote chose to send. `nan` parses as a float and
+    # compares False against every ceiling, so it would slip past the bound above and
+    # into `asyncio.sleep`; a negative value is simply not a delay.
+    if not math.isfinite(seconds) or seconds < 0:
+        return None
+    return seconds
 
 
 def _from_cache(doc: CachedDocument, *, cost_units: int) -> FetchResult:

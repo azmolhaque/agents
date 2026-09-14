@@ -8,11 +8,13 @@ field, a wildcard cert — degrades to "no results" rather than raising into the
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
 import pytest
 
+from cindraleads.models import utcnow
 from cindraleads.sources import DocumentCache, EgressClient, SourceBreakers, SourceRegistry
 from cindraleads.sources.clients import (
     AshbyClient,
@@ -208,9 +210,17 @@ async def test_crtsh_strips_wildcards_and_excludes_the_apex(egress):
 
 async def test_crtsh_growth_separates_recent_from_total(egress):
     """T7 is rapid GROWTH, not size. A big estate is normal for an established
-    company; twelve new hosts this month is a conversation."""
+    company; twelve new hosts this month is a conversation.
+
+    The recent timestamp is relative to today rather than a literal. It was written as
+    `2026-08-10`, which was inside the 30-day window on the day it was written and
+    silently left it a month later -- a test that passes only during the month it was
+    authored is one that will fail on a day nobody changed anything, which is the worst
+    possible time to learn to distrust it.
+    """
+    recent_entry = (utcnow() - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S")
     payload = [
-        {"name_value": "new.acme.io", "entry_timestamp": "2026-08-10T00:00:00"},
+        {"name_value": "new.acme.io", "entry_timestamp": recent_entry},
         {"name_value": "old.acme.io", "entry_timestamp": "2019-01-01T00:00:00"},
     ]
     total, recent = await CrtShClient(egress(responder(payload))).growth("acme.io", window_days=30)

@@ -37,7 +37,7 @@ from cindraleads.agents import (
     enqueue_unenriched,
     enqueue_unextracted,
 )
-from cindraleads.config import settings
+from cindraleads.config import MAX_STAGE_SECONDS, settings
 from cindraleads.dedupe import canonical_domain
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
@@ -1392,10 +1392,9 @@ def work(
     typer.echo(f"processed {asyncio.run(_main())}")
 
 
-# The longest a single stage may run before we stop believing in it. Generous against
-# the measured worst case -- a 64 s p50 page, plus a thermal pause -- because the cost
-# of cutting a slow job short is a lost lead and the cost of waiting is a slow lead.
-MAX_STAGE_SECONDS = 900.0
+# Defined in `config` so a stage can bound itself against the same number rather than
+# against a copy of it. Re-exported here because the worker is where it bites, and
+# because `tests/unit/test_health.py` reads it from this module to check the unit file.
 
 
 def _renewal_interval(lease: int, watchdog: Watchdog) -> float:

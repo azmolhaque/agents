@@ -20,6 +20,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from cindraleads.errors import ConfigError
 
 __all__ = [
+    "MAX_STAGE_SECONDS",
     "Settings",
     "find_repo_root",
     "load_prompt",
@@ -27,6 +28,17 @@ __all__ = [
     "prompt_version",
     "settings",
 ]
+
+# The longest a single stage may run before we stop believing in it. Generous against
+# the measured worst case -- a 64 s p50 page, plus a thermal pause -- because the cost
+# of cutting a slow job short is a lost lead and the cost of waiting is a slow lead.
+#
+# It lives here rather than in `cli.py` because it is not only the worker's business:
+# a stage that wants to finish *before* the worker gives up on it has to know the
+# number, and a second constant written down independently is the drift this project
+# has now paid for three times (`WatchdogSec` against the lease, the prose bound
+# against its budget, `MAX_STAGE_SECONDS` against `TimeoutStopSec`).
+MAX_STAGE_SECONDS = 900.0
 
 # The rationale header every prompt file carries. Stripped before the model sees it.
 _COMMENT_BLOCK = re.compile(r"<!--.*?-->", re.DOTALL)

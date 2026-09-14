@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import sqlite3
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -34,7 +35,7 @@ from typing import Any
 
 import httpx
 
-from cindraleads.config import Settings, settings
+from cindraleads.config import MAX_STAGE_SECONDS, Settings, settings
 from cindraleads.contacts import (
     DiscoveredContact,
     emails_from_markup,
@@ -59,7 +60,14 @@ from cindraleads.sources.http import EgressClient, FetchDenied
 from cindraleads.store import Store
 from cindraleads.textextract import extract_text
 
-__all__ = ["ENRICH_KIND", "SCORE_KIND", "EnrichOutcome", "Enricher", "enqueue_unenriched"]
+__all__ = [
+    "ENRICH_DEADLINE_SECONDS",
+    "ENRICH_KIND",
+    "SCORE_KIND",
+    "EnrichOutcome",
+    "Enricher",
+    "enqueue_unenriched",
+]
 
 log = get_logger("cindraleads.enricher")
 
@@ -97,6 +105,63 @@ CONTACT_PATHS = (
 SECURITY_TXT_PATH = "/.well-known/security.txt"
 
 TRIGGER_DECAY_DAYS = {"T7_SURFACE_SPRAWL": 60, "T8_HYGIENE_GAP": 60}
+
+# How long the fan-out gets, against the worker's allowance for the whole stage.
+#
+# **This stage's one rule is that a failing source must not fail the company, and slow
+# is a way of failing.** Past `MAX_STAGE_SECONDS` the worker cancels `prepare()` and
+# the job *fails*: the company is not enriched at all, and an `attempt` is charged
+# against the dead-letter ceiling for a prospect whose only fault was a slow host. That
+# is the opposite of the fan-out's design, and it happened -- `enrich.company:
+# CindraError: stage enrich.company exceeded 900s and was cancelled`.
+#
+# The arithmetic that gets there is ordinary: six site fetches, three retries each at a
+# 30 s timeout with up to 60 s of backoff between them, is ~1260 s without anything
+# being wrong beyond a host that never answers. (A `Retry-After` the remote chose
+# could exceed even that; `sources/http.py` now caps it.)
+#
+# Derived from `MAX_STAGE_SECONDS` rather than written down again, because a second
+# copy is a number that silently stops agreeing. The margin is for `commit()` and for
+# the fact that cancelling a task is not instant.
+ENRICH_DEADLINE_SECONDS = MAX_STAGE_SECONDS * 0.8
+
+# DNS runs after the fan-out and still gets a real chance when the fan-out overran:
+# `hygiene_gaps` is a trigger source, not just a field, and a zero-second timeout would
+# silently convert "we looked" into "there is no gap".
+_DNS_FLOOR_SECONDS = 30.0
+
+
+async def _bounded(
+    coros: tuple[Any, ...], names: tuple[str, ...], budget: float
+) -> tuple[list[Any], tuple[str, ...]]:
+    """Run the fan-out and keep whatever finished when the budget ran out.
+
+    `asyncio.timeout` around a `gather` would be shorter and would throw away the three
+    sources that *did* answer along with the one that did not -- which is the failure
+    this exists to prevent. A company enriched from three of four sources is a better
+    lead than a company not enriched at all.
+    """
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    await asyncio.wait(tasks, timeout=max(0.0, budget))
+
+    results: list[Any] = []
+    unfinished: list[str] = []
+    for name, task in zip(names, tasks, strict=True):
+        if not task.done():
+            task.cancel()
+            unfinished.append(name)
+            results.append(None)
+            continue
+        try:
+            results.append(task.result())
+        except Exception as exc:
+            results.append(exc)
+    if unfinished:
+        # Cancellation is a request, not an event. Awaiting it is what keeps a
+        # half-finished fetch from writing to a `domain_fetch_log` connection the
+        # commit transaction is about to use.
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return results, tuple(unfinished)
 
 
 @dataclass(frozen=True)
@@ -174,19 +239,25 @@ class Enricher:
             return EnrichOutcome(canonical_domain="", error="enrich job needs canonical_domain")
 
         board = str(job.payload.get("board_token") or domain.split(".")[0])
+        deadline = time.monotonic() + ENRICH_DEADLINE_SECONDS
 
         # Gathered together so four independent lookups take as long as the slowest,
-        # not their sum. `return_exceptions` keeps one dead source from failing the
-        # company -- unpacked one at a time because a heterogeneous gather erases the
-        # types and a mis-assigned tuple here would be a silent data corruption.
-        gathered = await asyncio.gather(
-            self._subdomains(domain),
-            self._site(domain),
-            self._boards(board),
-            self._age(domain),
-            return_exceptions=True,
-        )
+        # not their sum. One dead source must not fail the company -- unpacked one at a
+        # time because a heterogeneous gather erases the types and a mis-assigned tuple
+        # here would be a silent data corruption.
         names = ("crtsh", "site", "ats", "rdap")
+        gathered, unfinished = await _bounded(
+            (
+                self._subdomains(domain),
+                self._site(domain),
+                self._boards(board),
+                self._age(domain),
+            ),
+            names,
+            deadline - time.monotonic(),
+        )
+        if unfinished:
+            log.warning("enrich_source_timed_out", domain=domain, sources=list(unfinished))
         failed: list[str] = []
         for name, result in zip(names, gathered, strict=True):
             if isinstance(result, BaseException):
@@ -206,11 +277,16 @@ class Enricher:
         )
         age = gathered[3] if isinstance(gathered[3], int) else None
 
-        hygiene = (
-            await lookup_hygiene(domain, self.dns, security_txt=security_txt)
-            if "dns" in self.enabled_sources
-            else None
-        )
+        hygiene = None
+        if "dns" in self.enabled_sources:
+            try:
+                hygiene = await asyncio.wait_for(
+                    lookup_hygiene(domain, self.dns, security_txt=security_txt),
+                    timeout=max(_DNS_FLOOR_SECONDS, deadline - time.monotonic()),
+                )
+            except TimeoutError:
+                failed.append("dns")
+                log.warning("enrich_source_timed_out", domain=domain, sources=["dns"])
         contacts = tuple(
             extract_contacts(
                 site.text,

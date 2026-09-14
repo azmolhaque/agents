@@ -7,6 +7,7 @@ addresses are usable, and what a missing lookup is allowed to imply.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from pathlib import Path
@@ -953,3 +954,57 @@ async def test_the_open_role_count_is_kept_not_just_the_triggers(tmp_path: Path)
     assert store.conn.execute("SELECT open_roles FROM companies").fetchone()["open_roles"] == 42
     await egress.aclose()
     store.close()
+
+
+# ------------------------------------------------------- slow is a way of failing
+
+
+async def test_a_hung_source_costs_a_field_and_not_the_company(store, monkeypatch):
+    """The stage's one rule, applied to the failure mode it did not cover.
+
+    `return_exceptions=True` means a source that *raises* costs only its own field. A
+    source that never answers cost the whole company: `prepare()` ran until the worker
+    cancelled it at `MAX_STAGE_SECONDS`, the job failed, and an attempt was charged
+    against the dead-letter ceiling for a prospect whose only fault was a slow host.
+    Observed in production as `enrich.company: CindraError: stage enrich.company
+    exceeded 900s and was cancelled`.
+
+    Nothing here is contrived: six site fetches at three retries, a 30 s timeout and up
+    to 60 s of backoff each is ~1260 s with no bug at all.
+    """
+    from cindraleads.agents import enricher as enricher_module
+
+    enricher = Enricher(store=store, egress=None, enabled_sources=frozenset({"crtsh", "ats"}))  # type: ignore[arg-type]
+    monkeypatch.setattr(enricher_module, "ENRICH_DEADLINE_SECONDS", 0.2)
+
+    async def _never() -> tuple[str, ...]:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    async def _sprawl(domain: str) -> tuple[int, int]:
+        return 40, 12
+
+    monkeypatch.setattr(enricher, "_subdomains", _sprawl)
+    monkeypatch.setattr(enricher, "_site", lambda domain: _never())
+    monkeypatch.setattr(enricher, "_boards", lambda token: _never())
+    monkeypatch.setattr(enricher, "_age", lambda domain: _never())
+
+    outcome = await asyncio.wait_for(enricher.prepare(job()), timeout=10)
+
+    assert outcome.error is None, "a slow source must not fail the company"
+    assert outcome.subdomain_total == 40, "the source that answered is kept"
+    assert set(outcome.sources_failed) == {"site", "ats", "rdap"}
+    assert outcome.sources_ok == ("crtsh",)
+
+
+def test_the_enrich_deadline_leaves_the_worker_room_to_cancel_it() -> None:
+    """One decision, not two. The fan-out's budget is derived from the worker's bound
+    rather than written down beside it -- the same shape as `WatchdogSec` against the
+    lease and `MAX_STAGE_SECONDS` against `TimeoutStopSec`, both of which drifted."""
+    from cindraleads.agents.enricher import ENRICH_DEADLINE_SECONDS
+    from cindraleads.config import MAX_STAGE_SECONDS
+
+    assert ENRICH_DEADLINE_SECONDS < MAX_STAGE_SECONDS, (
+        "the stage must give up before the worker gives up on it, or the bound is "
+        "decorative and the job still fails"
+    )

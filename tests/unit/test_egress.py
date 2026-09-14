@@ -440,3 +440,86 @@ async def test_a_429_still_counts_against_the_source(store):
 
     assert not breaker.allow()
     await client.aclose()
+
+
+# ------------------------------------------------ the wait the ceiling did not cover
+
+
+async def test_a_long_retry_after_is_not_waited_out(store, monkeypatch):
+    """What `enrich.company exceeded 900s and was cancelled` actually was.
+
+    `_backoff` is capped at `backoff_max_seconds` because there is a length of time
+    past which we would rather fail a fetch than hold a worker. The `Retry-After`
+    branch stepped straight around that cap and slept for whatever the remote asked
+    for, so one rate-limited page could hold a stage open until `MAX_STAGE_SECONDS`
+    cancelled it -- failing a whole company, and charging an attempt against the
+    dead-letter ceiling, over one slow host.
+
+    Same shape as every other bound this project has had to add: the ceiling existed
+    and one code path was not subject to it.
+    """
+    slept: list[float] = []
+
+    async def _record(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("cindraleads.sources.http.asyncio.sleep", _record)
+
+    def limited(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /")
+        return httpx.Response(429, headers={"retry-after": "3600"}, text="slow down")
+
+    client = make_client(store, Recorder())
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(limited))
+
+    with pytest.raises(httpx.HTTPError):
+        await client.fetch("site", "https://x.io/limited")
+
+    ceiling = REGISTRY.defaults.backoff_max_seconds
+    assert all(wait <= ceiling for wait in slept), f"slept past the ceiling: {slept}"
+    await client.aclose()
+
+
+async def test_a_retry_after_we_will_not_honour_ends_the_retries(store, monkeypatch):
+    """Past the ceiling we stop asking rather than ask sooner.
+
+    Clamping the wait down to the ceiling would be the other obvious fix and it is the
+    wrong one: the server named a number, and retrying inside it is exactly the
+    hammering the header exists to prevent. Every caller of a fetch here already treats
+    a dead source as a missing field rather than a dead company.
+    """
+
+    async def _instant(seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr("cindraleads.sources.http.asyncio.sleep", _instant)
+    calls: list[str] = []
+
+    def limited(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/robots.txt"):
+            return httpx.Response(200, text="User-agent: *\nAllow: /")
+        calls.append(str(request.url))
+        return httpx.Response(429, headers={"retry-after": "3600"}, text="slow down")
+
+    client = make_client(store, Recorder())
+    client.client = httpx.AsyncClient(transport=httpx.MockTransport(limited))
+
+    with pytest.raises(httpx.HTTPError):
+        await client.fetch("site", "https://x.io/limited")
+
+    assert len(calls) == 1, f"asked again inside a window we refused to wait for: {calls}"
+    await client.aclose()
+
+
+async def test_a_nonsense_retry_after_is_ignored_rather_than_slept_on(store):
+    """A header is whatever the remote chose to send. `nan` parses as a float and
+    compares False against every ceiling, so it would slip past the bound above and
+    reach `asyncio.sleep` -- which is not a wait, it is a hang."""
+    from cindraleads.sources.http import _retry_after
+
+    for raw in ("nan", "inf", "-30", "tomorrow", "Wed, 21 Oct 2026 07:28:00 GMT"):
+        response = httpx.Response(429, headers={"retry-after": raw})
+        assert _retry_after(response) is None, raw
+
+    assert _retry_after(httpx.Response(429, headers={"retry-after": "12"})) == 12.0

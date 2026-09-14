@@ -896,6 +896,57 @@ That query is also a warning: **`developer tools` is 153 of 482.** `industry` is
 model's loose summary, not a taxonomy, so it is a usable compliance input only for
 labels specific enough to mean one thing.
 
+**One writer, three readers, and the third was missed.** `calibration_version` was
+introduced so the Scorer that stamps `leads.scoring_version` and `enqueue_stale_scores`
+that compares against it could not drift -- and `diagnose()` was still comparing against
+`ScoringConfig.fingerprint()`, the arithmetic half. So the moment the gate joined the
+stamp, **every lead the new build scored read as stale to the report built to say so**:
+`832 of 833 lead(s) were scored by a DIFFERENT calibration`, over a corpus that was
+current, telling the operator to wait for a rescore that had already run. The Critic
+reads the same field and discounted its own proposals on it.
+
+**832 of 833 is the shape of a constant, not a finding** -- the same tell as
+`single_source` at 96% incidence and "no escalation backend" in 100% of exhausted
+ladders. A number that high is a claim about the measurement, and it was read as a claim
+about the corpus for a week.
+
+`test_a_rescored_corpus_reports_current` used to set the column by hand to the value the
+*reader* wanted, so it passed against a broken production path. It now drives the real
+Scorer and reads its stamp back, and it fails against the old comparison. Fourth
+instance, after `discovered_by`, `enqueue_stale_extractions` and the HN mock: **a test
+that supplies the input the code expects proves nothing.**
+
+**Slow is a way of failing, and the fan-out only ever handled the other way.**
+`return_exceptions=True` means a source that *raises* costs its own field; a source that
+never answers cost the whole company. `prepare()` ran until the worker cancelled it --
+`enrich.company: CindraError: stage enrich.company exceeded 900s and was cancelled` --
+the job failed, and an attempt was charged against the dead-letter ceiling for a
+prospect whose only fault was a slow host. Nothing about that is exotic: six site
+fetches at three retries, a 30 s timeout and up to 60 s of backoff each is ~1260 s with
+no bug at all. The fan-out now keeps whatever answered inside `ENRICH_DEADLINE_SECONDS`
+and reports the rest as failed sources, which is what "one failing source must not fail
+the company" was always supposed to mean.
+
+**A ceiling that one code path is not subject to is not a ceiling.** `_backoff` is
+capped at `backoff_max_seconds` precisely because there is a length of time past which
+we would rather fail a fetch than hold a worker -- and the `Retry-After` branch slept
+for whatever the remote asked for, uncapped. Past the ceiling we now stop retrying
+rather than retry sooner: the server named a number, and asking again inside it is the
+hammering the header exists to prevent. `nan` parses as a float and compares False
+against every bound, so `_retry_after` rejects non-finite values before they reach a
+sleep that would never end.
+
+`ENRICH_DEADLINE_SECONDS` is derived from `MAX_STAGE_SECONDS`, which moved to `config`
+so a stage can bound itself against the same number instead of a copy of it. Fourth
+instance of one-decision-in-two-files, after the prose bound against its budget,
+`WatchdogSec` against the lease, and `MAX_STAGE_SECONDS` against `TimeoutStopSec`.
+
+**A test dated by a literal fails on a day nobody changed anything.**
+`test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
+a 30-day window; it was true the week it was written and quietly stopped being true a
+month later. The timestamp is relative now. A test that fails without a cause is how a
+suite gets ignored.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
