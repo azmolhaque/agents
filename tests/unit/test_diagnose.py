@@ -334,14 +334,60 @@ def test_a_stale_calibration_is_flagged(store: Any) -> None:
 
 
 def test_a_rescored_corpus_reports_current(store: Any) -> None:
-    _lead(store, "acme.io", score=45, tier="C", **_strong(), no_contact=-25.0)
+    """The lead is written by the *real* Scorer, and that is the whole test.
+
+    The version this replaced set `scoring_version` by hand to
+    `ScoringConfig.load().fingerprint()` -- the value the reader wanted rather than the
+    value the writer produces. When `calibration_version` folded the compliance gate
+    into the stamp, the Scorer started writing `scoring:gate` and this reader kept
+    comparing against `scoring`, so every freshly scored lead read as stale: 832 of
+    833, with the banner telling the operator to wait for a rescore that had already
+    run. The test agreed with the broken reader because it had been told the answer.
+
+    Fourth instance of the same shape, after `discovered_by`, `enqueue_stale_extractions`
+    and the HN mock: **a test that supplies the input the code expects proves nothing.**
+    """
+    from cindraleads.agents.scorer import SCORE_KIND, ScoreOutcome, Scorer
+    from cindraleads.config import settings
+    from cindraleads.models import Job
+
+    _seed_scored_company(store)
+    scorer = Scorer(store=store, llm=None, config=settings())
+    job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
     with store.tx() as conn:
-        conn.execute("UPDATE leads SET scoring_version = ?", (ScoringConfig.load().fingerprint(),))
+        assert scorer.commit(job, ScoreOutcome(canonical_domain="acme.io"), conn).ok
 
     report = diagnose(store)
 
-    assert report.stale_calibration == 0
+    assert report.total == 1
+    assert report.stale_calibration == 0, "the build that wrote the stamp must read as current"
     assert report.is_current is True
+
+
+def _seed_scored_company(store: Any) -> None:
+    """One company with one live trigger and one piece of evidence -- the minimum the
+    Scorer will write a lead for."""
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO companies (canonical_domain, display_name, ai_surface, "
+            "tech_signals, first_seen_at, last_updated_at) VALUES "
+            "('acme.io','Acme','[]','[]',?,?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO evidence (evidence_id, url, source_id, snippet, "
+            "observed_at, content_sha256) VALUES "
+            "('e1','https://acme.io/','company_site','we shipped an assistant',?,'h')",
+            (now,),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO triggers (trigger_id, canonical_domain, code, confidence, "
+            "observed_at, decays_at) VALUES "
+            "('t1','acme.io','T1_AI_SHIP',0.9,?,'2099-01-01T00:00:00Z')",
+            (now,),
+        )
+        conn.execute("INSERT OR REPLACE INTO trigger_evidence VALUES ('t1','e1')")
 
 
 def test_a_lead_predating_the_column_counts_as_stale(store: Any) -> None:

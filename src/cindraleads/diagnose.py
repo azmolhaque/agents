@@ -29,6 +29,8 @@ from datetime import timedelta
 from typing import Any
 
 from cindraleads.agents.harvester import HARVEST_YIELD_METRIC
+from cindraleads.agents.scorer import calibration_version
+from cindraleads.compliance import ComplianceGate
 from cindraleads.models import to_iso, utcnow
 from cindraleads.scoring import ScoringConfig, tier_for
 from cindraleads.store import Store
@@ -345,7 +347,11 @@ def template_yield(store: Store) -> list[TemplateYield]:
 
 
 def diagnose(
-    store: Store, *, config: ScoringConfig | None = None, near_miss_limit: int = 10
+    store: Store,
+    *,
+    config: ScoringConfig | None = None,
+    gate: ComplianceGate | None = None,
+    near_miss_limit: int = 10,
 ) -> ScoreDiagnosis:
     cfg = config or ScoringConfig.load()
     leads = read_leads(store, cfg)
@@ -357,7 +363,13 @@ def diagnose(
     breadth = evidence_breadth(store)
     result.by_template = template_yield(store)
     result.by_harvest = harvest_yield(store)
-    fingerprint = cfg.fingerprint()
+    # The stamp the Scorer writes, not the arithmetic half of it. `calibration_version`
+    # exists so the writer and `enqueue_stale_scores` cannot drift apart, and this third
+    # reader was missed: it kept comparing against `cfg.fingerprint()`, so every lead
+    # the new build scored read as stale and the banner stayed up over a corpus that was
+    # already current -- 832 of 833, which is the shape of a constant, not a finding.
+    # The Critic reads the same field and discounted its own proposals on it.
+    fingerprint = calibration_version(cfg, gate or ComplianceGate.from_config())
 
     for lead in leads:
         if lead.scoring_version != fingerprint:
