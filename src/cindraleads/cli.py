@@ -988,6 +988,7 @@ def maintain(
         typer.echo(f"  {'redated':>14}: {report.redated}")
         typer.echo(f"  {'decayed':>14}: {report.decayed}")
         typer.echo(f"  {'unevidenced':>14}: {report.unevidenced}")
+        typer.echo(f"  {'leads retired':>14}: {report.leads_retired}")
 
         typer.echo("\nevidence")
         if no_network:

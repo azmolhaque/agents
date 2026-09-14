@@ -37,6 +37,7 @@ every URL it cites is *known* dead, never when we merely failed to look.
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 import sqlite3
 import uuid
@@ -63,6 +64,7 @@ __all__ = [
     "resample_evidence",
     "restore_first_observation",
     "retire_superseded_triggers",
+    "retire_unevidenced_leads",
     "retire_unevidenced_triggers",
     "run_maintenance",
     "suppress_platform_companies",
@@ -129,6 +131,7 @@ class MaintenanceReport:
     evidence_checked: int = 0
     evidence_dead: int = 0
     unevidenced: int = 0
+    leads_retired: int = 0
     purged: dict[str, int] = field(default_factory=dict)
     cache_rows: int = 0
     cache_files: int = 0
@@ -143,6 +146,7 @@ class MaintenanceReport:
             or self.decayed
             or self.evidence_dead
             or self.unevidenced
+            or self.leads_retired
             or self.cache_rows
             or self.cache_files
             or sum(self.purged.values())
@@ -519,6 +523,78 @@ def retire_unevidenced_triggers(store: Store, *, dry_run: bool = False) -> tuple
     return len(rows), domains
 
 
+def retire_unevidenced_leads(store: Store, *, dry_run: bool = False) -> tuple[int, list[str]]:
+    """Retire leads that outlived every trigger they rested on.
+
+    Absolute rule 2 is **no evidence, no lead**, and it was enforced only at write time.
+    Nothing enforced it against the calendar, and nothing in the system *could*:
+
+    - `enqueue_stale_scores` joins `triggers` on `active = 1 AND decays_at > now`, so a
+      lead with no live trigger produces no row and is never selected. Not stale --
+      invisible.
+    - Were it selected anyway, the Scorer returns `skipped="no live trigger"` and
+      `commit` returns ok without touching the lead. The stale row survives a
+      successful re-score.
+    - `worklist`, `cindra digest` and the Dispatcher all read `FROM leads` and filter on
+      `tier`. None of them joins a trigger.
+
+    So a lead kept its tier, its score and its outreach angle forever, and stayed
+    dispatchable, after the evidence under it had expired. Found at 5 leads, all REJECT
+    already, so nothing has leaked -- but the mechanism never looked at the tier. A
+    Tier B lead whose triggers decay is a card a human is invited to send, citing a
+    fact we no longer claim is current.
+
+    Retired rather than deleted, the same choice as `suppress_platform_companies`: the
+    row and its breakdown survive, so the record of what we believed is kept and
+    `cindra explain` can still report why the lead fell. `last_updated_at` is
+    deliberately **not** moved -- a genuinely new trigger must satisfy
+    `MAX(t.observed_at) > l.last_updated_at` and re-score the lead back up, which is
+    what makes this self-healing rather than a one-way door.
+    """
+    now = to_iso(utcnow())
+    rows = store.conn.execute(
+        "SELECT lead_id, canonical_domain, score_breakdown FROM leads l "
+        "WHERE COALESCE(l.tier, '') != 'REJECT' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM triggers t WHERE t.canonical_domain = l.canonical_domain "
+        "    AND t.active = 1 AND t.decays_at > ?"
+        ")",
+        (now,),
+    ).fetchall()
+    if not rows:
+        return 0, []
+
+    domains: list[str] = []
+    updates: list[tuple[str, str]] = []
+    for row in rows:
+        domain = str(row["canonical_domain"])
+        if domain not in domains:
+            domains.append(domain)
+        try:
+            breakdown = json.loads(str(row["score_breakdown"] or "{}"))
+        except ValueError:
+            breakdown = {}
+        if not isinstance(breakdown, dict):
+            breakdown = {}
+        # Written here rather than added to `scoring.yaml`, and that is deliberate: the
+        # Scorer never computes this -- it skips these companies outright -- so a
+        # config entry would claim an arithmetic that does not run, and would
+        # invalidate `calibration_version` for all 833 leads to store a number nothing
+        # reads.
+        breakdown["evidence_expired"] = -100
+        updates.append((json.dumps(breakdown), str(row["lead_id"])))
+
+    if not dry_run:
+        with store.tx() as conn:
+            conn.executemany(
+                "UPDATE leads SET tier = 'REJECT', score = 0, score_breakdown = ? "
+                "WHERE lead_id = ?",
+                updates,
+            )
+        log.info("leads_unevidenced", count=len(rows), domains=len(domains))
+    return len(rows), domains
+
+
 # ------------------------------------------------------------------------ retention
 
 
@@ -714,6 +790,15 @@ async def run_maintenance(
             report.unevidenced, dead_domains = retire_unevidenced_triggers(store, dry_run=dry_run)
             dirty.extend(dead_domains)
 
+    # Last of the retirements, because it asks what is left after all of them. Decay,
+    # rule supersession and dead links each deactivate triggers, and a lead is only
+    # unevidenced once every one of those has had its say.
+    #
+    # It is deliberately *not* added to `dirty`: rescoring a lead with no live trigger
+    # is the thing that cannot work -- the Scorer returns `skipped` and writes nothing,
+    # which is how these rows survived in the first place. This pass is the write.
+    report.leads_retired, _ = retire_unevidenced_leads(store, dry_run=dry_run)
+
     report.purged = purge_retention(store, config=cfg, dry_run=dry_run)
 
     if cache is not None:
@@ -738,6 +823,7 @@ async def run_maintenance(
         evidence_checked=report.evidence_checked,
         evidence_dead=report.evidence_dead,
         unevidenced=report.unevidenced,
+        leads_retired=report.leads_retired,
         purged=sum(report.purged.values()),
         rescored=report.rescored,
     )

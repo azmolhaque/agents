@@ -23,6 +23,7 @@ from cindraleads.maintenance import (
     purge_retention,
     resample_evidence,
     retire_superseded_triggers,
+    retire_unevidenced_leads,
     retire_unevidenced_triggers,
     run_maintenance,
 )
@@ -809,3 +810,109 @@ def test_a_domain_a_human_already_suppressed_is_not_re_reported(store):
         )
 
     assert suppress_platform_companies(store) == (0, [])
+
+
+# ------------------------------------------- a lead that outlived its own evidence
+
+
+def _lead(store: Any, domain: str, *, tier: str, score: int) -> str:
+    lead_id = uuid.uuid4().hex[:16]
+    stamp = to_iso(utcnow())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO leads (lead_id, canonical_domain, score, score_breakdown, tier, "
+            "recommended_offer, outreach_angle, first_seen_at, last_updated_at, "
+            "pipeline_version) VALUES (?,?,?,?,?,'snapshot_free','an angle',?,?,'test')",
+            (lead_id, domain, score, '{"trigger": 80.0}', tier, stamp, stamp),
+        )
+    return lead_id
+
+
+def _tier(store: Any, lead_id: str) -> tuple[str, int]:
+    row = store.conn.execute(
+        "SELECT tier, score FROM leads WHERE lead_id = ?", (lead_id,)
+    ).fetchone()
+    return str(row["tier"]), int(row["score"])
+
+
+def test_a_lead_whose_triggers_all_decayed_is_retired(store: Any) -> None:
+    """Absolute rule 2 is "no evidence, no lead", and it was enforced only at write
+    time. A lead that outlived its triggers kept its tier, its score and its outreach
+    angle, and stayed dispatchable -- a card inviting a human to cite a fact we no
+    longer claim is current."""
+    _company(store, "acme.io")
+    _trigger(store, "acme.io", "T1_AI_SHIP", decays_in_days=-1)
+    lead = _lead(store, "acme.io", tier="B", score=66)
+
+    expire_decayed_triggers(store)
+    retired, domains = retire_unevidenced_leads(store)
+
+    assert (retired, domains) == (1, ["acme.io"])
+    assert _tier(store, lead) == ("REJECT", 0)
+
+
+def test_a_lead_with_one_live_trigger_is_left_alone(store: Any) -> None:
+    _company(store, "acme.io")
+    _trigger(store, "acme.io", "T1_AI_SHIP", decays_in_days=-1)
+    _trigger(store, "acme.io", "T8_HYGIENE_GAP", decays_in_days=30)
+    lead = _lead(store, "acme.io", tier="B", score=66)
+
+    expire_decayed_triggers(store)
+
+    assert retire_unevidenced_leads(store) == (0, [])
+    assert _tier(store, lead) == ("B", 66)
+
+
+def test_retiring_a_lead_is_idempotent(store: Any) -> None:
+    """It runs nightly. A rule that re-touched the same rows every night would make
+    `report.changed` permanently true and the maintenance log permanently noisy."""
+    _company(store, "acme.io")
+    _trigger(store, "acme.io", "T1_AI_SHIP", decays_in_days=-1)
+    _lead(store, "acme.io", tier="B", score=66)
+    expire_decayed_triggers(store)
+
+    assert retire_unevidenced_leads(store)[0] == 1
+    assert retire_unevidenced_leads(store) == (0, [])
+
+
+def test_a_dry_run_retires_nothing(store: Any) -> None:
+    _company(store, "acme.io")
+    _trigger(store, "acme.io", "T1_AI_SHIP", decays_in_days=-1)
+    lead = _lead(store, "acme.io", tier="B", score=66)
+    expire_decayed_triggers(store)
+
+    assert retire_unevidenced_leads(store, dry_run=True)[0] == 1
+    assert _tier(store, lead) == ("B", 66)
+
+
+async def test_nothing_else_in_the_system_could_have_retired_it(store: Any) -> None:
+    """Why this pass has to exist, driven through the two mechanisms that look like
+    they should already cover it.
+
+    `enqueue_stale_scores` joins live triggers, so a lead with none produces no row --
+    not stale, invisible. And were it queued anyway, the Scorer returns
+    `skipped="no live trigger"` and commits nothing, so the stale lead survives a
+    re-score that reports success. Both halves have to fail for the row to persist, and
+    both do.
+    """
+    from cindraleads.agents.scorer import SCORE_KIND, Scorer, enqueue_stale_scores
+    from cindraleads.models import Job
+    from cindraleads.queue import JobQueue
+
+    _company(store, "acme.io")
+    _trigger(store, "acme.io", "T1_AI_SHIP", decays_in_days=-1)
+    lead = _lead(store, "acme.io", tier="B", score=66)
+    expire_decayed_triggers(store)
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 0, "the reconciler cannot see it"
+
+    scorer = Scorer(store=store, llm=None)
+    job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
+    outcome = await scorer.prepare(job)
+    assert outcome.skipped == "no live trigger"
+    with store.tx() as conn:
+        assert scorer.commit(job, outcome, conn).ok, "the job succeeds without writing"
+    assert _tier(store, lead) == ("B", 66), "which is exactly how the row survived"
+
+    assert retire_unevidenced_leads(store)[0] == 1
+    assert _tier(store, lead) == ("REJECT", 0)

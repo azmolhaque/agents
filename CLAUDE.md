@@ -941,6 +941,35 @@ so a stage can bound itself against the same number instead of a copy of it. Fou
 instance of one-decision-in-two-files, after the prose bound against its budget,
 `WatchdogSec` against the lease, and `MAX_STAGE_SECONDS` against `TimeoutStopSec`.
 
+**"No evidence, no lead" was enforced at write time and never against the calendar.**
+A lead whose every trigger has decayed keeps its tier, its score and its outreach angle
+forever, and stays dispatchable -- `worklist`, `cindra digest` and the Dispatcher all
+read `FROM leads` and filter on `tier`, and not one of them joins a trigger. So a Tier B
+card can invite a human to cite a fact the system no longer claims is current, which is
+absolute rule 2 breached by the passage of time.
+
+**Three mechanisms that look like they cover it, and none does.**
+`enqueue_stale_scores` joins `triggers` on `active = 1 AND decays_at > now`, so a lead
+with no live trigger produces no row -- not stale, *invisible*. Queue one anyway and the
+Scorer returns `skipped="no live trigger"` and `commit` returns ok **without touching
+the lead**, so the row survives a re-score that reports success. And
+`retire_unevidenced_triggers` retires triggers for dead links, never the lead above
+them. Every part worked; nothing owned the question.
+
+`retire_unevidenced_leads` in `cindra maintain` is that owner, running last of the
+retirements because it asks what is left after decay, supersession and dead links have
+each had their say. It retires rather than deletes -- the row and its breakdown survive,
+the same choice as `suppress_platform_companies` -- and deliberately does **not** move
+`last_updated_at`, so a genuinely new trigger satisfies `MAX(t.observed_at) >
+l.last_updated_at` and scores the lead back up. Self-healing, not a one-way door. The
+`evidence_expired` marker is written straight into `score_breakdown` and is deliberately
+**not** in `scoring.yaml`: the Scorer never computes it, so a config entry would claim an
+arithmetic that does not run and would invalidate `calibration_version` for the whole
+corpus to store a number nothing reads.
+
+Found at 5 leads, all already REJECT, so nothing had leaked -- **but the mechanism never
+looked at the tier.** A defect that is currently harmless by luck is still the defect.
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a
