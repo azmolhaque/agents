@@ -1196,17 +1196,35 @@ infers nothing). Measured 2026-09-15 across 926 companies:
 | 1000-4999 | 2 | 1 |
 | **5000+** | **0** | **0** |
 
-**The 5000+ band is empty, and `apple.com` -- a Tier A/B lead -- is not in it.** That is
-not evidence the corpus holds no enterprises; it is evidence the signal is *missing
-precisely where it would fire*. crt.sh for a company that size returns a response past
-`defaults.max_bytes`, the truncated body fails to parse, `_subdomains` returns None, and
-`subdomain_count_ct` stays NULL. **The proposed veto would have been anti-correlated
-with what it exists to catch.**
+**The 5000+ band is empty**, on a corpus that unquestionably contains large companies.
+An absent bucket is a claim about the measurement before it is a claim about the world --
+the same tell as `832 of 833` and `single_source` at 96%. Whatever the cause, a veto
+keyed on a signal that is blank for the biggest companies would have been
+anti-correlated with what it exists to catch, and would have shipped looking reasonable.
 
-Worth keeping as the general lesson: an absent bucket in a distribution is a claim about
-the measurement first and the world second -- the same tell as `832 of 833` and
-`single_source` at 96%. Asking for the distribution before picking a threshold cost ten
-seconds and would have cost a shipped mechanism that silently never fired.
+**I then explained the empty bucket with `apple.com` and was wrong twice over.** The
+claim was that crt.sh returns a body past `defaults.max_bytes` for a company that size,
+so the JSON fails to parse and `subdomain_count_ct` stays NULL. Its actual row:
+
+    apple.com | YouCal - AI Calorie Tracker | productivity software | certs 0
+
+`0`, not NULL -- and **not Apple**. It is an App Store listing canonicalized to the
+store, the `teamtailor.com` shape in its purest form. The truncation story was invented
+to fit a row I had not looked at, about a company that was not there. The distribution
+was still enough to kill the proposal; the mechanism I offered for *why* was fiction.
+
+Asking for the distribution before picking a threshold cost ten seconds and saved a
+shipped mechanism that would silently never have fired. Explaining it without reading
+the row cost a paragraph of confident invention in this file.
+
+**`inferred_band_from_open_roles` cannot be tightened either, and the same census says
+so.** The proposal was to lower the `40 -> "1000+"` threshold, because `thoughtworks.com`
+(~10,000 people) sits at 39 and misses by one role. Measured: 40 already catches
+`latitude.so` (40), `supabase.com` (60) and `temporal.io` (71) -- none of which is
+within an order of magnitude of 1000. **Open roles measure hiring intensity, not
+headcount**, and a funded startup out-posts a consultancy. Lowering the threshold makes
+it wrong more often, not less. Left alone, and the asymmetry is why that is survivable:
+a wrong "large" only drops a real prospect into the digest, where it is still read.
 
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against

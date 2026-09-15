@@ -237,6 +237,26 @@ def test_the_company_named_in_an_article_still_resolves_from_its_own_site():
     assert canonical_domain("https://www.plaud.ai/products/notepin") == "plaud.ai"
 
 
+def test_an_app_store_listing_is_not_a_company():
+    """`apple.com` was a Tier A/B lead whose display name is "YouCal - AI Calorie
+    Tracker" and whose industry is "productivity software".
+
+    An App Store listing, canonicalized to the store. The `teamtailor.com` shape in its
+    purest form -- many companies behind a path on one host -- and every iOS app ever
+    discovered would have merged onto that single row.
+
+    Blocking the bare apex is correct rather than merely convenient: Apple, Google and
+    Microsoft are enterprises far outside an ICP of 5-150 employees, so there is no lead
+    here to lose.
+    """
+    for value in (
+        "https://apps.apple.com/us/app/youcal-ai-calorie-tracker/id123",
+        "https://play.google.com/store/apps/details?id=com.acme",
+        "https://apps.microsoft.com/detail/9ABC",
+    ):
+        assert canonical_domain(value) is None, f"{value} would become a company row"
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -244,6 +264,13 @@ def test_the_company_named_in_an_article_still_resolves_from_its_own_site():
         "https://huggingface.co/someorg/somemodel",
         "https://www.researchgate.net/publication/123",
         "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1",
+        # Found in the `open_roles` census rather than the near-miss list: a national
+        # broadcaster and an investigative newsroom (the TechCrunch shape), the
+        # Internet Archive (the arxiv shape), and a tech-jobs-and-news site (the
+        # terminaltrove shape). None was sendable yet; each was one trigger away.
+        "https://www.abc.net.au/news/story",
+        "https://www.propublica.org/article/x",
+        "https://archive.org/details/x",
     ],
 )
 def test_an_academic_repository_is_not_a_company(value):

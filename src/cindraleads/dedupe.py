@@ -202,6 +202,22 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         #
         # A non-profit run by a university library is also not in any ICP this project
         # has, which is the part no trigger could ever have caught.
+        # App stores, which are the `teamtailor.com` shape in its purest form: many
+        # companies behind a path on one host. `apple.com` was a Tier A/B lead whose
+        # `display_name` is **"YouCal - AI Calorie Tracker"** and whose industry is
+        # "productivity software" -- an App Store listing, canonicalized to the store.
+        # Every iOS app ever discovered would have merged onto that one row.
+        #
+        # Blocking the bare apex is correct rather than merely convenient: Apple,
+        # Google and Microsoft are enterprises far outside an ICP of 5-150 employees,
+        # so there is no lead here to lose.
+        "apple.com",
+        "apps.apple.com",
+        "itunes.apple.com",
+        "google.com",
+        "play.google.com",
+        "microsoft.com",
+        "apps.microsoft.com",
         "arxiv.org",
         "biorxiv.org",
         "medrxiv.org",
@@ -217,6 +233,18 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         "huggingface.co",
         "paperswithcode.com",
         "zenodo.org",
+        # Found by reading the `open_roles` census rather than the near-miss list --
+        # four more of the same three shapes, none sendable yet and all one trigger
+        # away. A national broadcaster and an investigative newsroom are the TechCrunch
+        # shape, and the Internet Archive is the arxiv shape. Each has a real mailbox
+        # and an "AI" page.
+        #
+        # `builtin.com` came back in that census too and is **already** on this list --
+        # captured as a company row before the host was blocked, which is exactly the
+        # half-a-change `suppress_platform_companies` exists to finish.
+        "abc.net.au",
+        "propublica.org",
+        "archive.org",
         "twitter.com",
         "x.com",
         "linkedin.com",
