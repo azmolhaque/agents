@@ -68,6 +68,19 @@ class Source:
     enabled: bool = True
     base_url: str | None = None
     auth_env: str | None = None
+    # How the credential named by `auth_env` travels. `query` means the caller puts it
+    # in `secret_params` itself, which is what the four SerpAPI sources do; `bearer`
+    # means the egress attaches `Authorization: Bearer <token>` and no call site has to
+    # remember to.
+    #
+    # It defaults to `query` so this is not a behaviour change for anything that
+    # already worked -- but `query` is also the value that has no enforcement behind
+    # it, so declaring `auth_env` alone still buys nothing. That is exactly how
+    # `GITHUB_TOKEN` came to exist in `.env.example`, in `Settings`, in the redaction
+    # list and in two `auth_env` lines while **no request ever carried it**: every hop
+    # of the chain was built except the last, so every GitHub call this project has
+    # ever made went out unauthenticated at 60 requests an hour.
+    auth_scheme: Literal["query", "bearer"] = "query"
     cache_ttl_hours: int = 24
     cost_units: int = 0
     requires_contact_ua: bool = False
@@ -133,6 +146,16 @@ class SourceRegistry:
                 raise ConfigError(
                     f"source {source_id!r} has role={role!r}; must be discovery or enrichment"
                 )
+            scheme = entry.get("auth_scheme", "query")
+            if scheme not in ("query", "bearer"):
+                raise ConfigError(
+                    f"source {source_id!r} has auth_scheme={scheme!r}; must be query or bearer"
+                )
+            if scheme != "query" and not entry.get("auth_env"):
+                raise ConfigError(
+                    f"source {source_id!r} declares auth_scheme={scheme!r} with no auth_env; "
+                    "there is no credential for it to send"
+                )
             sources[str(source_id)] = Source(
                 id=str(source_id),
                 legality_class=klass,
@@ -140,6 +163,7 @@ class SourceRegistry:
                 enabled=bool(entry.get("enabled", True)),
                 base_url=entry.get("base_url"),
                 auth_env=entry.get("auth_env"),
+                auth_scheme=scheme,
                 cache_ttl_hours=int(entry.get("cache_ttl_hours", 24)),
                 cost_units=int(entry.get("cost_units", 0)),
                 requires_contact_ua=bool(entry.get("requires_contact_ua", False)),

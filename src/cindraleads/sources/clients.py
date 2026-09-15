@@ -22,10 +22,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, ClassVar
 
+import httpx
+
+from cindraleads.errors import CindraError
 from cindraleads.logging import get_logger
 from cindraleads.models import TriggerCode, from_iso, utcnow
 from cindraleads.sources.cache import cache_key_for
-from cindraleads.sources.http import EgressClient
+from cindraleads.sources.http import EgressClient, FetchDenied
 
 __all__ = [
     "AshbyClient",
@@ -361,6 +364,101 @@ class GitHubClient:
                 query=query[:80],
             )
         return hits
+
+    ORG_SOURCE_ID = "github_orgs"
+
+    @classmethod
+    def org_request_for(cls, location: str, *, limit: int = 20) -> tuple[str, dict[str, str]]:
+        return (
+            "https://api.github.com/search/users",
+            {"q": f'location:"{location}" type:org', "per_page": str(min(limit, 50))},
+        )
+
+    @classmethod
+    def org_cache_key(cls, location: str, **kwargs: Any) -> str:
+        url, params = cls.org_request_for(location, **kwargs)
+        return cache_key_for(cls.ORG_SOURCE_ID, url, params)
+
+    async def orgs_in(self, location: str, *, limit: int = 20) -> list[SourceHit]:
+        """Organisations that say they are in `location`, with their own websites.
+
+        Discovery is eight-fourteenths Hacker News, and HN is an American forum. The
+        corpus held ~15 South Asian companies in 908 -- 1.6% against an `icp.yaml`
+        target of 40% -- fed by a single HN full-text search for the word "Bangladesh",
+        which mostly returns *articles about* Bangladesh whose publishers are now in
+        `PLATFORM_HOSTS`.
+
+        GitHub is the free alternative and it has the qualifier the repo endpoint
+        lacks. `search_repos` filters organisations *after* the fetch, because GitHub's
+        repo search has no "owner is an org" qualifier; the **users** endpoint has both
+        `type:org` and `location:`, so the same "is this a company" filter that costs a
+        post-filter there is free in the query here.
+
+        **Two fetches per org, and that is the cost.** The users search returns a
+        minimal object with no `blog`, so the company's own domain needs
+        `/users/{login}`. Bounded by `limit` for that reason -- an unbounded location
+        search is an unbounded number of profile requests.
+
+        **An org with no website is skipped, never guessed at.** Same rule as a comment
+        naming no domain: without a company site there is nothing to read, and the hit
+        would canonicalize to `github.com`, be refused by the Resolver, and cost an
+        extract job to reach a conclusion available here for free.
+
+        The org page stays the hit URL -- that is what we saw, and it is where the
+        location claim is visible to a human -- while the company's site goes in
+        `raw["homepage"]`, where `extraction_target` already looks. Exactly the split
+        the HN comment expansion uses, and for the same reason: cite what you read.
+        """
+        url, params = self.org_request_for(location, limit=limit)
+        result = await self.egress.fetch(self.ORG_SOURCE_ID, url, params=params)
+        data = _safe_json(result.body, source_id=self.ORG_SOURCE_ID, url=result.url)
+        if not isinstance(data, dict):
+            return []
+
+        hits: list[SourceHit] = []
+        no_site = 0
+        for item in list(data.get("items") or [])[:limit]:
+            login = str(item.get("login") or "").strip()
+            if not login:
+                continue
+            profile = await self._org_profile(login)
+            homepage = str(profile.get("blog") or "").strip()
+            if not homepage:
+                no_site += 1
+                continue
+            hits.append(
+                SourceHit(
+                    url=str(item.get("html_url") or f"https://github.com/{login}"),
+                    title=str(profile.get("name") or login),
+                    snippet=str(profile.get("bio") or "")[:500],
+                    source_id=self.ORG_SOURCE_ID,
+                    published_at=_parse_iso(profile.get("created_at")),
+                    raw={
+                        "homepage": homepage,
+                        "owner": login,
+                        "owner_type": "Organization",
+                        "location": profile.get("location"),
+                    },
+                )
+            )
+        if no_site:
+            log.info("github_orgs_without_a_site", skipped=no_site, kept=len(hits))
+        return hits
+
+    async def _org_profile(self, login: str) -> dict[str, Any]:
+        """One org's public profile, or an empty dict.
+
+        A failure here costs one org, never the batch -- the same rule the Enricher's
+        fan-out follows. There is no partial answer worth raising for.
+        """
+        try:
+            result = await self.egress.fetch(
+                self.ORG_SOURCE_ID, f"https://api.github.com/users/{login}"
+            )
+        except (FetchDenied, httpx.HTTPError, OSError, CindraError):
+            return {}
+        data = _safe_json(result.body, source_id=self.ORG_SOURCE_ID, url=result.url)
+        return data if isinstance(data, dict) else {}
 
     async def stack_risk_repos(self, *, since_days: int = 180) -> list[SourceHit]:
         """T11_STACK_RISK: public code importing agent/LLM frameworks.

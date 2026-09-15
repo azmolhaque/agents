@@ -76,11 +76,24 @@ _HN_ITEM = re.compile(r"news\.ycombinator\.com/item\?id=(\d+)")
 # The source default, and what a template gets when it sets no cap of its own.
 DEFAULT_HN_HITS = 50
 
+# Lower than the HN default on purpose: an org search costs **two** fetches per result
+# -- the search response carries no `blog`, so each org's own domain needs a second
+# request to `/users/{login}`. 20 orgs is 21 requests against a 5,000/h budget, which is
+# free; 200 would be 201 and would also queue 200 extract jobs at ~64 s of decode each.
+DEFAULT_ORG_HITS = 20
+
 
 def _hn_limit(plan: QueryPlan) -> int:
     """Hits this plan may return. Read in both the fetch and the cache key, from one
     place, because those two disagreeing is a silent failure rather than a loud one."""
     return int(plan.params.get("max_hits") or DEFAULT_HN_HITS)
+
+
+def _org_limit(plan: QueryPlan) -> int:
+    """Orgs this plan may return. Same one-place rule as `_hn_limit`, same reason: the
+    limit is in the cache key's `per_page`, so a fetch and a key computed from different
+    numbers would miss every time and `skip_if_cached` would never fire."""
+    return int(plan.params.get("max_hits") or DEFAULT_ORG_HITS)
 
 
 def _hn_item_id(url: str) -> str | None:
@@ -119,7 +132,9 @@ class Harvester:
             self.serpapi = SerpApiClient(self.egress, api_key=self.serpapi_key)
 
     def supports(self, engine: str) -> bool:
-        return engine in {"hn_algolia", "github_api"} or SerpApiClient.supports(engine)
+        return engine in {"hn_algolia", "github_api", "github_orgs"} or SerpApiClient.supports(
+            engine
+        )
 
     def cache_key_for_plan(self, plan: QueryPlan) -> str | None:
         """The cache key this plan's fetch will actually use, without fetching.
@@ -142,6 +157,12 @@ class Harvester:
             )
         if plan.engine == "github_api":
             return GitHubClient.cache_key(plan.query)
+        if plan.engine == "github_orgs":
+            # Its own source id and its own URL, which is why this is an engine rather
+            # than a parameter on `github_api`: both would key through
+            # `GitHubClient.cache_key` and collide on the repo-search URL, so an org
+            # plan would read a repo plan's cached body and return nothing.
+            return GitHubClient.org_cache_key(plan.query, limit=_org_limit(plan))
         if SerpApiClient.supports(plan.engine):
             return SerpApiClient.cache_key(plan.engine, plan.query)
         return None
@@ -172,6 +193,9 @@ class Harvester:
             if SerpApiClient.supports(plan.engine):
                 assert self.serpapi is not None
                 return await self.serpapi.search(plan.engine, plan.query)
+            if plan.engine == "github_orgs":
+                assert self.github is not None
+                return await self.github.orgs_in(plan.query, limit=_org_limit(plan))
             assert self.github is not None
             # Default ON. A personal repo is a person, and the anti-ICP rule excludes
             # unaffiliated individuals -- so the company-shaped default is the org

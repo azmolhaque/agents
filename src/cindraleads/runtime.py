@@ -39,7 +39,7 @@ from cindraleads.sources import DocumentCache, EgressClient, SourceRegistry
 from cindraleads.store import Store
 from cindraleads.thermal import ThermalGovernor
 
-__all__ = ["Runtime"]
+__all__ = ["Runtime", "auth_tokens_for"]
 
 log = get_logger("cindraleads.runtime")
 
@@ -94,6 +94,7 @@ class Runtime:
             registry=self.registry,
             cache=self.cache,
             client=self._http,
+            auth_tokens=auth_tokens_for(self.registry, self.config),
         )
         self.scout = Scout.from_config(
             self.registry, store=self.store, cache=self.cache, config=self.config
@@ -160,6 +161,29 @@ class Runtime:
         source = self.registry.get(engine)
         guard = self.egress.budgets.get(source.budget_provider)
         return True if guard is None else guard.can_spend(units)
+
+
+def auth_tokens_for(registry: SourceRegistry, config: Settings) -> dict[str, str]:
+    """Credentials for every source that declares one, keyed by its `auth_env` name.
+
+    Resolved by convention rather than by a list: `auth_env: GITHUB_TOKEN` reads
+    `Settings.github_token`, which is already the name the field has. A list would be a
+    second place to register a source and therefore a second place to forget one -- and
+    forgetting one is exactly how `GITHUB_TOKEN` came to exist in `.env.example`, in
+    `Settings`, in the redaction list and in `sources.yaml` while no request carried it.
+
+    A source whose credential is unset is simply absent from the map. That is not an
+    error: unauthenticated GitHub works, at 60 requests an hour rather than 5,000, and
+    the egress says so once per source when it notices.
+    """
+    tokens: dict[str, str] = {}
+    for source in registry.sources.values():
+        if source.auth_scheme != "bearer" or not source.auth_env:
+            continue
+        value = _secret(getattr(config, source.auth_env.lower(), None))
+        if value:
+            tokens[source.auth_env] = value
+    return tokens
 
 
 def _secret(value: SecretStr | None) -> str | None:

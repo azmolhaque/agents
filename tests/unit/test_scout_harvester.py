@@ -217,6 +217,7 @@ def rig(tmp_path: Path):  # type: ignore[no-untyped-def]
             "sources": [
                 {"id": "hn_algolia", "legality_class": "licensed_api", "cache_ttl_hours": 1},
                 {"id": "github_api", "legality_class": "licensed_api", "cache_ttl_hours": 1},
+                {"id": "github_orgs", "legality_class": "licensed_api", "cache_ttl_hours": 1},
             ],
             "defaults": {"retries": 1, "backoff_base_seconds": 0.001},
         }
@@ -821,3 +822,84 @@ def test_a_template_without_an_override_keeps_the_source_ttl(scout: Scout):
 
     assert template.cache_ttl_hours == 0
     assert template.to_plan(cache_ttl_hours=source_ttl).cache_ttl_hours == source_ttl
+
+
+# ------------------------------------------------------- github orgs by location
+
+
+def org_payload(*pairs: tuple[str, str]):  # type: ignore[no-untyped-def]
+    """A GitHub answering both the user search and each org profile."""
+    profiles = dict(pairs)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/search/users" in request.url.path:
+            items = [
+                {"login": login, "html_url": f"https://github.com/{login}"} for login, _ in pairs
+            ]
+            return httpx.Response(200, text=json.dumps({"items": items}))
+        login = request.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(
+            200, text=json.dumps({"login": login, "blog": profiles.get(login, "")})
+        )
+
+    return handler
+
+
+async def test_an_org_plan_queues_the_company_and_cites_the_org_page(rig):
+    """The seam, driven end to end rather than at either end.
+
+    `discovered_by` was NULL for every company ever recorded because the Harvester put
+    `template_id` on the job, the Resolver read it back out, and the Extractor between
+    them forwarded neither -- both ends had tests and both passed. So this asserts the
+    whole hop: a `github_orgs` plan must produce an extract job pointed at the
+    *company's* domain, carrying the GitHub org page as what we saw.
+    """
+    harvester, store = rig(org_payload(("acmebd", "https://acme.com.bd"), ("nosite", "")))
+    plan = QueryPlan(
+        query="Bangladesh",
+        engine="github_orgs",
+        targets=["T12_LOCAL"],
+        template_id="gh_orgs_bangladesh",
+    )
+
+    result = await harvester.run(_job(plan))
+
+    assert result.ok
+    assert len(result.follow_on) == 1, "the org with no website produced no work"
+    _, follow_on = result.follow_on[0]
+    assert follow_on["url"] == "https://acme.com.bd", "we read the company"
+
+    # The stored candidate payload, which is where the Resolver reads provenance from
+    # -- the exact hop `discovered_by` was lost in.
+    row = store.conn.execute(
+        "SELECT raw_payload FROM candidates WHERE candidate_id = ?",
+        (follow_on["candidate_id"],),
+    ).fetchone()
+    stored = json.loads(row["raw_payload"])
+    assert stored["url"] == "https://acme.com.bd"
+    assert stored["discovered_at"] == "https://github.com/acmebd", "we cite what we saw"
+    assert stored["template_id"] == "gh_orgs_bangladesh"
+    assert stored["raw"]["homepage"] == "https://acme.com.bd"
+
+
+async def test_an_org_plan_and_a_repo_plan_get_different_keys_from_the_harvester(rig):
+    """`cache_key_for_plan` is what `skip_if_cached` compares, so the collision has to
+    be absent *there*, not only in the client. The Scout and the client computing keys
+    from different places is the original reason `skip_if_cached` silently never
+    fired."""
+    harvester, _ = rig(org_payload())
+    org = QueryPlan(query="Bangladesh", engine="github_orgs")
+    repo = QueryPlan(query="Bangladesh", engine="github_api")
+    assert harvester.cache_key_for_plan(org) != harvester.cache_key_for_plan(repo)
+    assert harvester.cache_key_for_plan(org) is not None
+
+
+def test_the_shipped_org_templates_are_bounded(scout: Scout):
+    """An org costs two fetches and then ~64 s of decode, so an unbounded one is an
+    unbounded profile fan-out and an unbounded queue. `max_hits` is not optional here
+    the way it is for a source that returns one page."""
+    org_templates = [t for t in scout.templates if t.engine == "github_orgs"]
+    assert org_templates, "icp.yaml no longer plans any org template"
+    for template in org_templates:
+        assert template.max_hits, f"{template.id} has no max_hits"
+        assert template.max_hits <= 50, f"{template.id} asks for more than one page"

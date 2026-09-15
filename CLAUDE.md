@@ -1305,6 +1305,54 @@ a 30-day window; it was true the week it was written and quietly stopped being t
 month later. The timestamp is relative now. A test that fails without a cause is how a
 suite gets ignored.
 
+**Discovery is eight-fourteenths Hacker News, and HN is an American forum.** 15 South
+Asian companies in 908 -- 1.6% against `icp.yaml`'s `bd_south_asia: 0.4`, a 25x gap --
+fed by exactly one template, `hn_south_asia`, a full-text search for "Bangladesh" that
+mostly returns *articles about* Bangladesh whose publishers (`dhakatribune.com`,
+`thedailystar.net`, `prothomalo.com`) are correctly in `PLATFORM_HOSTS`. That block was
+right and it removed most of what the template was finding.
+
+`github_orgs` is the free alternative and it asks a different question from every other
+template in the file. The others ask "what happened recently"; this asks "who is
+*there*", because the measured problem is not that South Asian companies lack triggers,
+it is that they are not in the corpus for a trigger to attach to. GitHub's **users**
+endpoint has both qualifiers repo search lacks -- `type:org` and `location:` -- so the
+"is this a company" filter that costs `search_repos` a post-fetch filter is free in the
+query. The org page is the hit URL and the company's site goes in `raw["homepage"]`,
+the same split as the HN comment expansion and for the same reason: cite what you read.
+An org with no website is skipped, never guessed at.
+
+**Be honest about what a hit proves here: less than most.** An org account with a site
+is a team, not a payroll -- an OSS collective and a university lab both qualify -- and
+T12_LOCAL is the weakest trigger in the taxonomy. The value is the doorway: the
+Extractor then reads the company's own homepage and the Enricher runs against their real
+domain, which is where a T1 or a DMARC gap is actually found. Weights 70 and 62 are
+guesses, and `cindra explain`'s yield row is what settles them.
+
+It is a separate **engine** rather than a parameter on `github_api` because a source id
+is a cache namespace: both would key through `GitHubClient.cache_key`, which builds from
+the repo-search URL, so an org plan would read a repo plan's cached body. Two
+templates rather than one merged query for the same measurement reason -- a merged query
+could never report which half worked.
+
+**`GITHUB_TOKEN` was in `.env.example`, in `Settings`, in the redaction list, in two
+`auth_env` lines and in `GitHubClient(token=...)`, and no request has ever carried it.**
+Every hop of the chain was built except the last, so GitHub search has run at 60
+requests an hour for the life of the project -- fine at one request per template, and
+not fine at the 21 an org plan spends. Eighth instance of built-wired-never-connected,
+after `digest_pages`, `extend_lease`, `open_roles`, `discovered_by`, `full_name`, the
+heartbeat `exiting` flag and `_facts`.
+
+`auth_env` alone was a declaration nothing acted on. `auth_scheme: bearer` is the half
+that makes the egress attach the header, and `auth_tokens_for` resolves `GITHUB_TOKEN`
+to `Settings.github_token` **by convention rather than by a list**, because a list is a
+second place to register a source and therefore a second place to forget one. The
+credential is handled exactly like `secret_params` -- on the wire, never in the cache
+key (a rotated token would orphan every cached document) and never in a log.
+`test_every_bearer_source_has_a_settings_field_to_read` drives the real resolver against
+the real registry, and a missing token is info and not an error: unauthenticated GitHub
+is slower, not broken, which is every dev checkout.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

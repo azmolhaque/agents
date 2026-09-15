@@ -121,9 +121,30 @@ sources:
     enabled: true
     base_url: https://api.github.com
     auth_env: GITHUB_TOKEN
+    # Unauthenticated GitHub is 60 requests an hour and 10 searches a minute; with the
+    # token it is 5,000 an hour. `auth_env` alone never sent anything -- see the
+    # `auth_scheme` note in registry.py -- so this line is what makes the token in
+    # `.env` reach a request.
+    auth_scheme: bearer
     cache_ttl_hours: 24
     cost_units: 0
     notes: T1_AI_SHIP, T11_STACK_RISK.
+
+  # Same API and the same token as `github_api`, registered separately because a
+  # source id is a cache namespace: `github_api` keys on the repo-search URL and this
+  # keys on the user-search URL, and one id for both would have an org plan reading a
+  # repo plan's cached body. A longer TTL because a company's location and website
+  # change on a scale of years, where a repo's `pushed_at` changes daily.
+  - id: github_orgs
+    role: discovery
+    legality_class: licensed_api
+    enabled: true
+    base_url: https://api.github.com
+    auth_env: GITHUB_TOKEN
+    auth_scheme: bearer
+    cache_ttl_hours: 168
+    cost_units: 0
+    notes: T12_LOCAL. Organisations by self-declared location.
 
   - id: hn_algolia
     role: discovery

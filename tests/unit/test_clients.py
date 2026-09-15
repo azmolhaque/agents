@@ -38,6 +38,7 @@ REGISTRY = SourceRegistry.from_dict(
             for s in (
                 "hn_algolia",
                 "github_api",
+                "github_orgs",
                 "greenhouse_boards",
                 "lever_postings",
                 "ashby_postings",
@@ -440,3 +441,150 @@ async def test_a_genuinely_empty_crtsh_answer_is_still_zero(egress):
     """The other half. A domain whose log really holds no subdomains is a fact, and
     collapsing it into "unknown" would lose a true negative to fix a false one."""
     assert await CrtShClient(egress(responder([]))).growth("acme.io") == (0, 0)
+
+
+# ------------------------------------------------------- github: orgs by location
+
+
+def _org_routes(items, profiles):  # type: ignore[no-untyped-def]
+    """A GitHub that answers the search and each profile separately.
+
+    Two endpoints because `orgs_in` genuinely makes two kinds of request, and a handler
+    that returned one shape for both would be a mock encoding an assumption instead of
+    the API. This project has paid for that twice: the HN mock encoded a response shape
+    that made a malformed query look fine, and `enqueue_stale_extractions` was tested
+    against a row pair the pipeline cannot produce.
+    """
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if "/search/users" in request.url.path:
+            return httpx.Response(200, text=json.dumps({"items": items}))
+        login = request.url.path.rsplit("/", 1)[-1]
+        if login not in profiles:
+            return httpx.Response(404, text="{}")
+        return httpx.Response(200, text=json.dumps(profiles[login]))
+
+    return handler, calls
+
+
+async def test_an_org_hit_cites_github_and_extracts_the_company_site(egress):
+    """The split that makes this engine legitimate rather than merely useful.
+
+    The org page is what we actually saw and where the location claim is visible, so it
+    is the hit URL and the thing we would cite. The company's own site is what the
+    Extractor should read, and it arrives in `raw["homepage"]` where
+    `extraction_target` already looks -- exactly the arrangement the HN comment
+    expansion uses. Citing the company's landing page as evidence that they are in
+    Dhaka would be attributing a claim to a page that may not make it.
+    """
+    from cindraleads.agents.harvester import extraction_target
+
+    handler, _ = _org_routes(
+        [{"login": "acmebd", "html_url": "https://github.com/acmebd"}],
+        {"acmebd": {"login": "acmebd", "name": "Acme BD", "blog": "https://acme.com.bd"}},
+    )
+    hits = await GitHubClient(egress(handler)).orgs_in("Bangladesh")
+
+    assert len(hits) == 1
+    assert hits[0].url == "https://github.com/acmebd", "we cite what we read"
+    assert hits[0].raw["homepage"] == "https://acme.com.bd"
+    assert extraction_target(hits[0]) == "https://acme.com.bd", "and we read the company"
+
+
+async def test_a_bare_domain_in_the_profile_still_extracts(egress):
+    """GitHub's `blog` field is free text and half of it has no scheme."""
+    from cindraleads.agents.harvester import extraction_target
+
+    handler, _ = _org_routes(
+        [{"login": "acmebd", "html_url": "https://github.com/acmebd"}],
+        {"acmebd": {"login": "acmebd", "blog": "acme.com.bd"}},
+    )
+    hits = await GitHubClient(egress(handler)).orgs_in("Bangladesh")
+    assert extraction_target(hits[0]) == "https://acme.com.bd"
+
+
+async def test_an_org_with_no_website_is_skipped_not_guessed_at(egress):
+    """Same rule as an HN comment that names no domain.
+
+    Without a site there is nothing to read: the hit would canonicalize to github.com,
+    the Resolver would refuse it as a platform host, and an extract job would spend
+    ~64 s of decode to reach a conclusion available here for free.
+    """
+    handler, _ = _org_routes(
+        [
+            {"login": "withsite", "html_url": "https://github.com/withsite"},
+            {"login": "nosite", "html_url": "https://github.com/nosite"},
+        ],
+        {
+            "withsite": {"login": "withsite", "blog": "https://real.com.bd"},
+            "nosite": {"login": "nosite", "blog": ""},
+        },
+    )
+    hits = await GitHubClient(egress(handler)).orgs_in("Bangladesh")
+    assert [h.raw["owner"] for h in hits] == ["withsite"]
+
+
+async def test_one_unreachable_profile_costs_one_org_not_the_batch(egress):
+    """The Enricher's fan-out rule, applied here: there is no partial answer worth
+    raising for, and a 404 on one org must not lose the other nineteen."""
+    handler, _ = _org_routes(
+        [
+            {"login": "gone", "html_url": "https://github.com/gone"},
+            {"login": "here", "html_url": "https://github.com/here"},
+        ],
+        {"here": {"login": "here", "blog": "https://here.com.bd"}},
+    )
+    hits = await GitHubClient(egress(handler)).orgs_in("Bangladesh")
+    assert [h.raw["owner"] for h in hits] == ["here"]
+
+
+async def test_the_org_search_is_bounded_client_side_as_well_as_requested(egress):
+    """A bound the remote enforces is not a bound.
+
+    The same rule the HN comment expansion follows. Each accepted org costs a profile
+    fetch now and ~64 s of decode later, so a remote that ignores `per_page` -- or a
+    cached body written when the limit was higher -- must not be able to spend either.
+    """
+    handler, calls = _org_routes(
+        [{"login": f"org{i}", "html_url": f"https://github.com/org{i}"} for i in range(10)],
+        {f"org{i}": {"login": f"org{i}", "blog": f"https://org{i}.com.bd"} for i in range(10)},
+    )
+    hits = await GitHubClient(egress(handler)).orgs_in("Bangladesh", limit=3)
+
+    assert len(hits) == 3
+    profile_calls = [c for c in calls if "/users/" in c and "/search/" not in c]
+    assert len(profile_calls) == 3, "and it stops fetching, not just stops returning"
+
+
+def test_an_org_plan_and_a_repo_plan_do_not_share_a_cache_key():
+    """The whole reason this is an engine and not a parameter on `github_api`.
+
+    Both would key through `GitHubClient.cache_key`, which builds its key from the
+    *repo-search* URL -- so an org plan and a repo plan with the same query string
+    would collide, and the org plan would read the repo plan's cached body and return
+    nothing. `skip_if_cached` has already silently never fired once in this project for
+    exactly this reason; the second time it would fire and serve the wrong document.
+    """
+    assert GitHubClient.cache_key("Bangladesh") != GitHubClient.org_cache_key("Bangladesh")
+
+
+def test_the_org_cache_key_covers_the_limit():
+    """`per_page` is in the request, so it must be in the key.
+
+    The planned key and the fetched key diverging is the failure mode `_hn_limit`
+    exists to prevent, and it is silent: a cache miss looks exactly like a template
+    whose answer expired.
+    """
+    assert GitHubClient.org_cache_key("Dhaka", limit=5) != GitHubClient.org_cache_key(
+        "Dhaka", limit=20
+    )
+
+
+def test_the_org_query_asks_for_organizations_only():
+    """`type:org` is free here and costs `search_repos` a post-fetch filter, which is
+    the entire reason the users endpoint is worth a second client method."""
+    _, params = GitHubClient.org_request_for("Bangladesh")
+    assert "type:org" in params["q"]
+    assert 'location:"Bangladesh"' in params["q"]

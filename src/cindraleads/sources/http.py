@@ -41,7 +41,7 @@ from cindraleads.logging import get_logger
 from cindraleads.models import LegalityClass, from_iso, to_iso, utcnow
 from cindraleads.sources.cache import CachedDocument, DocumentCache, cache_key_for
 from cindraleads.sources.circuit import SourceBreakers
-from cindraleads.sources.registry import FetchDefaults, SourceRegistry
+from cindraleads.sources.registry import FetchDefaults, Source, SourceRegistry
 from cindraleads.store import Store
 
 __all__ = ["EgressClient", "FetchDenied", "FetchResult"]
@@ -83,9 +83,17 @@ class EgressClient:
     cache: DocumentCache | None = None
     breakers: SourceBreakers | None = None
     client: httpx.AsyncClient | None = None
+    # `auth_env` name -> credential. Held here rather than on each client because a
+    # credential a call site has to remember to pass is a credential a call site
+    # forgets: `GitHubClient` has taken a `token` argument since Phase 1, nothing ever
+    # passed one, and `Settings.github_token` had zero readers in the whole tree. The
+    # source declares that it needs auth and how the token travels; this is the one
+    # place that acts on the declaration.
+    auth_tokens: dict[str, str] = field(default_factory=dict)
     budgets: dict[str, BudgetGuard] = field(default_factory=dict)
     _robots: dict[str, urllib.robotparser.RobotFileParser] = field(default_factory=dict)
     _inflight: dict[str, asyncio.Future[FetchResult]] = field(default_factory=dict)
+    _warned_unauthenticated: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         if self.cache is None:
@@ -269,7 +277,7 @@ class EgressClient:
             # Secrets join the request here and nowhere else: not in `key`, not in
             # the provenance row, not in a log line.
             wire = {**(params or {}), **secret_params} if secret_params else params
-            body, status, content_type = await self._request(url, wire)
+            body, status, content_type = await self._request(url, wire, self._auth_header(source))
         except (httpx.HTTPError, OSError) as exc:
             # A 4xx does not mean the source is unhealthy. `/about` returning 404 is a
             # definitive answer from a working server, and counting it opened the
@@ -343,17 +351,47 @@ class EgressClient:
                 (uuid.uuid4().hex, host, url, status, to_iso(utcnow())),
             )
 
+    def _auth_header(self, source: Source) -> dict[str, str] | None:
+        """The Authorization header this source's declaration asks for, if any.
+
+        Missing from the environment is not an error. An unauthenticated GitHub call
+        works, it just works at 60 requests an hour instead of 5,000 -- which is a
+        reason to say so once at the call that needs it, not a reason to refuse to
+        fetch. Logged without the token, at info, because it explains a 403 that would
+        otherwise look like GitHub being down.
+        """
+        if source.auth_scheme != "bearer" or not source.auth_env:
+            return None
+        token = self.auth_tokens.get(source.auth_env, "").strip()
+        if not token:
+            if source.id not in self._warned_unauthenticated:
+                self._warned_unauthenticated.add(source.id)
+                log.info(
+                    "egress_unauthenticated",
+                    source_id=source.id,
+                    auth_env=source.auth_env,
+                    detail="set it in .env to raise the rate limit",
+                )
+            return None
+        return {"Authorization": f"Bearer {token}"}
+
     async def _request(
-        self, url: str, params: dict[str, str] | None
+        self, url: str, params: dict[str, str] | None, headers: dict[str, str] | None = None
     ) -> tuple[str, int, str | None]:
-        """One request, with jittered exponential backoff on transient failures."""
+        """One request, with jittered exponential backoff on transient failures.
+
+        `headers` carries credentials, so it is handled exactly like `secret_params`:
+        it reaches the wire and nothing else. It is not in the cache key -- rotating a
+        token would otherwise invalidate every document cached under the old one -- and
+        it is never logged, here or in the provenance row.
+        """
         defaults = self.registry.defaults
         client = await self._http()
         last: Exception | None = None
 
         for attempt in range(defaults.retries):
             try:
-                response = await client.get(url, params=params)
+                response = await client.get(url, params=params, headers=headers)
             except httpx.HTTPError as exc:
                 last = exc
             else:

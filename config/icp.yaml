@@ -328,6 +328,73 @@ query_templates:
       both. `Bangladesh` returns 5 -- a small pool, but a real one, where the previous
       six-term boolean query returned nothing at all.
 
+  # ---- free: who is actually *there* ----------------------------------------
+  #
+  # Every other template in this file asks "what happened recently". These two ask
+  # "who exists", and that is a deliberate difference in kind, because the measured
+  # problem is not that South Asian companies lack triggers -- it is that they are not
+  # in the corpus at all. 15 South Asian companies in 908 on 2026-09-15, 1.6% against
+  # the 40% `geography.weights` above, a 25x gap fed by exactly one template.
+  #
+  # `hn_south_asia` cannot close it and it is not its fault: HN is an American forum,
+  # a full-text search for "Bangladesh" mostly returns *articles about* Bangladesh, and
+  # the publishers that write them (`dhakatribune.com`, `thedailystar.net`,
+  # `prothomalo.com`) are in `PLATFORM_HOSTS` -- correctly, and that removed most of
+  # what it was finding.
+  #
+  # GitHub's **users** endpoint has the two qualifiers this needs and repo search has
+  # neither: `type:org` and `location:`. So the "is this a company" filter that costs
+  # `search_repos` a post-fetch filter is free in the query here, and a self-declared
+  # location is a company's own published claim about itself -- passive, on their
+  # profile, no different in kind from reading their homepage.
+  #
+  # **What a hit proves, honestly: less than most templates here.** An org account with
+  # a website is a team, not necessarily a payroll -- an OSS collective and a university
+  # lab both qualify. And T12_LOCAL is the weakest trigger in the taxonomy (weight 10,
+  # no decay), so a lead that arrives with nothing else is far under the Tier C floor.
+  # The value is not the trigger: it is that the Extractor then reads the company's own
+  # homepage and the Enricher runs against their real domain, which is where a T1, a
+  # hiring signal or a DMARC gap actually gets found. Discovery here is the *doorway*.
+  #
+  # **Both weights are guesses and the yield table settles them.** A weight in this file
+  # is a guess until `companies.discovered_by` disagrees with it, and these two have
+  # never run. 70 and 62 are set high enough to win a plan slot and be measured at all,
+  # and below every template whose conversion has been measured good -- `hn_ai_agent`
+  # (88, 73% sendable) and `gh_mcp_servers` (86). If `cindra explain` reports hits and
+  # no sendable leads, demote them the way `hn_show_ai` was demoted; if it reports hits
+  # and no candidates, the orgs have no websites and the engine is wrong, not the query.
+  #
+  # Two templates rather than one merged query, on purpose. Most BD profiles write
+  # "Dhaka, Bangladesh" so the first subsumes much of the second, and dedupe rung 1
+  # makes that overlap free -- but a merged query could never report *which* half
+  # worked. Extending this to `location:Karachi`, `location:Colombo` or
+  # `location:Kathmandu` is a copy-paste once these two have a row in the yield table.
+  # Not before: four unmeasured templates would consume the plan budget the way the
+  # project sources did before weights were set by what a hit proves.
+
+  - id: gh_orgs_bangladesh
+    engine: github_orgs
+    query: Bangladesh
+    max_hits: 20
+    targets: [T12_LOCAL]
+    weight: 70
+    rationale: >
+      Organisations whose own GitHub profile says they are in Bangladesh, and which
+      publish a website to read. The country rather than a city, because a profile that
+      names a city usually names the country with it.
+
+  - id: gh_orgs_dhaka
+    engine: github_orgs
+    query: Dhaka
+    max_hits: 20
+    targets: [T12_LOCAL]
+    weight: 62
+    rationale: >
+      The city, for the profiles that give a city and no country -- the ones
+      `gh_orgs_bangladesh` structurally cannot see. Lower weight because it is mostly a
+      subset of that template and the overlap costs a plan slot; the yield table decides
+      whether the non-overlapping remainder is worth it.
+
   # ---- rationed: only SerpAPI can do these ----------------------------------
 
   # RETIRED 2026-08-21. `site:upwork.com` returns Upwork URLs, and an Upwork client is

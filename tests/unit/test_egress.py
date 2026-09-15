@@ -12,6 +12,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from pydantic import SecretStr
 
 from cindraleads.budget import BudgetGuard
 from cindraleads.sources import (
@@ -523,3 +524,165 @@ async def test_a_nonsense_retry_after_is_ignored_rather_than_slept_on(store):
         assert _retry_after(response) is None, raw
 
     assert _retry_after(httpx.Response(429, headers={"retry-after": "12"})) == 12.0
+
+
+# ------------------------------------------------------------------ credentials
+#
+# `auth_env` existed on two GitHub sources, `GITHUB_TOKEN` existed in `.env.example`,
+# `Settings.github_token` existed and was in the redaction list, and `GitHubClient`
+# took a `token` argument -- and no request this project ever made carried one. Every
+# hop of the chain was built except the last, so GitHub search ran at 60 requests an
+# hour for the life of the project. Eighth instance of built-wired-never-connected,
+# after `digest_pages`, `extend_lease`, `open_roles`, `discovered_by`, `full_name`,
+# the heartbeat `exiting` flag and `_facts`.
+
+
+AUTH_REGISTRY = SourceRegistry.from_dict(
+    {
+        "sources": [
+            {
+                "id": "bearer_src",
+                "legality_class": "licensed_api",
+                "auth_env": "GITHUB_TOKEN",
+                "auth_scheme": "bearer",
+                "cache_ttl_hours": 24,
+            },
+            {
+                "id": "query_src",
+                "legality_class": "licensed_api",
+                "auth_env": "SERPAPI_KEY",
+                "cache_ttl_hours": 24,
+            },
+        ],
+        "defaults": {"retries": 1, "backoff_base_seconds": 0.001},
+    }
+)
+
+
+def _auth_egress(tmp_path, tokens, seen):  # type: ignore[no-untyped-def]
+    from cindraleads.sources import DocumentCache, SourceBreakers
+    from cindraleads.store import Store
+
+    store = Store(tmp_path / "auth.db", migrations_dir=MIGRATIONS)
+    store.migrate()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.headers))
+        return httpx.Response(200, text="{}")
+
+    return EgressClient(
+        store=store,
+        registry=AUTH_REGISTRY,
+        cache=DocumentCache(store, cache_dir=tmp_path / "cache"),
+        breakers=SourceBreakers(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        auth_tokens=tokens,
+    )
+
+
+async def test_a_bearer_source_sends_its_token(tmp_path):
+    seen: list[dict[str, str]] = []
+    egress = _auth_egress(tmp_path, {"GITHUB_TOKEN": "ghp_secret"}, seen)
+    await egress.fetch("bearer_src", "https://api.example.com/a")
+    assert seen[0].get("authorization") == "Bearer ghp_secret"
+
+
+async def test_a_query_scheme_source_sends_no_header(tmp_path):
+    """SerpAPI puts its key in `secret_params` and must keep doing so. A blanket
+    "attach every auth_env as a header" would send the key a second way, on the wire,
+    for no benefit -- and a credential travelling by two routes is two things to get
+    wrong rather than one."""
+    seen: list[dict[str, str]] = []
+    egress = _auth_egress(tmp_path, {"SERPAPI_KEY": "sk_secret"}, seen)
+    await egress.fetch("query_src", "https://api.example.com/b")
+    assert "authorization" not in {k.lower() for k in seen[0]}
+
+
+async def test_a_missing_token_still_fetches(tmp_path):
+    """Unauthenticated GitHub works; it is slower, not broken. Refusing to fetch would
+    turn a rate-limit downgrade into a dead source on any box without a token, which is
+    every dev checkout."""
+    seen: list[dict[str, str]] = []
+    egress = _auth_egress(tmp_path, {}, seen)
+    result = await egress.fetch("bearer_src", "https://api.example.com/c")
+    assert result.body == "{}"
+    assert "authorization" not in {k.lower() for k in seen[0]}
+
+
+async def test_rotating_the_token_does_not_invalidate_the_cache(tmp_path):
+    """Handled exactly like `secret_params`, for exactly that reason: a credential in
+    the key means rotating it silently re-fetches every document cached under the old
+    one, and puts the credential in a column nothing redacts.
+
+    Asserted through `cached`, not by comparing a key to itself -- what matters is that
+    the second client, with a different token, reads what the first one wrote.
+    """
+    from cindraleads.sources import DocumentCache, SourceBreakers
+    from cindraleads.store import Store
+
+    store = Store(tmp_path / "rotate.db", migrations_dir=MIGRATIONS)
+    store.migrate()
+    cache = DocumentCache(store, cache_dir=tmp_path / "cache")
+    fetches: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        fetches.append(str(request.url))
+        return httpx.Response(200, text="{}")
+
+    def client_with(token: str) -> EgressClient:
+        return EgressClient(
+            store=store,
+            registry=AUTH_REGISTRY,
+            cache=cache,
+            breakers=SourceBreakers(),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            auth_tokens={"GITHUB_TOKEN": token},
+        )
+
+    first = await client_with("old").fetch("bearer_src", "https://api.example.com/d")
+    second = await client_with("rotated").fetch("bearer_src", "https://api.example.com/d")
+
+    assert first.cached is False
+    assert second.cached is True, "a rotated token must not orphan the cached document"
+    assert len(fetches) == 1
+    store.close()
+
+
+def test_a_bearer_source_with_no_auth_env_is_fatal():
+    """There is no credential for it to send, so the declaration is a typo. Fatal for
+    the same reason an unclassified source is: a silently unauthenticated source is a
+    rate limit nobody can see."""
+    from cindraleads.errors import ConfigError
+
+    with pytest.raises(ConfigError, match="no auth_env"):
+        SourceRegistry.from_dict(
+            {"sources": [{"id": "x", "legality_class": "licensed_api", "auth_scheme": "bearer"}]}
+        )
+
+
+def test_every_bearer_source_has_a_settings_field_to_read():
+    """The check the original defect had nowhere to live.
+
+    `auth_tokens_for` resolves `auth_env: GITHUB_TOKEN` to `Settings.github_token` by
+    convention, so a source declaring a credential the settings object has no field for
+    would quietly get no header -- the same silence as before, one layer further in.
+    This drives the real resolver against the real registry rather than restating
+    either, which is the difference between this and the tests that passed while
+    `discovered_by` was NULL for every company ever recorded.
+    """
+    from cindraleads.runtime import auth_tokens_for
+
+    cfg = _shipped_settings()
+    registry = SourceRegistry.from_config(cfg)
+    bearer = [s for s in registry.sources.values() if s.auth_scheme == "bearer"]
+    assert bearer, "sources.yaml declares no bearer source; this test has stopped testing"
+
+    for source in bearer:
+        assert source.auth_env is not None
+        assert hasattr(cfg, source.auth_env.lower()), (
+            f"source {source.id!r} declares auth_env={source.auth_env!r} and "
+            f"Settings has no {source.auth_env.lower()!r} field to read it from"
+        )
+
+    object.__setattr__(cfg, "github_token", SecretStr("ghp_t"))
+    assert auth_tokens_for(registry, cfg)["GITHUB_TOKEN"] == "ghp_t"
