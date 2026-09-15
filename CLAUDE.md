@@ -1118,6 +1118,19 @@ that matters least often and most. It reads the `format()` call out of the sourc
 `ast` now. Fifth instance of the same lesson, after `discovered_by`,
 `enqueue_stale_extractions`, the HN mock and the free-offer flag.
 
+**And the instrument built to catch prose defects had its own copy of the call.**
+`scripts/preview_angle.py` duplicated the `format()` kwargs, so the tool whose entire
+purpose is rendering the *real* prompt was rendering a different one -- and the moment
+`{proof}` was added it stopped rendering at all: `KeyError: 'proof'`, on the first run
+after the deploy. The `ast` check written one commit earlier to catch exactly a missing
+kwarg parsed only `scorer.py` and saw nothing.
+
+Seventh instance of one decision in two files, and the sharpest: **the duplicate was
+inside the detector.** `Scorer.angle_kwargs` is now the only place those keys are named,
+the script calls it, and `test_nothing_else_builds_the_outreach_prompt_itself` walks
+`src/` and `scripts/` for any other `_angle_prompt.format(...)` with keywords. Deleted
+rather than synchronised -- two call sites that must agree will stop agreeing.
+
 **Unresolved: the RoE form offers a "Free Pilot" package that exists nowhere else.**
 `legal/Rules-of-Engagement.md` lists `☐ Free Pilot ☐ Snapshot ☐ Watch ☐ AI/LLM`, and the
 site's `makesOffer` block prices four offers with no free tier and no Pilot. So there

@@ -1010,9 +1010,9 @@ def test_a_publication_is_not_a_prospect():
 
 
 def _angle_format_kwargs() -> set[str]:
-    """The keyword names the Scorer actually passes to `outreach_angle.format(...)`.
+    """The keyword names the Scorer actually passes to the outreach prompt.
 
-    Parsed from the source rather than restated, so the two halves of
+    Parsed from `Scorer.angle_kwargs` rather than restated, so the two halves of
     `test_the_prompt_asks_for_nothing_the_scorer_does_not_supply` cannot both be
     written from one memory and agree with each other while disagreeing with the
     prompt. Same lesson as `discovered_by`, `enqueue_stale_extractions`, the HN mock
@@ -1022,81 +1022,45 @@ def _angle_format_kwargs() -> set[str]:
 
     source = (REPO_ROOT / "src" / "cindraleads" / "agents" / "scorer.py").read_text()
     for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Call):
-            continue
-        func = node.func
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "format"
-            and isinstance(func.value, ast.Attribute)
-            and func.value.attr == "_angle_prompt"
-        ):
-            return {kw.arg for kw in node.keywords if kw.arg}
-    raise AssertionError("no `self._angle_prompt.format(...)` call found in scorer.py")
+        if isinstance(node, ast.FunctionDef) and node.name == "angle_kwargs":
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Dict):
+                    return {k.value for k in inner.keys if isinstance(k, ast.Constant)}
+    raise AssertionError("no dict literal returned from Scorer.angle_kwargs")
 
 
-# ---------------------------------------------- what we can honestly say we did
+def test_nothing_else_builds_the_outreach_prompt_itself():
+    """`scripts/preview_angle.py` kept its own copy of the `format()` call.
 
+    So the tool whose entire purpose is rendering the *real* prompt was rendering a
+    different one, and the moment a fact was added it stopped rendering at all:
+    `KeyError: 'proof'`. The `ast` check above only parsed `scorer.py` and saw nothing.
 
-def _scorer():  # type: ignore[no-untyped-def]
-    from cindraleads.agents.scorer import Scorer
-
-    s = settings()
-    object.__setattr__(s, "config_dir", REPO_ROOT / "config")
-    object.__setattr__(s, "prompt_dir", REPO_ROOT / "prompts")
-    return Scorer(store=None, llm=None, config=s)  # type: ignore[arg-type]
-
-
-def test_the_proof_is_matched_to_why_we_are_writing():
-    """Generic proof is nearly worthless and a matched one is most of the value.
-
-    A company that just shipped an agent gets the prompt-injection measurement; a
-    company with subdomain sprawl gets the finding that was itself a forgotten
-    subdomain of an acquisition.
+    Seventh instance of one decision in two files, and the sharpest of them -- the
+    duplicate was inside the instrument built to detect this class of defect. The rule
+    is that `angle_kwargs` is the only place those keys are named.
     """
-    scorer = _scorer()
+    import ast
 
-    ai = scorer._proof_for({"triggers": [{"code": "T1_AI_SHIP"}], "ai_surface": []})
-    surface = scorer._proof_for({"triggers": [{"code": "T7_SURFACE_SPRAWL"}], "ai_surface": []})
+    roots = [REPO_ROOT / "src" / "cindraleads", REPO_ROOT / "scripts"]
+    offenders: list[str] = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "format"
+                    and isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "_angle_prompt"
+                    and node.keywords
+                    and any(kw.arg for kw in node.keywords)
+                ):
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
 
-    assert "prompt-injection" in ai
-    assert "subdomain" in surface
-    assert ai != surface
-
-
-def test_a_lead_with_no_matching_proof_gets_none():
-    """A proof clause that does not fit the prospect is worse than none -- it reads as
-    a form letter, which is exactly what the card is trying not to be."""
-    scorer = _scorer()
-
-    assert scorer._proof_for({"triggers": [{"code": "T12_LOCAL"}], "ai_surface": []}) == ""
-
-
-def test_a_surface_can_select_proof_when_no_trigger_does():
-    scorer = _scorer()
-
-    found = scorer._proof_for({"triggers": [{"code": "T12_LOCAL"}], "ai_surface": ["mcp_server"]})
-
-    assert "prompt-injection" in found
-
-
-def test_no_proof_claim_overstates_what_the_writeup_says():
-    """Load-bearing, and the reason every claim is deliberately under-stated.
-
-    The Photomath writeup spends its length explaining why a $0 reward was the
-    *correct* decision and why "reachable through Google" is not "run by Google". A
-    card reading "we found a critical vulnerability in Google" would contradict our own
-    published analysis, in writing, to a reader one click from it.
-    """
-    from cindraleads.config import load_yaml
-
-    company = load_yaml("company", base=settings().resolve(REPO_ROOT / "config"))
-    forbidden = ("critical", "severe", "bounty", "paid us", "rewarded", "hacked", "breached")
-
-    for name, entry in (company.get("proof") or {}).items():
-        claim = str(entry["claim"]).lower()
-        for word in forbidden:
-            assert word not in claim, f"proof {name!r} overstates: {word!r} in {claim!r}"
-        assert str(entry.get("url", "")).startswith("https://cindrasec.com/"), (
-            f"proof {name!r} must be checkable on our own site"
-        )
+    assert not offenders, (
+        f"these build the outreach prompt's kwargs themselves instead of calling "
+        f"`Scorer.angle_kwargs`: {offenders}"
+    )

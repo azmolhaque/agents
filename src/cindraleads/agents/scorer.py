@@ -274,6 +274,57 @@ class Scorer:
                 return str(entry.get("claim") or "").strip()
         return ""
 
+    def angle_kwargs(self, facts: dict[str, Any], result: Any) -> dict[str, Any]:
+        """Every fact the outreach prompt is given, built in exactly one place.
+
+        `scripts/preview_angle.py` kept its own copy of this `format()` call, so the
+        tool whose whole purpose is rendering the real prompt drifted from the real
+        one and died on `KeyError: 'proof'` the moment a fact was added. The
+        `ast` check that was supposed to catch a missing kwarg only parsed this
+        module, so it saw nothing.
+
+        Seventh instance of one decision in two files, and the sharpest: the
+        duplicate was inside the instrument built to detect exactly this class of
+        defect. Deleted rather than synchronised -- two call sites that must agree
+        will stop agreeing.
+        """
+        return {
+            "display_name": facts["display_name"],
+            # From the facts, not a caller's local. This method is now the only place
+            # these keys are named, so it must not depend on `prepare`'s scope.
+            "canonical_domain": facts.get("canonical_domain", ""),
+            "description": facts["description"] or "",
+            # The human phrase, never the code. Handing the model `T1_AI_SHIP` gave it
+            # nothing to say, so it said "T1_AI_SHIP" -- in an angle written to be
+            # pasted into a prospect's inbox. `means` is validated non-empty at config
+            # load, so the fallback is unreachable and exists only so a future code
+            # added without one degrades to a vague angle rather than a crash.
+            "triggers": self._trigger_phrases(self._score_input(facts).triggers),
+            # The phrase, never the slug -- and the phrase carries the price. Handing
+            # the model `ai_llm_assessment` under a prompt that hardcoded "free" put a
+            # $2k-8k engagement on every Tier A and B card at no charge.
+            "offer": self.scoring.offer_phrase(result.offer),
+            "country": facts["country"] or "",
+            # Four facts that were sitting in `_facts` and reaching nothing. The prompt
+            # was handed a name, a domain, a description and a list of trigger phrases,
+            # so every card said "you announced an AI feature" -- true of half the
+            # internet -- while the verified quote from the company's own page, the
+            # specific surface they shipped, the concrete DNS gap and the reader's own
+            # name all sat one `format()` argument away.
+            #
+            # Prefill is 42 tok/s against 3.7 for decode, so ~100 extra prompt tokens
+            # costs about 2 s against an 18 s call. Specificity is nearly free here and
+            # it is the whole difference between a mail that is read and one that is not.
+            "quotes": _quote_block(facts["evidence"]),
+            "surfaces": ", ".join(self.scoring.surface_phrases(facts["ai_surface"])),
+            "published_gaps": ", ".join(facts["hygiene_gaps"][:2]),
+            "recipient": _recipient_name(facts["contacts"]),
+            # One line of what we have actually done, chosen by what they are doing.
+            # The card asks a stranger for $250-$8000 on the strength of nothing;
+            # this is the only sentence in it a reader can independently verify.
+            "proof": self._proof_for(facts),
+        }
+
     # ------------------------------------------------------------------ phase 1
 
     async def prepare(self, job: Job) -> ScoreOutcome:
@@ -311,40 +362,7 @@ class Scorer:
             return ScoreOutcome(canonical_domain=domain)
 
         result = score(self._score_input(facts), self.scoring)
-        prompt = self._angle_prompt.format(
-            display_name=facts["display_name"],
-            canonical_domain=domain,
-            description=facts["description"] or "",
-            # The human phrase, never the code. Handing the model `T1_AI_SHIP` gave it
-            # nothing to say, so it said "T1_AI_SHIP" -- in an angle written to be
-            # pasted into a prospect's inbox. `means` is validated non-empty at config
-            # load, so the fallback is unreachable and exists only so a future code
-            # added without one degrades to a vague angle rather than a crash.
-            triggers=self._trigger_phrases(self._score_input(facts).triggers),
-            # The phrase, never the slug -- and the phrase carries the price. Handing
-            # the model `ai_llm_assessment` under a prompt that hardcoded "free" put a
-            # $2k-8k engagement on every Tier A and B card at no charge.
-            offer=self.scoring.offer_phrase(result.offer),
-            country=facts["country"] or "",
-            # Four facts that were sitting in `_facts` and reaching nothing. The prompt
-            # was handed a name, a domain, a description and a list of trigger phrases,
-            # so every card said "you announced an AI feature" -- true of half the
-            # internet -- while the verified quote from the company's own page, the
-            # specific surface they shipped, the concrete DNS gap and the reader's own
-            # name all sat one `format()` argument away.
-            #
-            # Prefill is 42 tok/s against 3.7 for decode, so ~100 extra prompt tokens
-            # costs about 2 s against an 18 s call. Specificity is nearly free here and
-            # it is the whole difference between a mail that is read and one that is not.
-            quotes=_quote_block(facts["evidence"]),
-            surfaces=", ".join(self.scoring.surface_phrases(facts["ai_surface"])),
-            published_gaps=", ".join(facts["hygiene_gaps"][:2]),
-            recipient=_recipient_name(facts["contacts"]),
-            # One line of what we have actually done, chosen by what they are doing.
-            # The card asks a stranger for $250-$8000 on the strength of nothing;
-            # this is the only sentence in it a reader can independently verify.
-            proof=self._proof_for(facts),
-        )
+        prompt = self._angle_prompt.format(**self.angle_kwargs(facts, result))
         try:
             structured = await self.llm.generate(
                 prompt, LeadProse, max_tokens=_prose_budget(facts["country"])

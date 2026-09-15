@@ -50,18 +50,11 @@ def _preview(scorer: Scorer, domain: str) -> int:
         return 1
 
     result = score(scorer._score_input(facts), scorer.scoring)
-    prompt = scorer._angle_prompt.format(
-        display_name=facts["display_name"],
-        canonical_domain=domain,
-        description=facts["description"] or "",
-        triggers=scorer._trigger_phrases(scorer._score_input(facts).triggers),
-        offer=scorer.scoring.offer_phrase(result.offer),
-        country=facts["country"] or "",
-        quotes=_quote_block(facts["evidence"]),
-        surfaces=", ".join(scorer.scoring.surface_phrases(facts["ai_surface"])),
-        published_gaps=", ".join(facts["hygiene_gaps"][:2]),
-        recipient=_recipient_name(facts["contacts"]),
-    )
+    # The Scorer's own kwargs, not a copy of them. This script kept its own
+    # `format()` call and drifted the moment a fact was added -- the tool built to
+    # render the real prompt was rendering a different one, and then stopped
+    # rendering at all with `KeyError: 'proof'`.
+    prompt = scorer._angle_prompt.format(**scorer.angle_kwargs(facts, result))
 
     print("=" * 78)
     print(f"{domain}  score {result.score} {result.tier}  offer {result.offer}")
