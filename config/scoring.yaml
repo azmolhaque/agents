@@ -158,23 +158,27 @@ freshness:
 # them anything. Outside the fingerprint for the same reason `means` is: this
 # changes prose, never a number.
 #
-# `free` is load-bearing and was wrong twice, the second time worse than the first.
+# `free` is load-bearing and has now been got wrong in both directions.
 #
 # First: rule 2 of the outreach prompt hardcoded "I'd like to run X for you, free,
 # under a signed RoE" with X substituted from `recommended_offer`, so every company
-# with an AI surface was offered a $2k-8k assessment at no charge.
+# with an AI surface was offered a $2k-8k assessment at no charge. Real defect, fixed.
 #
-# The fix for that wrote `snapshot_free: {free: true}` here and had every paid phrase
-# name "a free Snapshot first" -- from a conversation, checked against nothing. The
-# site prices the Snapshot at **$250-$600**. So the repair moved the false free offer
-# off one product and onto all four, and reached **every** card rather than the subset
-# with an AI surface. Found 2026-09-15 by reading cindrasec.com's own structured data,
-# which is now committed to `config/company.yaml`.
+# Then the opposite. `schema.org makesOffer` prices the Snapshot at $250-$600 and
+# encodes no free tier, so `free: true` was declared false and stripped out of all four
+# phrases -- and the page says "first Snapshot free" in **fourteen** places, including a
+# whole Founding Cohort section and the pricing banner. That change removed a true and
+# load-bearing offer from every card for one deploy. `makesOffer` carries list prices;
+# a cohort promotion is not a list price, and **absence from one machine-readable block
+# is not absence from the business**.
 #
-# **Nothing here is free.** `free: true` is now impossible to assert without a zero
-# minimum price in `company.yaml` -- `test_the_free_flag_is_backed_by_the_site` fails
-# closed on it. The wedge survives as a real number instead: a paid offer names the
-# cheapest honest first step, so the ask stays small without giving anything away.
+# So the flag is true again, and the phrase is now more precise than either version was:
+# it is the *first* Snapshot, for founding-cohort clients, while slots last. When the
+# cohort closes, flip `first_free` in `company.yaml` and every card stops offering it.
+#
+# `test_the_free_flag_is_backed_by_the_site` ties this flag to `company.yaml` in both
+# directions -- an offer is free here exactly when the site records a zero price or a
+# free first engagement, and neither file can be edited alone.
 #
 # Prices are repeated here rather than interpolated, because this string is read by a
 # 4B model and a template it has to resolve is a template it can garble. The test ties
@@ -183,25 +187,27 @@ freshness:
 
 offers:
   snapshot_free:
-    free: false
+    free: true
     means: >-
-      a one-time external attack-surface and exposed-secrets Snapshot, from $250,
-      with a verified report and a walkthrough call
+      their first external attack-surface and exposed-secrets Snapshot free as a
+      founding-cohort client, with a verified report, a walkthrough call and a
+      re-check two weeks later
   watch:
     free: false
     means: >-
-      continuous monitoring of that surface with a monthly diff report, from $150 a
-      month
+      continuous monitoring of that surface with a monthly diff report at $150-500 a
+      month, starting from a free first Snapshot
   ai_llm_assessment:
     free: false
     means: >-
-      an AI/LLM security assessment covering prompt injection, data leakage, agent
-      tool abuse and the MCP tool surface, and a one-time Snapshot from $250 first if
-      they would rather start small
+      a free first attack-surface Snapshot, and an AI/LLM security assessment after it
+      covering prompt injection, data leakage, agent tool abuse and the MCP tool
+      surface ($2,000-8,000, 2-5 days)
   gig:
     free: false
     means: >-
-      one tightly scoped check at a fixed price, from $150
+      one tightly scoped check at a fixed price ($150-500, delivered in hours), or a
+      free first Snapshot to start
 
 # ---------------------------------------------------------------------------
 # What an `ai_surface` value is, in words. Prose only, outside the fingerprint.

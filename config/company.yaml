@@ -5,21 +5,29 @@
 # records what cindrasec.com actually publishes, so that every prospect-facing claim
 # this pipeline makes can be checked against something rather than trusted.
 #
-# It exists because of the worst defect this project has shipped. `scoring.yaml`
-# carried `snapshot_free: {free: true}` -- written from a conversation, never checked
-# -- while the site's own structured data prices the Snapshot at **$250-$600**. Every
-# paid offer's phrase then named that Snapshot as "a free Snapshot first if they would
-# rather start there", so **every Tier A and B card ever dispatched promised a
-# $250-$600 product at no charge, in writing**, to a prospect. That is worse than the
-# `ai_llm_assessment` defect it was written to fix: that one reached the subset of
-# companies with an AI surface, this one reached all of them.
+# **Read the page, not only the structured data.** This file was first written from
+# `schema.org` `makesOffer` alone, which lists the Snapshot at $250-$600 and encodes no
+# free tier -- so `scoring.yaml`'s `snapshot_free: {free: true}` was declared false, the
+# free offer was stripped out of all four phrases, and every card started quoting a
+# price instead. The page says "first Snapshot free" in **fourteen** places: the meta
+# description, the hero CTA, a pill on the Snapshot card, the assurance strip, a whole
+# Founding Cohort section, the pricing banner, the FAQ and the billing note. The flag
+# was right; only its *precision* was wrong.
 #
-# The mechanism that makes it stay fixed is `test_the_free_flag_is_backed_by_the_site`:
-# an offer may be marked free in `scoring.yaml` only if this file records a minimum
-# price of zero. It fails closed, so an offer nobody has priced here cannot be given
-# away by an edit in another file.
+# `makesOffer` carries list prices. A cohort promotion is not a list price, and absence
+# from one machine-readable block is not absence from the business. The lesson is the
+# one this project keeps paying for in a new costume: **a single source checked
+# confidently is still a single source.**
 #
-# To refresh: re-read the JSON-LD from the live page and update `extracted_at`.
+# The condition is the part that has to survive: it is the *first* Snapshot, for
+# founding-cohort clients, while pilot slots last. When the cohort closes, set
+# `first_free: false` here and every card stops offering it in the same deploy.
+#
+# `test_the_free_flag_is_backed_by_the_site` ties `scoring.yaml`'s flag to this file in
+# both directions, so neither can be edited alone.
+#
+# To refresh, read the *page*, not just the JSON-LD:
+#   curl -s https://cindrasec.com/ | grep -o -i '[^>]*free[^<]*' | grep -vi font
 #   curl -s https://cindrasec.com/ | grep -A40 '"makesOffer"'
 
 source: https://cindrasec.com/
@@ -41,22 +49,39 @@ offers:
     currency: USD
     min_price: 250
     max_price: 600
+    bdt: 15,000-25,000
+    delivery: report in 3-5 working days
+    # The list price is not what a *first* prospect pays, and every lead this pipeline
+    # writes to is a first prospect. See the note above on why this field exists.
+    first_free: true
+    first_free_condition: >-
+      founding-cohort clients only, while pilot slots last, under a signed RoE - no
+      card and no obligation to continue
+    first_free_source: https://cindrasec.com/#pricing
   watch:
     site_name: Watch - continuous monitoring subscription
     currency: USD
     min_price: 150
     max_price: 500
     unit: MONTH
+    bdt: 5,000-12,000 per month
+    first_free: false
   ai_llm_assessment:
     site_name: AI/LLM Security Assessment
     currency: USD
     min_price: 2000
     max_price: 8000
+    bdt: 40,000-1,50,000
+    delivery: 2-5 days
+    first_free: false
   gig:
     site_name: Productized Gig - fixed-scope quick check
     currency: USD
     min_price: 150
     max_price: 500
+    bdt: 7,000-15,000
+    delivery: 2-4 hrs
+    first_free: false
 
 # ---------------------------------------------------------------------------
 # What we can honestly say we have done, matched to what the prospect is doing.

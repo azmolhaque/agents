@@ -1042,43 +1042,40 @@ exactly the outage the criterion exists for, and the goodbye is not a blank cheq
 window was unattended, and a window with three deploys in it was not. That one needs a
 quiet period, not a code change.
 
-**The repair for the free-offer defect was the second half of it, and it was worse.**
-The first fix wrote `snapshot_free: {free: true}` into `scoring.yaml` and had every
-paid phrase name "a free Snapshot first if they would rather start there" -- taken from
-a conversation, checked against nothing. **cindrasec.com prices the Snapshot at
-$250-$600.** So the repair moved the false free offer off one product and onto all four:
-the original reached the subset of companies with an AI surface, this one reached
-**every card the system has ever sent**.
+**The free-offer claim has now been got wrong in both directions, and the second one
+was mine.**
 
-Found 2026-09-15 by reading the site's own `schema.org` `makesOffer` block, which lists
-four offers and no free tier: Snapshot $250-600, Watch $150-500/month, AI/LLM Assessment
-$2000-8000, Gig $150-500, `priceRange` `$150-$8000`.
+First: rule 2 of `outreach_angle.md` hardcoded *Write "I'd like to run X for you, free"*
+with X substituted blindly from `recommended_offer`, so every company with an AI surface
+was offered a $2k-8k assessment at no charge, in writing. Real defect, correctly fixed.
 
-`test_only_the_snapshot_is_free` asserted `free == {"snapshot_free"}` and passed
-throughout, because it encoded the same belief as the bug -- and it went further,
-*requiring* every paid phrase to contain the words "free" and "snapshot". **A test
-written from the same source as the code tests nothing but the author's memory.**
+Then the opposite. Reading **only** cindrasec.com's `schema.org makesOffer` block --
+which prices the Snapshot at $250-$600 and encodes no free tier -- I declared
+`snapshot_free: {free: true}` false, stripped "free" out of all four phrases, called it
+"the worst defect this project has shipped", and shipped that to the Pi. **The page says
+"first Snapshot free" in fourteen places**: the meta description, the hero CTA, a pill on
+the Snapshot card, the assurance strip, an entire Founding Cohort section, the pricing
+banner, the FAQ and the billing note ("genuinely free -- no card, no obligation to
+continue"). The flag was right all along; only its *precision* was wrong.
 
-The third copy was in the fallback: `offer_phrase` returned the literal string "a free
-external attack-surface Snapshot" when a phrase was missing -- the one branch no test
-reaches, because `load` fails closed. Unreachable is not harmless; it is a sentence
-about money one config edit from a prospect's inbox.
+`makesOffer` carries list prices. **A cohort promotion is not a list price, and absence
+from one machine-readable block is not absence from the business.** The principle -- a
+claim about money is checkable or it is not made -- was right. The execution checked one
+source, confidently, and that is the same failure this project keeps paying for in a new
+costume: the HN mock encoded an assumed response shape, `test_only_the_snapshot_is_free`
+encoded the author's memory, and this encoded one `<script type="ld+json">`.
 
-`config/company.yaml` is the fix's foundation: a verbatim copy of what the site
-publishes, with its source URL and extraction date. **`free: true` is now impossible to
-assert without a zero minimum price recorded there**, and every slug must appear in both
-files in both directions. A claim about money is checkable or it is not made. It is a
-`.yaml` under `config/` deliberately -- `source_mtime` watches that tree, so a worker
-holding a stale copy is visible as `worker:build`.
+What the corpus actually gets: the *first* Snapshot free, founding cohort, while pilot
+slots last, under a signed RoE. `company.yaml` records `first_free` with its condition
+and its source alongside the list price, so **when the cohort closes one flag turns it
+off in every card in the same deploy**. `test_the_free_flag_is_backed_by_the_site` ties
+`scoring.yaml`'s flag to a zero price *or* a free first engagement, in both directions.
 
-**And the corpus cannot be repaired by fixing the config.** 325 sendable leads carry an
-angle written under the old rule, and **nothing will ever re-queue them**: the
-calibration matches, no trigger has moved, and `enqueue_stale_scores` only re-proses a
-lead whose angle is *missing*. A lead with a wrong angle is invisible to every
-reconciler in the system. So the guard lives at the last point before Discord, exactly
-where the trigger-code guard went and for the same reason -- and it reads
-`offer_is_free` from the running config rather than hardcoding "nothing is free", which
-would be one more claim about money written into code.
+**The dispatch guard had to be narrowed in the same commit or the original defect came
+back through its own fix.** It asked "is anything free anywhere", which discriminated
+perfectly while the answer was no -- and the moment one genuinely free offer existed, a
+blanket allowance would let an angle promise a free $2k-8k assessment again. It keys on
+the lead's own `recommended_offer` now.
 
 **The card asked a stranger for $250-$8000 on the strength of nothing.** The outreach
 prompt described us as "a B2B security studio" and stopped, while two pieces of
@@ -1131,13 +1128,12 @@ the script calls it, and `test_nothing_else_builds_the_outreach_prompt_itself` w
 `src/` and `scripts/` for any other `_angle_prompt.format(...)` with keywords. Deleted
 rather than synchronised -- two call sites that must agree will stop agreeing.
 
-**Unresolved: the RoE form offers a "Free Pilot" package that exists nowhere else.**
-`legal/Rules-of-Engagement.md` lists `☐ Free Pilot ☐ Snapshot ☐ Watch ☐ AI/LLM`, and the
-site's `makesOffer` block prices four offers with no free tier and no Pilot. So there
-may be a genuinely free entry point that the pipeline has never offered, while it spent
-the project falsely offering a paid one. **Do not guess what it includes** -- that is
-exactly the mistake that produced the free-Snapshot defect. It needs a published price
-of zero in `company.yaml` and an `Offer` literal before any card mentions it.
+**Resolved: the RoE form's "Free Pilot" is the founding-cohort Snapshot.**
+`legal/Rules-of-Engagement.md` lists `☐ Free Pilot ☐ Snapshot ☐ Watch ☐ AI/LLM` and the
+homepage explains it -- "we're onboarding a small number of pilot clients at no cost to
+build honest, redacted case studies". It needed no new `Offer` literal; it is
+`snapshot_free`, which is what the slug said. Flagging it as unresolved was right;
+concluding from `makesOffer` that nothing was free was not.
 
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against

@@ -296,15 +296,23 @@ def build_card(lead: dict[str, Any]) -> dict[str, Any]:
     return lead_card(data) if lead["tier"] in ("A", "B") else digest_row(data)
 
 
-def _any_offer_is_free(config: Any = None) -> bool:
-    """Whether the running config publishes anything at no charge.
+def _any_offer_is_free(config: Any = None, offer: str = "") -> bool:
+    """Whether *this lead's* offer costs the prospect nothing.
+
+    Keyed on the lead's own `recommended_offer`, not on "is anything free anywhere".
+    The broader question stopped discriminating the moment the founding-cohort Snapshot
+    was recorded correctly: with one free offer in the config, a blanket allowance lets
+    an angle promise a free $2k-8k assessment again -- which is the original defect,
+    reintroduced by its own fix.
 
     Read from config rather than assumed in either direction. A guard hardcoded to
     "nothing is free" would be one more claim about money written into code, which is
-    the shape of the defect it exists to catch.
+    the shape of the defect it exists to catch -- and it was wrong within a day.
     """
     try:
         cfg = config or ScoringConfig.load()
+        if offer:
+            return cfg.offer_is_free(offer)
         return any(cfg.offer_is_free(slug) for slug in get_args(Offer))
     except (ConfigError, OSError):  # a card must still render if the config is broken
         return False
@@ -312,7 +320,7 @@ def _any_offer_is_free(config: Any = None) -> bool:
 
 def _card_data(lead: dict[str, Any]) -> CardData:
     now = utcnow()
-    allow_free = _any_offer_is_free()
+    allow_free = _any_offer_is_free(offer=str(lead["recommended_offer"] or ""))
     triggers: list[tuple[str, float, str]] = []
     for trigger in lead["triggers"]:
         age = (now - from_iso(str(trigger["observed_at"]))).days

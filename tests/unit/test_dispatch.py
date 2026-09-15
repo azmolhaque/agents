@@ -1264,14 +1264,20 @@ def test_the_guard_matches_free_as_a_word_not_a_prefix():
     assert _publishable(fine, "lead-3", allow_free=False) == fine
 
 
-def test_the_guard_defers_to_the_config_rather_than_hardcoding_the_answer():
-    """If Cindrasec ever does publish a free tier, the guard stops applying the day
-    `company.yaml` records a zero price -- and not a day before. A guard hardcoded to
-    "nothing is free" would be one more claim about money written into code, which is
-    the shape of the defect it exists to catch."""
+def test_the_guard_asks_about_this_leads_own_offer():
+    """Not "is anything free anywhere". That question stopped discriminating the moment
+    the founding-cohort Snapshot was recorded correctly: with one free offer in the
+    config, a blanket allowance lets an angle promise a free $2k-8k assessment again --
+    the original defect, reintroduced by its own fix.
+
+    And the guard reads the running config rather than hardcoding an answer, because
+    the hardcoded one ("nothing is free") was wrong within a day.
+    """
     from cindraleads.agents.dispatcher import _any_offer_is_free, _publishable
 
     text = "I'd like to run a free Snapshot for you."
 
+    assert _any_offer_is_free(offer="snapshot_free") is True
+    assert _any_offer_is_free(offer="ai_llm_assessment") is False
     assert _publishable(text, "lead-4", allow_free=True) == text
-    assert _any_offer_is_free() is False, "nothing on the site is free today"
+    assert _publishable(text, "lead-5", allow_free=False) == ""

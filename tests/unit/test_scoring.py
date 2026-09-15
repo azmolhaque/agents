@@ -757,17 +757,33 @@ def test_the_free_flag_is_backed_by_the_site(cfg: ScoringConfig):
     )
 
     for slug in get_args(Offer):
-        min_price = float(published[slug]["min_price"])
-        assert cfg.offer_is_free(slug) is (min_price == 0), (
-            f"{slug}: scoring.yaml says free={cfg.offer_is_free(slug)} and the site "
-            f"publishes a minimum of {min_price} {published[slug]['currency']}"
+        entry = published[slug]
+        # Free means the prospect pays nothing for what we are offering them, which is
+        # either a zero list price or a free *first* engagement. The version of this
+        # test that asked only about `min_price` declared the founding-cohort Snapshot
+        # paid and stripped a true offer out of every card.
+        is_free = float(entry["min_price"]) == 0 or bool(entry.get("first_free"))
+        assert cfg.offer_is_free(slug) is is_free, (
+            f"{slug}: scoring.yaml says free={cfg.offer_is_free(slug)}, while the site "
+            f"publishes min_price={entry['min_price']} {entry['currency']} and "
+            f"first_free={entry.get('first_free', False)}"
         )
+        if entry.get("first_free"):
+            assert entry.get("first_free_condition"), (
+                f"{slug}: a free offer with no recorded condition cannot be withdrawn "
+                f"when the cohort closes"
+            )
 
 
 def test_no_offer_phrase_promises_something_for_nothing(cfg: ScoringConfig):
-    """The phrase is what actually reaches the prospect, and the flag is not what the
-    model reads -- the `means` string is. Every one of them said "a free Snapshot"
-    while the flag sat on a different key entirely."""
+    """The phrase is what reaches the prospect, and the flag is not what the model
+    reads -- the `means` string is.
+
+    The rule is not "a paid offer never says free". The site's own wedge is that the
+    *first* Snapshot is free and every paid tier leads with it, so forbidding the word
+    outright deleted a true offer from all four phrases for a deploy. What a paid offer
+    must not do is imply that *it* costs nothing, and it must carry its own price.
+    """
     from typing import get_args
 
     from cindraleads.models import Offer
@@ -776,15 +792,15 @@ def test_no_offer_phrase_promises_something_for_nothing(cfg: ScoringConfig):
         phrase = cfg.offer_phrase(slug)
         assert phrase and slug not in phrase, f"{slug} reaches the prompt as a slug"
         if not cfg.offer_is_free(slug):
-            assert "free" not in phrase.lower(), (
-                f"{slug}: a paid offer's phrase must not contain the word free -- got {phrase!r}"
-            )
-            # The wedge survives as a real number instead of a false one: a paid offer
-            # still names the cheapest honest first step, so the ask stays small.
             assert "$" in phrase, (
                 f"{slug}: a paid offer must carry its price, or the card asks a "
-                f"prospect to agree to an unnamed amount"
+                f"prospect to agree to an unnamed amount -- got {phrase!r}"
             )
+            if "free" in phrase.lower():
+                assert cfg.offer_is_free("snapshot_free"), (
+                    f"{slug}: names a free first step while nothing is actually free "
+                    f"-- got {phrase!r}"
+                )
 
 
 def test_the_default_offer_phrase_is_not_free(tmp_path: Path):
