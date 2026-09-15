@@ -333,6 +333,41 @@ def _trigger_component(inp: ScoreInput, cfg: ScoringConfig, now: datetime) -> fl
     return min(100.0, total)
 
 
+def country_from_domain(domain: str, cctlds: dict[str, str]) -> str | None:
+    """A country inferred from an unambiguous country-code TLD, or None.
+
+    `country` is NULL for **827 of 908 companies** -- 91% -- for the same reason
+    `employee_band` is: rule 6 of the extraction prompt says "only when the page names
+    a location", almost no landing page does, and that rule is right. A 4B asked to
+    guess a country invents one, and the stray `EU`, `NU` and `N` values already in the
+    column show what unguarded free text produces.
+
+    The domain often says it plainly, and **the Scorer already trusts it**:
+    `_icp_component` awards `local_bonus` on `local_tlds` OR `country in {BD,LK,NP,PK}`.
+    So a `.com.bd` domain was good enough to score as local and not good enough to
+    choose the prospect's language -- one decision made in two places, with the prose
+    half left empty.
+
+    What that cost: `bengali_angle` is requested only when the country is BD,
+    `_prose_budget` grants the larger Bengali decode on the same condition, and
+    `offer_phrase` quotes Taka on it. **A Bangladeshi company on a `.com.bd` domain got
+    an English-only card**, which is the local-trust wedge switched off for exactly the
+    companies it was built for.
+
+    Only unambiguous ccTLDs, longest suffix first, and a stated country always wins --
+    the same read-time, never-override shape as `band_from_open_roles`. `.io` and `.ai`
+    are deliberately absent: they are generic in practice and inferring British Indian
+    Ocean Territory from one would be worse than inferring nothing.
+    """
+    host = domain.strip().lower()
+    if not host:
+        return None
+    for suffix in sorted(cctlds, key=len, reverse=True):
+        if host.endswith(suffix.lower()):
+            return str(cctlds[suffix]).upper()
+    return None
+
+
 def band_from_open_roles(open_roles: int | None, cfg: ScoringConfig) -> str | None:
     """A size band inferred from the company's own public job board, or None.
 

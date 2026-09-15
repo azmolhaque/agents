@@ -48,6 +48,7 @@ from cindraleads.scoring import (
     ScoringConfig,
     TriggerObservation,
     band_from_open_roles,
+    country_from_domain,
     score,
 )
 from cindraleads.store import Store
@@ -235,6 +236,13 @@ class Scorer:
         self._local_tlds = tuple(
             str(t) for t in (icp.get("geography") or {}).get("local_tlds") or ()
         )
+        # The domain is often the only place a country is stated. See
+        # `country_from_domain` for why the column is empty 91% of the time and what
+        # three prose mechanisms that was silently switching off.
+        self._cctlds = {
+            str(k): str(v)
+            for k, v in ((icp.get("geography") or {}).get("cctld_country") or {}).items()
+        }
         # What we can honestly say we have done, and the exact permission promise.
         # Read here rather than hardcoded in the prompt for the same reason `offers`
         # is: a claim about ourselves that lives in prose is one nothing can check.
@@ -584,7 +592,10 @@ class Scorer:
             "employee_band": row["employee_band"]
             or band_from_open_roles(row["open_roles"], self.scoring),
             "industry": row["industry"],
-            "country": row["country"],
+            # A stated country always wins; this only fills a null. Derived at read
+            # time rather than stored, so editing the map re-scores through
+            # `scoring_version` instead of leaving a stale column behind.
+            "country": row["country"] or country_from_domain(domain, self._cctlds),
             "ai_surface": json.loads(row["ai_surface"] or "[]"),
             "subdomain_count": row["subdomain_count_ct"],
             "hygiene_gaps": _hygiene_gaps(row["dns_hygiene"]),

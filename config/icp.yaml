@@ -58,6 +58,30 @@ geography:
     bd_south_asia: 0.4
   local_tlds: [".bd", ".com.bd", ".lk", ".np", ".pk", ".in"]
 
+  # A country inferred from the domain, when the page never stated one. `country` is
+  # NULL for 91% of the corpus -- rule 6 of the extraction prompt requires the page to
+  # name a location and almost none do -- and three prose mechanisms are gated on it:
+  # the Bengali angle, its larger decode budget, and Taka pricing. A `.com.bd` company
+  # was getting an English-only card while `_icp_component` already trusted the same
+  # TLD to award `local_bonus`.
+  #
+  # Only unambiguous country-code suffixes. `.io` and `.ai` are generic in practice and
+  # are deliberately absent -- inferring a country from one would be worse than
+  # inferring nothing. A stated country always wins.
+  cctld_country:
+    ".com.bd": BD
+    ".net.bd": BD
+    ".org.bd": BD
+    ".bd": BD
+    ".com.lk": LK
+    ".lk": LK
+    ".com.np": NP
+    ".np": NP
+    ".com.pk": PK
+    ".pk": PK
+    ".co.in": IN
+    ".in": IN
+
 # ---------------------------------------------------------------------------
 # Discovery query templates.
 #

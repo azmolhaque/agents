@@ -1265,6 +1265,40 @@ shape again, by a route nothing was watching. Worth remembering that
 `suppress_platform_companies` and `cindra explain`'s near-miss table both read the
 *lead* side; a host can sit in `evidence` for a long time before it becomes a company.
 
+**`country` is NULL for 827 of 908 companies -- 91% -- and three prose mechanisms are
+gated on it.** `bengali_angle` is requested only when the country is BD,
+`_prose_budget` grants the larger Bengali decode on the same condition, and
+`offer_phrase` quotes Taka on it. **A Bangladeshi company on a `.com.bd` domain was
+getting an English-only card**: the local-trust wedge switched off for exactly the
+companies it exists for.
+
+The extraction rule is not the bug. Rule 6 says `country` only "when the page names a
+location", almost no landing page does, and a 4B asked to guess one invents it -- the
+stray `EU`, `NU` and `N` values already in the column show what unguarded free text
+produces. Same shape as `employee_band` at 1 of 616: the information is genuinely not on
+the page.
+
+**The domain says it, and the Scorer already trusted the domain.** `_icp_component`
+awards `local_bonus` on `local_tlds` OR `country in {BD, LK, NP, PK}` -- so a `.com.bd`
+suffix was good enough to score as local and not good enough to choose the prospect's
+language. One decision made in two places with the prose half left empty, and
+`test_the_local_tlds_that_score_as_local_can_also_be_named` is the check that they
+agree.
+
+`country_from_domain` fills a null and never overrides a stated value, derived at read
+time so editing the map re-scores through `scoring_version` -- the `band_from_open_roles`
+shape exactly. Only unambiguous ccTLDs: `.io` and `.ai` are deliberately absent, because
+inferring British Indian Ocean Territory from a generic suffix would quote the wrong
+currency at a real prospect.
+
+**Worth noting how thin the Taka work was without this.** Shipped one commit earlier, it
+reached BD companies recommended a *paid* offer -- and of 9 BD companies, the one
+sendable lead drew `snapshot_free`, whose Taka and English phrases are identical because
+it is free and carries no price. The feature was correct and touched nothing. **A
+feature keyed on a column is worth exactly what the column is populated with**, and this
+project has now paid that four times: `employee_band`, `description`, `full_name`,
+`country`.
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a

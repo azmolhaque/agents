@@ -1115,3 +1115,61 @@ def test_the_currency_follows_the_country_not_the_language(cfg: ScoringConfig):
     two. Both halves of that card should name the same number."""
     assert cfg.offer_phrase("watch", "bd") == cfg.offer_phrase("watch", "BD")
     assert "BDT" not in cfg.offer_phrase("watch", "US")
+
+
+# ------------------------------------------- a country the page never stated
+
+
+def test_a_country_code_tld_names_a_country():
+    """`country` is NULL for 827 of 908 companies -- 91%. Rule 6 of the extraction
+    prompt requires the page to name a location and almost none do, which is correct:
+    a 4B asked to guess a country invents one, and the stray `EU`, `NU` and `N` values
+    already in the column show what unguarded free text produces.
+
+    The domain often says it plainly, and the Scorer already trusts it --
+    `_icp_component` awards `local_bonus` on `local_tlds` OR a BD/LK/NP/PK country. So
+    a `.com.bd` domain was good enough to score as local and not good enough to pick
+    the prospect's language.
+    """
+    from cindraleads.config import load_yaml, settings
+    from cindraleads.scoring import country_from_domain
+
+    icp = load_yaml("icp", base=settings().resolve(REPO_ROOT / "config"))
+    cctlds = (icp.get("geography") or {}).get("cctld_country") or {}
+
+    assert country_from_domain("shikho.com.bd", cctlds) == "BD"
+    assert country_from_domain("acme.bd", cctlds) == "BD"
+    assert country_from_domain("x.com.lk", cctlds) == "LK"
+
+
+def test_a_generic_tld_infers_nothing():
+    """`.io` and `.ai` are generic in practice. Inferring British Indian Ocean
+    Territory from one would be worse than inferring nothing, and a wrong country here
+    quotes the wrong currency at a prospect."""
+    from cindraleads.config import load_yaml, settings
+    from cindraleads.scoring import country_from_domain
+
+    icp = load_yaml("icp", base=settings().resolve(REPO_ROOT / "config"))
+    cctlds = (icp.get("geography") or {}).get("cctld_country") or {}
+
+    for domain in ("tavus.io", "rtrvr.ai", "acme.com", "example.dev", ""):
+        assert country_from_domain(domain, cctlds) is None, domain
+
+
+def test_the_local_tlds_that_score_as_local_can_also_be_named():
+    """The inconsistency this closes, asserted directly: every suffix trusted to award
+    `local_bonus` should also be able to name its country. A suffix in one list and not
+    the other is the same decision made in two places."""
+    from cindraleads.config import load_yaml, settings
+    from cindraleads.scoring import country_from_domain
+
+    icp = load_yaml("icp", base=settings().resolve(REPO_ROOT / "config"))
+    geography = icp.get("geography") or {}
+    cctlds = geography.get("cctld_country") or {}
+
+    unnamed = [
+        tld
+        for tld in geography.get("local_tlds") or ()
+        if country_from_domain(f"x{tld}", cctlds) is None
+    ]
+    assert not unnamed, f"these score as local but name no country: {unnamed}"
