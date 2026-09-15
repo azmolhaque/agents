@@ -39,6 +39,7 @@ from datetime import datetime, timedelta
 from itertools import pairwise
 from typing import Any
 
+from cindraleads.config import MAX_STAGE_SECONDS
 from cindraleads.metrics import HEARTBEAT_METRIC, HEARTBEAT_UNITS, OPTIONAL_UNITS
 from cindraleads.models import to_iso, utcnow
 from cindraleads.store import Store
@@ -51,6 +52,27 @@ LEADS_PER_DAY_TARGET = 15
 # A worker heartbeat is due every 60 s. Allow a generous multiple before calling a gap
 # a gap: one slow transaction must not read as an outage.
 HEARTBEAT_GAP_SECONDS = 300.0
+
+# How long a worker that *announced* its exit may stay away before the silence counts
+# against it anyway.
+#
+# `no_silent_unit` exists to catch "the worker died on Tuesday and nobody noticed", and
+# it read every gap as that. Raising `TimeoutStopSec` to 960 s -- so a deploy landing
+# mid-stage is a shutdown rather than a SIGKILL -- means a *clean* stop now legitimately
+# takes up to 16 minutes, three times `HEARTBEAT_GAP_SECONDS`. So the fix for one gate
+# started failing another: 4 clean exits and 2 worker gaps in the same 24 h, where the
+# old note had gaps tracking the *missing* goodbyes exactly.
+#
+# The discriminator was already in the heartbeat. `exiting=True` is the last beat the
+# worker writes before returning, and `worker_restarts` counts those -- but the gap loop
+# never looked at the flag sitting immediately before the gap. Sixth instance of
+# built-wired-never-connected, after `digest_pages`, `extend_lease`, `open_roles`,
+# `discovered_by` and `full_name`.
+#
+# Derived from `MAX_STAGE_SECONDS` rather than written down again, because what bounds
+# an honest shutdown is how long the worker is permitted to take finishing a stage. The
+# slack is the way back up: process start plus a ~32 s cold model load off microSD.
+ANNOUNCED_STOP_SECONDS = MAX_STAGE_SECONDS + 120.0
 
 # How long the governor may still be in a degraded state at the end of the window before
 # that counts as "did not recover". Generous on purpose: the failure worth catching is a
@@ -94,6 +116,8 @@ class AcceptanceReport:
     dead_unreachable: int = 0
     # liveness
     worker_gaps: list[tuple[datetime, float]] = field(default_factory=list)
+    # Gaps that follow an announced exit: a deploy, not an outage. Reported, not graded.
+    announced_gaps: list[tuple[datetime, float]] = field(default_factory=list)
     silent_units: list[str] = field(default_factory=list)
     worker_restarts: int = 0
     builds_seen: int = 0
@@ -232,10 +256,20 @@ def _liveness(
     dead for six hours and came back leaves a queue that looks exactly like one that was
     merely idle.
     """
-    for (earlier, _), (later, _) in pairwise(beats):
+    for (earlier, before), (later, _) in pairwise(beats):
         gap = (later - earlier).total_seconds()
-        if gap > HEARTBEAT_GAP_SECONDS:
-            report.worker_gaps.append((earlier, gap))
+        if gap <= HEARTBEAT_GAP_SECONDS:
+            continue
+        # An announced stop is not a silence. The worker said goodbye, and a clean
+        # shutdown is allowed to spend up to `MAX_STAGE_SECONDS` finishing the job it
+        # was holding -- which is the whole reason `TimeoutStopSec` was raised.
+        #
+        # Bounded, because a worker that announced its exit and never came back for six
+        # hours is exactly the outage this criterion is for. Past the bound it counts.
+        if before.get("exiting") and gap <= ANNOUNCED_STOP_SECONDS:
+            report.announced_gaps.append((earlier, gap))
+            continue
+        report.worker_gaps.append((earlier, gap))
 
     builds = {d.get("source_mtime") for _, d in beats if d.get("source_mtime")}
     report.builds_seen = len(builds)
@@ -348,8 +382,16 @@ def render_markdown(report: AcceptanceReport) -> str:
         # rising unreachable count is how a broken uplink on this end would present.
         "no_job_lost": f"{report.jobs_lost} lost of {report.dead_lettered} dead-lettered "
         f"({report.dead_unreachable} unreachable host(s), not graded)",
+        # The excused count is printed for the same reason the unreachable one is: an
+        # exemption nobody can see is a weakened gate, and a run full of announced
+        # restarts is still a run nobody should call unattended.
         "no_silent_unit": (
             f"{len(report.worker_gaps)} worker gap(s)"
+            + (
+                f"; {len(report.announced_gaps)} announced restart(s), not graded"
+                if report.announced_gaps
+                else ""
+            )
             + (f"; silent: {', '.join(report.silent_units)}" if report.silent_units else "")
         ),
         "one_build_throughout": f"{report.builds_seen} build(s) seen, "

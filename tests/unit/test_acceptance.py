@@ -477,3 +477,92 @@ def test_the_excused_count_is_printed(store: Any) -> None:
     text = render_markdown(assess_run(store, hours=72))
 
     assert "unreachable host(s), not graded" in text
+
+
+# ------------------------------------------- an announced stop is not a silence
+
+
+def _run_with_break(store: Any, *, gap_minutes: float, announced: bool) -> None:
+    """A worker beating every minute for 3 h with one interruption in the middle."""
+    for minute in range(180, 90, -1):
+        _beat(
+            store,
+            "worker",
+            ago_minutes=minute,
+            source_mtime=1_000.0,
+            thermal_state="nominal",
+            temp_c=60.0,
+            throttled_now=False,
+            **({"exiting": True} if announced and minute == 91 else {}),
+        )
+    for minute in range(int(91 - gap_minutes), 0, -1):
+        _beat(
+            store,
+            "worker",
+            ago_minutes=minute,
+            source_mtime=1_000.0,
+            thermal_state="nominal",
+            temp_c=60.0,
+            throttled_now=False,
+        )
+    for unit in HEARTBEAT_UNITS:
+        if unit in ("worker", *OPTIONAL_UNITS):
+            continue
+        _beat(store, unit, ago_minutes=30)
+
+
+def test_a_clean_restart_is_not_a_silent_unit(store: Any) -> None:
+    """Raising `TimeoutStopSec` to 960 s so a deploy mid-stage is a shutdown rather
+    than a SIGKILL means a *clean* stop legitimately takes up to 16 minutes -- three
+    times `HEARTBEAT_GAP_SECONDS`. The fix for one gate started failing another: 4 clean
+    exits and 2 worker gaps in one window, where gaps used to track the missing
+    goodbyes exactly.
+
+    The discriminator was already in the heartbeat: `exiting=True` is the last beat the
+    worker writes, `worker_restarts` counts those, and the gap loop never looked at the
+    flag sitting immediately before the gap.
+    """
+    _run_with_break(store, gap_minutes=14.0, announced=True)
+    _dispatch(store, 60, ago_hours=1)
+
+    report = assess_run(store, hours=3)
+
+    assert report.worker_gaps == [], "the worker said goodbye"
+    assert len(report.announced_gaps) == 1, "and it is still reported"
+    assert report.criteria["no_silent_unit"] is True
+
+
+def test_an_unannounced_gap_of_the_same_length_still_fails(store: Any) -> None:
+    """The load-bearing half. What this criterion is for is a worker that died and came
+    back, and that is indistinguishable from a deploy by duration alone."""
+    _run_with_break(store, gap_minutes=14.0, announced=False)
+    _dispatch(store, 60, ago_hours=1)
+
+    report = assess_run(store, hours=3)
+
+    assert len(report.worker_gaps) == 1
+    assert report.announced_gaps == []
+    assert report.criteria["no_silent_unit"] is False
+
+
+def test_an_announced_exit_that_never_comes_back_is_still_an_outage(store: Any) -> None:
+    """Bounded on purpose. A worker that said goodbye and stayed away for an hour is
+    exactly the outage this criterion exists for -- the goodbye is not a blank cheque."""
+    _run_with_break(store, gap_minutes=60.0, announced=True)
+    _dispatch(store, 60, ago_hours=1)
+
+    report = assess_run(store, hours=3)
+
+    assert len(report.worker_gaps) == 1
+    assert report.criteria["no_silent_unit"] is False
+
+
+def test_the_announced_bound_is_the_one_a_stage_was_sized_for() -> None:
+    """One decision, not two. What bounds an honest shutdown is how long the worker is
+    permitted to take finishing a stage -- the same number `TimeoutStopSec` is checked
+    against, rather than a third copy of it."""
+    from cindraleads.acceptance import ANNOUNCED_STOP_SECONDS
+    from cindraleads.config import MAX_STAGE_SECONDS
+
+    assert ANNOUNCED_STOP_SECONDS > MAX_STAGE_SECONDS
+    assert ANNOUNCED_STOP_SECONDS > HEARTBEAT_GAP_SECONDS

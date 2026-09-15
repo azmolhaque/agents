@@ -1014,6 +1014,34 @@ dead-letter row is written at all. **Rejected:** if the timeouts are ever ours, 
 discards hundreds of real candidates into a `skipped` bucket nobody watches, and the
 census looks healthier the worse things get. Keep the row, narrow the claim.
 
+**Throughput passed for the first time on 2026-09-15: 21.0 Tier A+B/day against a
+target of 15, 53 dispatched in 24 h.** It had been 0.0/day. What moved it was the
+`reconcile --force` re-enrichment reaching the 880 companies whose `enriched_at` recorded
+only that we had looked, under the old contact loop -- `reachability` is 15% of the score
+and it was structurally zero on 583 of 833 leads.
+
+**Fixing one gate started failing another.** Raising `TimeoutStopSec` to 960 s, so a
+deploy landing mid-stage is a shutdown rather than a SIGKILL, means a *clean* stop now
+legitimately takes up to 16 minutes -- three times `HEARTBEAT_GAP_SECONDS`, which is 300.
+`no_silent_unit` reads every gap as "the worker died on Tuesday and nobody noticed", so a
+clean deploy during a slow stage now fails it: **4 clean exits and 2 worker gaps in one
+window**, where the earlier note had gaps tracking the *missing* goodbyes exactly.
+
+The discriminator was already in the heartbeat and already being read. `exiting=True` is
+the last beat the worker writes before returning, `worker_restarts` counts them -- and
+the gap loop never looked at the flag sitting immediately before the gap. **Sixth
+instance of built-wired-never-connected**, after `digest_pages`, `extend_lease`,
+`open_roles`, `discovered_by` and `full_name`.
+
+`ANNOUNCED_STOP_SECONDS` is derived from `MAX_STAGE_SECONDS`, because what bounds an
+honest shutdown is how long the worker is permitted to spend finishing the job it holds.
+Bounded rather than waived: a worker that said goodbye and stayed away for an hour is
+exactly the outage the criterion exists for, and the goodbye is not a blank cheque.
+
+**`one_build_throughout` failing at 3 builds is the gate working.** It asks whether the
+window was unattended, and a window with three deploys in it was not. That one needs a
+quiet period, not a code change.
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a
