@@ -1080,6 +1080,52 @@ where the trigger-code guard went and for the same reason -- and it reads
 `offer_is_free` from the running config rather than hardcoding "nothing is free", which
 would be one more claim about money written into code.
 
+**The card asked a stranger for $250-$8000 on the strength of nothing.** The outreach
+prompt described us as "a B2B security studio" and stopped, while two pieces of
+third-party-verifiable work sat published on our own site reaching no prospect: a Google
+VRP report (authentication bypass on a forgotten subdomain of an acquisition, triaged
+P2/S2, decommissioned nine days later) and a measured prompt-injection study (256 trials
+per attack, the same technique swinging 4.6x in success by changing only the goal). For
+cold outreach from an unknown studio that is the largest single lever available, and at
+42 tok/s prefill against 3.7 decode it costs about a second.
+
+`proof` in `company.yaml` is **matched, not generic**, and the match is most of the
+value: a company that just shipped an agent gets the injection measurement, a company
+with subdomain sprawl gets the finding that *was itself* a forgotten subdomain. Ordered
+by the lead's own trigger order so the proof answers the reason the card exists, and
+empty when nothing fits -- a proof clause that does not fit reads as a form letter,
+which is what the card is trying not to be.
+
+**Every claim is deliberately under-stated, and a test enforces it.** The Photomath
+writeup spends its length explaining why the $0 reward was *correct* and why "reachable
+through Google" is not "run by Google". A card reading "we found a critical
+vulnerability in Google" would contradict our own published analysis, in writing, to a
+reader one click away from it. `test_no_proof_claim_overstates_what_the_writeup_says`
+bans "critical", "severe", "bounty", "rewarded" and requires the URL to be on our own
+site.
+
+**Rule 5 was a legal boundary paraphrased from memory.** `legal/Rules-of-Engagement.md`
+v3.0 says it in one line -- *"Nothing is scanned until both parties sign"* -- and the
+prompt carried my wording instead. Same failure mode as the free-offer defect, on a more
+serious claim. The RoE's own sentences are in `company.yaml` now. The rule also needed a
+carve-out it never had: it forbids implying we scanned *their* systems, and the proof
+line describes work published about someone else.
+
+**`test_the_prompt_asks_for_nothing_the_scorer_does_not_supply` restated the code from
+the same memory as the code.** Its `supplied` set was a hand-maintained list, so a kwarg
+added to `scorer.py` and forgotten there passed silently -- the half of a two-way check
+that matters least often and most. It reads the `format()` call out of the source with
+`ast` now. Fifth instance of the same lesson, after `discovered_by`,
+`enqueue_stale_extractions`, the HN mock and the free-offer flag.
+
+**Unresolved: the RoE form offers a "Free Pilot" package that exists nowhere else.**
+`legal/Rules-of-Engagement.md` lists `☐ Free Pilot ☐ Snapshot ☐ Watch ☐ AI/LLM`, and the
+site's `makesOffer` block prices four offers with no free tier and no Pilot. So there
+may be a genuinely free entry point that the pipeline has never offered, while it spent
+the project falsely offering a paid one. **Do not guess what it includes** -- that is
+exactly the mistake that produced the free-Snapshot defect. It needs a published price
+of zero in `company.yaml` and an `Offer` literal before any card mentions it.
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a

@@ -853,18 +853,11 @@ def test_the_prompt_asks_for_nothing_the_scorer_does_not_supply():
     prompt = load_prompt("outreach_angle", base=REPO_ROOT / "prompts")
     placeholders = {name for _, name, _, _ in string.Formatter().parse(prompt) if name}
 
-    supplied = {
-        "display_name",
-        "canonical_domain",
-        "description",
-        "triggers",
-        "offer",
-        "country",
-        "quotes",
-        "surfaces",
-        "published_gaps",
-        "recipient",
-    }
+    # Read out of the Scorer rather than listed here. The version of this test that
+    # hand-maintained the set was a mirror of the code written from the same memory as
+    # the code -- it would have passed for any kwarg added to `scorer.py` and forgotten
+    # here, which is the half of the check that matters least often and most.
+    supplied = _angle_format_kwargs()
 
     assert placeholders - supplied == set(), (
         f"the prompt asks for {sorted(placeholders - supplied)}, which the Scorer does "
@@ -1014,3 +1007,96 @@ def test_a_publication_is_not_a_prospect():
     for industry in ("social media platform", "news reader app", "developer tools"):
         facts = LeadFacts(display_name="Acme", canonical_domain="acme.io", industry=industry)
         assert "not_an_excluded_sector" not in gate.review(facts).vetoes, industry
+
+
+def _angle_format_kwargs() -> set[str]:
+    """The keyword names the Scorer actually passes to `outreach_angle.format(...)`.
+
+    Parsed from the source rather than restated, so the two halves of
+    `test_the_prompt_asks_for_nothing_the_scorer_does_not_supply` cannot both be
+    written from one memory and agree with each other while disagreeing with the
+    prompt. Same lesson as `discovered_by`, `enqueue_stale_extractions`, the HN mock
+    and the free-offer flag: a test that restates the code checks the author.
+    """
+    import ast
+
+    source = (REPO_ROOT / "src" / "cindraleads" / "agents" / "scorer.py").read_text()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "format"
+            and isinstance(func.value, ast.Attribute)
+            and func.value.attr == "_angle_prompt"
+        ):
+            return {kw.arg for kw in node.keywords if kw.arg}
+    raise AssertionError("no `self._angle_prompt.format(...)` call found in scorer.py")
+
+
+# ---------------------------------------------- what we can honestly say we did
+
+
+def _scorer():  # type: ignore[no-untyped-def]
+    from cindraleads.agents.scorer import Scorer
+
+    s = settings()
+    object.__setattr__(s, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(s, "prompt_dir", REPO_ROOT / "prompts")
+    return Scorer(store=None, llm=None, config=s)  # type: ignore[arg-type]
+
+
+def test_the_proof_is_matched_to_why_we_are_writing():
+    """Generic proof is nearly worthless and a matched one is most of the value.
+
+    A company that just shipped an agent gets the prompt-injection measurement; a
+    company with subdomain sprawl gets the finding that was itself a forgotten
+    subdomain of an acquisition.
+    """
+    scorer = _scorer()
+
+    ai = scorer._proof_for({"triggers": [{"code": "T1_AI_SHIP"}], "ai_surface": []})
+    surface = scorer._proof_for({"triggers": [{"code": "T7_SURFACE_SPRAWL"}], "ai_surface": []})
+
+    assert "prompt-injection" in ai
+    assert "subdomain" in surface
+    assert ai != surface
+
+
+def test_a_lead_with_no_matching_proof_gets_none():
+    """A proof clause that does not fit the prospect is worse than none -- it reads as
+    a form letter, which is exactly what the card is trying not to be."""
+    scorer = _scorer()
+
+    assert scorer._proof_for({"triggers": [{"code": "T12_LOCAL"}], "ai_surface": []}) == ""
+
+
+def test_a_surface_can_select_proof_when_no_trigger_does():
+    scorer = _scorer()
+
+    found = scorer._proof_for({"triggers": [{"code": "T12_LOCAL"}], "ai_surface": ["mcp_server"]})
+
+    assert "prompt-injection" in found
+
+
+def test_no_proof_claim_overstates_what_the_writeup_says():
+    """Load-bearing, and the reason every claim is deliberately under-stated.
+
+    The Photomath writeup spends its length explaining why a $0 reward was the
+    *correct* decision and why "reachable through Google" is not "run by Google". A
+    card reading "we found a critical vulnerability in Google" would contradict our own
+    published analysis, in writing, to a reader one click from it.
+    """
+    from cindraleads.config import load_yaml
+
+    company = load_yaml("company", base=settings().resolve(REPO_ROOT / "config"))
+    forbidden = ("critical", "severe", "bounty", "paid us", "rewarded", "hacked", "breached")
+
+    for name, entry in (company.get("proof") or {}).items():
+        claim = str(entry["claim"]).lower()
+        for word in forbidden:
+            assert word not in claim, f"proof {name!r} overstates: {word!r} in {claim!r}"
+        assert str(entry.get("url", "")).startswith("https://cindrasec.com/"), (
+            f"proof {name!r} must be checkable on our own site"
+        )

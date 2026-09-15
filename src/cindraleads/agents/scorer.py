@@ -235,6 +235,44 @@ class Scorer:
         self._local_tlds = tuple(
             str(t) for t in (icp.get("geography") or {}).get("local_tlds") or ()
         )
+        # What we can honestly say we have done, and the exact permission promise.
+        # Read here rather than hardcoded in the prompt for the same reason `offers`
+        # is: a claim about ourselves that lives in prose is one nothing can check.
+        try:
+            company = load_yaml("company", base=cfg.resolve(cfg.config_dir))
+        except ConfigError:
+            # A missing file costs the angle one clause. It must not stop the pipeline
+            # scoring, for the same reason an unknown `ai_surface` is dropped rather
+            # than raised: vague is survivable, down is not.
+            company = {}
+        self._proof = dict(company.get("proof") or {})
+        self._roe = dict(company.get("roe") or {})
+
+    def _proof_for(self, facts: dict[str, Any]) -> str:
+        """The strongest thing we can honestly say, aimed at why we are writing.
+
+        Matched rather than generic, and the match is most of the value: a company that
+        just shipped an agent gets our prompt-injection measurement, and a company with
+        subdomain sprawl gets a finding that *was itself* a forgotten subdomain of an
+        acquisition. The same sentence sent to everyone is nearly worthless.
+
+        Ordered by the lead's own trigger order, so the proof answers the reason the
+        card exists rather than whichever entry happened to be first in the file. An
+        empty string when nothing matches -- a proof clause that does not fit the
+        prospect is worse than none, because it reads as a form letter.
+        """
+        if not self._proof:
+            return ""
+        codes = [str(t["code"]) for t in facts.get("triggers") or ()]
+        surfaces = {str(s).lower() for s in facts.get("ai_surface") or ()}
+        for code in codes:
+            for entry in self._proof.values():
+                if code in (entry.get("evidences") or ()):
+                    return str(entry.get("claim") or "").strip()
+        for entry in self._proof.values():
+            if surfaces & {str(s).lower() for s in (entry.get("surfaces") or ())}:
+                return str(entry.get("claim") or "").strip()
+        return ""
 
     # ------------------------------------------------------------------ phase 1
 
@@ -302,6 +340,10 @@ class Scorer:
             surfaces=", ".join(self.scoring.surface_phrases(facts["ai_surface"])),
             published_gaps=", ".join(facts["hygiene_gaps"][:2]),
             recipient=_recipient_name(facts["contacts"]),
+            # One line of what we have actually done, chosen by what they are doing.
+            # The card asks a stranger for $250-$8000 on the strength of nothing;
+            # this is the only sentence in it a reader can independently verify.
+            proof=self._proof_for(facts),
         )
         try:
             structured = await self.llm.generate(

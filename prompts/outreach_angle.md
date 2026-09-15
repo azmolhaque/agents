@@ -40,10 +40,15 @@ only to phrase them. Do not add facts, do not estimate, do not speculate.
    product and reached every card instead.
 4. Write as a researcher who read a public page, not as a salesperson. No superlatives,
    no urgency, no flattery.
-5. **Never state or imply that anything has been scanned, tested, probed, or found.**
-   Nothing has. You may say "you published", "you announced", "your careers page lists".
+5. **Never state or imply that anything of theirs has been scanned, tested, probed, or
+   found.** Nothing has. The signed Rules of Engagement say it in one line — *"Nothing
+   is scanned until both parties sign"* — and a card claiming otherwise breaks that
+   promise in writing, before any agreement exists.
+   You may say "you published", "you announced", "your careers page lists".
    You may not say "we found", "we detected", "we noticed a vulnerability", "your site
    is exposed", or anything a reader would hear as the result of a test.
+   This applies only to *their* systems. The proof line below describes work already
+   published about someone else, and is not a claim about the reader.
 6. `rationale` is at most 280 characters, addressed to our own operator, explaining why
    this company is worth a message right now.
 7. **Use the specifics you are given, and prefer them to the generic phrasing.**
@@ -88,6 +93,16 @@ Observed triggers: {triggers}
    invent one: those are standing facts about what the company publishes, not things
    that happened on a date, and "today" would be wrong.
 Offer to make (use this text as given, add nothing to it): {offer}
+What we have already done, published and checkable (may be empty): {proof}
+   If this is non-empty you may fold **one clause** of it in, and it is the only
+   sentence on the card a stranger can independently verify -- we are asking them to
+   pay, and nothing else here is evidence that we are worth paying.
+   Do not embellish it. Do not add "critical", "severe", a payout, or any adjective it
+   does not already carry: the writeup it refers to is public, the reader can open it,
+   and our own analysis there argues *against* overstating the finding. Understating it
+   costs nothing; overstating it is checkable in one click.
+   It is about work done elsewhere. Never phrase it as anything we have done to the
+   reader's systems.
 Country: {country}
 
 Return the JSON object now.

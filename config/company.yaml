@@ -58,6 +58,64 @@ offers:
     min_price: 150
     max_price: 500
 
+# ---------------------------------------------------------------------------
+# What we can honestly say we have done, matched to what the prospect is doing.
+#
+# The card asks a stranger to pay $250-$8000 on the strength of nothing: the outreach
+# prompt described us as "a B2B security studio" and stopped there. Meanwhile two
+# pieces of third-party-verifiable work sat published on our own site and reached no
+# prospect. For cold outreach from an unknown studio that is the single largest lever
+# there is, and it costs ~40 prompt tokens against a 3.7 tok/s decode -- prefill is 42
+# tok/s, so specificity at this end is close to free.
+#
+# **Every claim here is deliberately under-stated, and that is load-bearing.** The
+# Photomath writeup spends its length explaining why a $0 reward was the *correct*
+# decision and why "reachable through Google" is not "run by Google". A card reading
+# "we found a critical vulnerability in Google" would contradict our own published
+# analysis, in writing, to someone who can click the link and read it. So: no
+# "critical", no payout implied, no adjectives the badge does not carry.
+#
+# `evidences` and `surfaces` decide which proof a lead gets. The match is the point --
+# a company that just shipped an agent gets the prompt-injection measurement, and a
+# company with subdomain sprawl gets the finding that *was itself* a forgotten
+# subdomain of an acquisition. Generic proof is nearly worthless; the same sentence
+# aimed at the reason we are writing is not.
+# ---------------------------------------------------------------------------
+proof:
+  ai_llm:
+    evidences: [T1_AI_SHIP, T4_HIRING_AI_ONLY]
+    surfaces: [agent_with_tools, mcp_server, chatbot, llm_feature, rag_pipeline]
+    claim: >-
+      we publish our own prompt-injection measurements -- 256 trials per attack against
+      a self-hosted model, where the same technique swung 4.6x in success rate purely
+      by changing what the attacker asked for
+    url: https://cindrasec.com/research/2026-07-prompt-injection-content-dependent/
+  attack_surface:
+    evidences: [T7_SURFACE_SPRAWL, T8_HYGIENE_GAP, T11_STACK_RISK]
+    surfaces: []
+    claim: >-
+      we reported an authentication bypass on a forgotten subdomain of a Google
+      acquisition through their VRP, triaged P2/S2 and decommissioned nine days later
+    url: https://cindrasec.com/research/2026-05-exposed-iam-frontend-google-vrp/
+
+# The permission promise, in the words the signed document actually uses.
+#
+# Rule 5 of `outreach_angle.md` is the one constraint here that is *legal* rather than
+# editorial, and it was a paraphrase written from memory -- the same failure mode as
+# the free-offer defect, on a more serious claim. These lines are from
+# `legal/Rules-of-Engagement.md`, RoE version 3.0.
+roe:
+  version: "3.0"
+  url: https://cindrasec.com/legal/Rules-of-Engagement
+  promise: Nothing is scanned until both parties sign.
+  passive_first: Passive-first - your systems are not modified or taken offline.
+  revocable: >-
+    You can revoke this permission in writing at any time - testing stops at once.
+  found_not_tested: >-
+    New assets found while testing are reported, not tested, until added to the scope
+    in writing.
+  promise_bn: স্বাক্ষর ছাড়া কোনো স্ক্যান নয়।
+
 # Who we are, in the words the site uses. The outreach prompt describes us to a
 # prospect and had none of this -- it said "a B2B security studio" and nothing else.
 identity:
