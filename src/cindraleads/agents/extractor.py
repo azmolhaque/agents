@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import ssl
 import uuid
 from dataclasses import dataclass
 from typing import Any, get_args
@@ -217,6 +218,16 @@ class Extractor:
                 error=f"HTTP {status}",
             )
         except (httpx.HTTPError, OSError, CindraError) as exc:
+            if _is_tls_failure(exc):
+                # Not transient. A certificate that does not verify today will not
+                # verify on the retry, so this takes the 4xx path rather than the
+                # timeout one.
+                return ExtractOutcome(
+                    candidate_id=candidate_id,
+                    url=url,
+                    source_id=self.source_id,
+                    skipped="TLS certificate did not verify",
+                )
             # Transient by assumption — a timeout or a connection reset. Failing the
             # job puts it back for a later attempt, which is what we want.
             return ExtractOutcome(
@@ -504,6 +515,28 @@ def _is_temporary(reason: str) -> bool:
     A per-domain budget refills; robots.txt does not change its mind on our schedule.
     """
     return "budget" in reason.lower()
+
+
+def _is_tls_failure(exc: BaseException) -> bool:
+    """Whether the fetch failed because the site's certificate does not verify.
+
+    Same rule as the 4xx branch above: an answer, not a fault. An expired, self-signed
+    or wrong-hostname certificate says exactly the same thing on the next attempt, so
+    failing the job spends three attempts and a dead-letter row establishing what the
+    first one already knew. Two of the project's 26 dead letters were this.
+
+    Checked against the exception *chain* rather than the message, because by the time
+    it reaches a log it is a string and the type is gone. httpx raises `ConnectError`
+    from the underlying `ssl.SSLError`, so the cause is where the truth is.
+    """
+    seen: BaseException | None = exc
+    for _ in range(10):  # a __context__ chain can cycle; this is not a graph walk
+        if seen is None:
+            return False
+        if isinstance(seen, ssl.SSLError):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
 
 
 def enqueue_unextracted(store: Store, queue: Any, *, limit: int = 0) -> int:

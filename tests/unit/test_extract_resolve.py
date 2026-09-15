@@ -1114,3 +1114,104 @@ async def test_a_new_url_is_new_news_and_does_move_the_date(rig):
 
     observed = rows(store, "SELECT observed_at FROM triggers")[0]["observed_at"]
     assert observed > "2026-08-29T00:00:00+00:00", "a second page is a second sighting"
+
+
+# ----------------------------------------- an answer, not a fault: the TLS branch
+
+
+async def test_a_certificate_that_does_not_verify_is_skipped_not_retried(tmp_path: Path) -> None:
+    """Same rule as the 4xx branch. An expired, self-signed or wrong-hostname
+    certificate says exactly the same thing on the next attempt, so failing the job
+    spends three attempts and a dead-letter row establishing what the first one already
+    knew. Two of the project's 26 dead letters were this.
+
+    The check walks the exception *chain*, not the message: httpx raises `ConnectError`
+    from the underlying `ssl.SSLError`, and by the time it reaches a log the type is
+    gone and only a string is left.
+    """
+    import ssl
+
+    store = Store(tmp_path / "tls.db", migrations_dir=MIGRATIONS)
+    store.migrate()
+    cfg = settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+    registry = SourceRegistry.from_dict(
+        {
+            "sources": [{"id": "company_site", "legality_class": "public_web"}],
+            "defaults": {"retries": 1, "backoff_base_seconds": 0.001},
+            "public_web_policy": {"min_interval_seconds": 0.0, "respect_robots": False},
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cause = ssl.SSLCertVerificationError("certificate verify failed: certificate has expired")
+        raise httpx.ConnectError(f"[SSL: CERTIFICATE_VERIFY_FAILED] {cause}") from cause
+
+    egress = EgressClient(
+        store=store,
+        registry=registry,
+        cache=DocumentCache(store, cache_dir=tmp_path / "tls-cache"),
+        breakers=SourceBreakers(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    extractor = Extractor(
+        store=store, egress=egress, llm=StructuredLLM(StubBackend(EXTRACTION)), config=cfg
+    )
+    seed_candidate(store, "c-tls", "https://expired.example/")
+
+    outcome = await extractor.prepare(
+        Job(
+            job_id="j",
+            kind=EXTRACT_KIND,
+            payload={"candidate_id": "c-tls", "url": "https://expired.example/"},
+        )
+    )
+
+    assert outcome.error is None, "a retry cannot change a certificate"
+    assert outcome.skipped == "TLS certificate did not verify"
+    store.close()
+
+
+async def test_a_timeout_is_still_an_error_worth_retrying(tmp_path: Path) -> None:
+    """The other half. Narrowing what counts as permanent must not swallow the case
+    the retry exists for -- a host that is merely slow today."""
+    store = Store(tmp_path / "slow.db", migrations_dir=MIGRATIONS)
+    store.migrate()
+    cfg = settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+    registry = SourceRegistry.from_dict(
+        {
+            "sources": [{"id": "company_site", "legality_class": "public_web"}],
+            "defaults": {"retries": 1, "backoff_base_seconds": 0.001},
+            "public_web_policy": {"min_interval_seconds": 0.0, "respect_robots": False},
+        }
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out")
+
+    egress = EgressClient(
+        store=store,
+        registry=registry,
+        cache=DocumentCache(store, cache_dir=tmp_path / "slow-cache"),
+        breakers=SourceBreakers(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    extractor = Extractor(
+        store=store, egress=egress, llm=StructuredLLM(StubBackend(EXTRACTION)), config=cfg
+    )
+    seed_candidate(store, "c-slow", "https://slow.example/")
+
+    outcome = await extractor.prepare(
+        Job(
+            job_id="j",
+            kind=EXTRACT_KIND,
+            payload={"candidate_id": "c-slow", "url": "https://slow.example/"},
+        )
+    )
+
+    assert outcome.skipped is None
+    assert outcome.error is not None and "Timeout" in outcome.error
+    store.close()
