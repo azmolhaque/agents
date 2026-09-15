@@ -589,19 +589,36 @@ class CrtShClient:
                     names.add(name)
         return names
 
-    async def growth(self, domain: str, *, window_days: int = 30) -> tuple[int, int]:
-        """Returns ``(total, added_in_window)``.
+    async def growth(self, domain: str, *, window_days: int = 30) -> tuple[int, int] | None:
+        """Returns ``(total, added_in_window)``, or None when we could not find out.
 
         The trigger is *rapid growth*, not size. A large estate is normal for an
         established company; twelve new hosts this month is a change worth a
         conversation.
+
+        **None and `(0, 0)` are different answers, and this returned `(0, 0)` for
+        both.** A body we cannot parse became "this company has zero subdomains" --
+        written into `companies.subdomain_count_ct` as a fact. The same three-valued
+        distinction `evidence.reachable`, `SecurityTxt.present` and
+        `ThermalWindow.measured` all make, missing from the one field that feeds a
+        size judgement.
+
+        It is not a rare path. `defaults.max_bytes` is 900,000 and `body` is truncated
+        at it before parsing, so **any** company whose certificate log exceeds that cap
+        yields invalid JSON -- and the bigger the estate, the likelier the truncation.
+        Observed in one maintenance pass: a fetch returning exactly 900000 bytes, and a
+        crt.sh response for one ordinary company already at 522,908.
+
+        The Enricher's `_subdomains` already treats None as a failed source and leaves
+        the column NULL, so nothing downstream needed changing -- the answer simply had
+        to stop being a number.
         """
         result = await self.egress.fetch(
             self.SOURCE_ID, "https://crt.sh/", params={"q": f"%.{domain}", "output": "json"}
         )
         data = _safe_json(result.body, source_id=self.SOURCE_ID, url=result.url)
         if not isinstance(data, list):
-            return 0, 0
+            return None
 
         cutoff = utcnow() - timedelta(days=window_days)
         seen: set[str] = set()

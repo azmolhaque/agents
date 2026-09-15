@@ -1202,16 +1202,29 @@ the same tell as `832 of 833` and `single_source` at 96%. Whatever the cause, a 
 keyed on a signal that is blank for the biggest companies would have been
 anti-correlated with what it exists to catch, and would have shipped looking reasonable.
 
-**I then explained the empty bucket with `apple.com` and was wrong twice over.** The
-claim was that crt.sh returns a body past `defaults.max_bytes` for a company that size,
-so the JSON fails to parse and `subdomain_count_ct` stays NULL. Its actual row:
+**I then explained the empty bucket with `apple.com` and got the company wrong and the
+mechanism half right.** Its actual row:
 
     apple.com | YouCal - AI Calorie Tracker | productivity software | certs 0
 
-`0`, not NULL -- and **not Apple**. It is an App Store listing canonicalized to the
-store, the `teamtailor.com` shape in its purest form. The truncation story was invented
-to fit a row I had not looked at, about a company that was not there. The distribution
-was still enough to kill the proposal; the mechanism I offered for *why* was fiction.
+**Not Apple.** An App Store listing canonicalized to the store, the `teamtailor.com`
+shape in its purest form -- so the row proved nothing about enterprises, and I had
+written a paragraph of confident explanation about a company that was not there.
+
+The truncation mechanism itself turned out to be real, and worse than described.
+`defaults.max_bytes` is 900,000, `body` is truncated at it **before** parsing, and one
+maintenance pass shows both halves: a fetch logging exactly `bytes: 900000`, and a
+crt.sh response for one ordinary company already at 522,908. But the failure does not
+leave NULL as I claimed -- `_safe_json` returns None, `growth` returned `(0, 0)`, and
+the Enricher wrote that. **A body we could not read was recorded as "this company has
+zero subdomains."**
+
+That is the three-valued distinction `evidence.reachable`, `SecurityTxt.present` and
+`ThermalWindow.measured` each make, missing from the one field that feeds a size
+judgement -- and missing in the direction that matters, because the larger the estate
+the likelier the truncation. `growth` returns `None` now; the Enricher's `_subdomains`
+already treated None as a failed source, so the column simply stays NULL and nothing
+downstream needed changing. **The answer only had to stop being a number.**
 
 Asking for the distribution before picking a threshold cost ten seconds and saved a
 shipped mechanism that would silently never have fired. Explaining it without reading

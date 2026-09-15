@@ -415,3 +415,28 @@ async def test_stack_risk_repos_actually_restricts_to_organizations():
 
     hits = await GitHubClient(_Egress()).stack_risk_repos()  # type: ignore[arg-type]
     assert [h.title for h in hits] == ["acmecorp/agent"]
+
+
+async def test_an_unreadable_crtsh_answer_is_unknown_not_zero(egress):
+    """`(0, 0)` is a claim about the company. None is a claim about the lookup.
+
+    This returned `(0, 0)` for both, so a body we could not parse was written into
+    `companies.subdomain_count_ct` as "this company has zero subdomains" -- a
+    fact-shaped lie, and the one field that feeds a size judgement.
+
+    Not a rare path either. `defaults.max_bytes` is 900,000 and the body is truncated
+    at it *before* parsing, so any company whose certificate log exceeds the cap yields
+    invalid JSON -- and the larger the estate, the likelier that is. The signal was
+    therefore least trustworthy exactly where it mattered most.
+    """
+    truncated = '[{"name_value": "a.acme.io", "entry_timest'
+
+    client = CrtShClient(egress(responder(None, text=truncated)))
+
+    assert await client.growth("acme.io") is None
+
+
+async def test_a_genuinely_empty_crtsh_answer_is_still_zero(egress):
+    """The other half. A domain whose log really holds no subdomains is a fact, and
+    collapsing it into "unknown" would lose a true negative to fix a false one."""
+    assert await CrtShClient(egress(responder([]))).growth("acme.io") == (0, 0)
