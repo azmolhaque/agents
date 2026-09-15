@@ -404,3 +404,76 @@ def test_an_unmeasured_run_does_not_claim_the_governor_never_engaged(store: Any)
 
     assert "not measured" in body
     assert "governor never engaged" not in body
+
+
+def _dead(store: Any, last_error: str, *, kind: str = "extract.candidate") -> None:
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO dead_letter (job_id, kind, payload, attempts, last_error, died_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (uuid.uuid4().hex, kind, "{}", 3, last_error, to_iso(utcnow())),
+        )
+
+
+def test_an_unreachable_prospect_is_reported_but_not_graded(store: Any) -> None:
+    """The job ran, reached the network, and the host did not answer after every
+    retry. That is not work the system lost.
+
+    Measured over the project's whole life: 12 of 26 dead letters were a prospect's own
+    host timing out or refusing a connection -- ~0.4/day, evenly spread. Grading them
+    fails the run on a background rate nobody can fix, which is the defect that retired
+    the `get_throttled == 0x0` criterion. A gate that fails routinely for an unfixable
+    reason is one you learn to ignore.
+    """
+    _healthy_run(store)
+    _dispatch(store, 60, ago_hours=6)
+    _dead(store, "_StageFailed: ReadTimeout: ")
+    _dead(store, "_StageFailed: ConnectError: All connection attempts failed")
+
+    report = assess_run(store, hours=72)
+
+    assert report.dead_lettered == 2, "still counted"
+    assert report.dead_unreachable == 2
+    assert report.jobs_lost == 0
+    assert report.criteria["no_job_lost"] is True
+
+
+def test_an_unrecognised_failure_is_still_lost(store: Any) -> None:
+    """The load-bearing half. This is an allow-list of remote-origin markers and never
+    a deny-list, because the one thing that must not happen is a new failure mode
+    quietly acquiring an excuse."""
+    _healthy_run(store)
+    _dispatch(store, 60, ago_hours=6)
+    _dead(store, "_StageFailed: something nobody has seen before")
+
+    report = assess_run(store, hours=72)
+
+    assert report.jobs_lost == 1
+    assert report.criteria["no_job_lost"] is False
+
+
+def test_a_stage_failure_beside_an_unreachable_host_still_fails_the_run(store: Any) -> None:
+    """The exemption narrows what is graded; it must not hide what sits next to it."""
+    _healthy_run(store)
+    _dispatch(store, 60, ago_hours=6)
+    _dead(store, "_StageFailed: ReadTimeout: ")
+    _dead(store, "lease expired past max_attempts", kind="score.company")
+
+    report = assess_run(store, hours=72)
+
+    assert (report.dead_lettered, report.dead_unreachable, report.jobs_lost) == (2, 1, 1)
+    assert report.criteria["no_job_lost"] is False
+
+
+def test_the_excused_count_is_printed(store: Any) -> None:
+    """An exemption nobody can see is a weakened gate, and a rising unreachable count
+    is how a broken uplink on this end would present."""
+    from cindraleads.acceptance import render_markdown
+
+    _healthy_run(store)
+    _dispatch(store, 60, ago_hours=6)
+    _dead(store, "_StageFailed: ReadTimeout: ")
+
+    text = render_markdown(assess_run(store, hours=72))
+
+    assert "unreachable host(s), not graded" in text

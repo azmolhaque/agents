@@ -90,6 +90,8 @@ class AcceptanceReport:
     leads_per_day: float = 0.0
     # job integrity
     dead_lettered: int = 0
+    # Of those, the ones where a prospect's host did not answer. Reported, not graded.
+    dead_unreachable: int = 0
     # liveness
     worker_gaps: list[tuple[datetime, float]] = field(default_factory=list)
     silent_units: list[str] = field(default_factory=list)
@@ -107,11 +109,22 @@ class AcceptanceReport:
         """
         return {
             "throughput": self.leads_per_day >= LEADS_PER_DAY_TARGET,
-            "no_job_lost": self.dead_lettered == 0,
+            "no_job_lost": self.jobs_lost == 0,
             "no_silent_unit": not self.silent_units and not self.worker_gaps,
             "one_build_throughout": self.builds_seen <= 1 if self.builds_seen else None,
             "governor_recovered": self.thermal.recovered if self.thermal.measured else None,
         }
+
+    @property
+    def jobs_lost(self) -> int:
+        """Dead letters the software is answerable for.
+
+        An unreachable prospect is not lost work -- the job ran, reached the network,
+        and the host did not answer after every retry. What this counts is everything
+        else: a stage that raised, a lease that expired, a job orphaned without ever
+        failing. Those are ours.
+        """
+        return max(0, self.dead_lettered - self.dead_unreachable)
 
     @property
     def passed(self) -> bool:
@@ -166,12 +179,43 @@ def _throughput(report: AcceptanceReport, store: Store, stamp: str, hours: float
     report.leads_per_day = report.dispatched_ab / (hours / 24) if hours else 0.0
 
 
+# Dead letters where the remote simply did not answer, as opposed to ones the software
+# could have prevented. `no_job_lost` grades the second and **reports** the first.
+#
+# Measured over the project's whole life on 2026-09-15: 12 of 26 dead letters were a
+# prospect's own host timing out, refusing a connection or serving a 502 -- ~0.4/day,
+# spread evenly over 31 days with no cluster. Grading those fails the run on a
+# background rate nobody can fix, which is precisely the defect that retired the
+# `get_throttled == 0x0` criterion: it graded something outside the software. A gate
+# that fails routinely for an unfixable reason is one you learn to ignore.
+#
+# Deliberately an allow-list of remote-origin markers, never a deny-list. An error this
+# does not recognise counts as lost, because the one thing that must not happen is a
+# new failure mode quietly acquiring an excuse. The excused count is printed next to
+# the graded one for the same reason -- an exemption nobody can see is a weakened gate.
+UNREACHABLE_MARKERS = (
+    "ReadTimeout",
+    "ConnectTimeout",
+    "ConnectError",
+    "PoolTimeout",
+    "ReadError",
+    "RemoteProtocolError",
+    "HTTP 502",
+    "HTTP 503",
+    "HTTP 504",
+)
+
+
+def _is_unreachable(last_error: str) -> bool:
+    return any(marker in last_error for marker in UNREACHABLE_MARKERS)
+
+
 def _job_integrity(report: AcceptanceReport, store: Store, stamp: str) -> None:
-    report.dead_lettered = int(
-        store.conn.execute(
-            "SELECT COUNT(*) AS n FROM dead_letter WHERE died_at >= ?", (stamp,)
-        ).fetchone()["n"]
-    )
+    rows = store.conn.execute(
+        "SELECT last_error FROM dead_letter WHERE died_at >= ?", (stamp,)
+    ).fetchall()
+    report.dead_lettered = len(rows)
+    report.dead_unreachable = sum(1 for r in rows if _is_unreachable(str(r["last_error"] or "")))
 
 
 def _liveness(
@@ -300,7 +344,10 @@ def render_markdown(report: AcceptanceReport) -> str:
     detail = {
         "throughput": f"{report.leads_per_day:.1f} Tier A+B/day "
         f"(target {LEADS_PER_DAY_TARGET}); {report.dispatched_total} dispatched in total",
-        "no_job_lost": f"{report.dead_lettered} dead-lettered",
+        # Both numbers, always. An exemption nobody can see is a weakened gate, and a
+        # rising unreachable count is how a broken uplink on this end would present.
+        "no_job_lost": f"{report.jobs_lost} lost of {report.dead_lettered} dead-lettered "
+        f"({report.dead_unreachable} unreachable host(s), not graded)",
         "no_silent_unit": (
             f"{len(report.worker_gaps)} worker gap(s)"
             + (f"; silent: {', '.join(report.silent_units)}" if report.silent_units else "")

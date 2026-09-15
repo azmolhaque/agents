@@ -970,6 +970,50 @@ corpus to store a number nothing reads.
 Found at 5 leads, all already REJECT, so nothing had leaked -- **but the mechanism never
 looked at the tier.** A defect that is currently harmless by luck is still the defect.
 
+**`dead_letter` is an archive and `cindra status` reports it as a present tense.** Dated
+2026-09-15, all 26 rows: **11 on one day (2026-08-21)** from the thermal pause charged as
+an extraction failure, **3 on 2026-08-19** from pre-`extend_lease` lease expiry, and
+**12 network failures spread evenly over 31 days** at ~0.4/day. Every bug-caused dead
+letter in this system is closed history -- 25 days clean on the first, 27 on the second.
+The count only climbs, so it reads as a growing pile of current faults. `/healthz`
+already grades `dead_letter_recent`; nothing else does.
+
+**`recent errors` listed jobs that had already recovered.** It selects on
+`last_error IS NOT NULL`, and `last_error` survives a successful retry, so the list means
+"errored at some point" under a heading that claims "is failing". Two `enrich.company`
+rows sat at the top of it reading as a live fault -- both `done`, one of them three weeks
+old -- and a full round of diagnosis went into asking whether a bound shipped that
+morning was holding. The answer was in the two columns the line did not print. It now
+prints the date and the state. Still not filtered to failures: a job that failed twice
+and then succeeded is exactly the flakiness worth seeing, it just must not look identical
+to one that is still broken.
+
+**A certificate that does not verify is an answer, not a fault.** The Extractor already
+treats a 4xx that way -- "it will say the same thing on every retry, so failing the job
+would spend three attempts and a dead-letter row establishing that" -- and an expired or
+self-signed certificate is the same kind of permanent. It was taking the timeout branch.
+Detected on the exception *chain* rather than the message, because httpx raises
+`ConnectError` from the underlying `ssl.SSLError` and by the time it reaches a log the
+type is gone.
+
+**`no_job_lost` graded a background rate nobody can fix.** An unreachable prospect is not
+lost work: the job ran, reached the network, and the host did not answer after every
+retry. At ~0.4/day those alone fail a 72 h window, which is exactly the defect that
+retired the `get_throttled == 0x0` criterion -- grading something outside the software.
+The gate now grades `jobs_lost` and reports the unreachable count beside it.
+
+Two rules hold it honest, and they are the whole reason this is not just a weakened gate:
+**the exemption is an allow-list of remote-origin markers, never a deny-list** -- an
+unrecognised error still counts as lost, so a new failure mode cannot quietly acquire an
+excuse -- and **both numbers are always printed**, because an exemption nobody can see is
+a weakened gate, and a rising unreachable count is how a broken uplink *on this end*
+would present.
+
+The tempting version was to convert a final-attempt timeout into `skipped` so no
+dead-letter row is written at all. **Rejected:** if the timeouts are ever ours, that rule
+discards hundreds of real candidates into a `skipped` bucket nobody watches, and the
+census looks healthier the worse things get. Keep the row, narrow the claim.
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a
