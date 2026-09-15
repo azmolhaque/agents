@@ -1,0 +1,75 @@
+# What Cindrasec publishes about itself, copied from its own site.
+#
+# **This file is evidence, not intent.** It is not the place to write what we wish
+# were true, or what was said in a chat, or what the pricing will be next month. It
+# records what cindrasec.com actually publishes, so that every prospect-facing claim
+# this pipeline makes can be checked against something rather than trusted.
+#
+# It exists because of the worst defect this project has shipped. `scoring.yaml`
+# carried `snapshot_free: {free: true}` -- written from a conversation, never checked
+# -- while the site's own structured data prices the Snapshot at **$250-$600**. Every
+# paid offer's phrase then named that Snapshot as "a free Snapshot first if they would
+# rather start there", so **every Tier A and B card ever dispatched promised a
+# $250-$600 product at no charge, in writing**, to a prospect. That is worse than the
+# `ai_llm_assessment` defect it was written to fix: that one reached the subset of
+# companies with an AI surface, this one reached all of them.
+#
+# The mechanism that makes it stay fixed is `test_the_free_flag_is_backed_by_the_site`:
+# an offer may be marked free in `scoring.yaml` only if this file records a minimum
+# price of zero. It fails closed, so an offer nobody has priced here cannot be given
+# away by an edit in another file.
+#
+# To refresh: re-read the JSON-LD from the live page and update `extracted_at`.
+#   curl -s https://cindrasec.com/ | grep -A40 '"makesOffer"'
+
+source: https://cindrasec.com/
+source_kind: schema.org ProfessionalService, makesOffer (JSON-LD)
+extracted_at: 2026-09-15
+price_range: $150-$8000
+
+# Keyed by the `Offer` literal in `models.py`. Every slug must appear here and in
+# `scoring.yaml`, in both directions -- a test asserts it, because an offer missing
+# from this file is one with no published price behind it.
+#
+# NOTE on the `snapshot_free` key: the slug is historical and the product is **not**
+# free. It is kept because `leads.recommended_offer` stores it on every scored row and
+# renaming it is a migration rather than an edit. The name is a trap for the next
+# reader, which is exactly why the price sits directly under it.
+offers:
+  snapshot_free:
+    site_name: Snapshot - one-time attack-surface scan
+    currency: USD
+    min_price: 250
+    max_price: 600
+  watch:
+    site_name: Watch - continuous monitoring subscription
+    currency: USD
+    min_price: 150
+    max_price: 500
+    unit: MONTH
+  ai_llm_assessment:
+    site_name: AI/LLM Security Assessment
+    currency: USD
+    min_price: 2000
+    max_price: 8000
+  gig:
+    site_name: Productized Gig - fixed-scope quick check
+    currency: USD
+    min_price: 150
+    max_price: 500
+
+# Who we are, in the words the site uses. The outreach prompt describes us to a
+# prospect and had none of this -- it said "a B2B security studio" and nothing else.
+identity:
+  name: Cindrasec
+  founder: Md. Azmol Haque Rony
+  contact: contact@cindrasec.com
+  founded: 2025-07
+  location: Dhaka, Bangladesh
+  area_served: [Bangladesh, Worldwide]
+  languages: [en, bn]
+  slogan: We find the spark before it becomes a fire.
+  description: >-
+    Cindrasec is an automation-first security studio providing attack-surface
+    monitoring and AI/LLM security testing for founders and SMEs in Bangladesh and
+    worldwide.

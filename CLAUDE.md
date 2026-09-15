@@ -1042,6 +1042,44 @@ exactly the outage the criterion exists for, and the goodbye is not a blank cheq
 window was unattended, and a window with three deploys in it was not. That one needs a
 quiet period, not a code change.
 
+**The repair for the free-offer defect was the second half of it, and it was worse.**
+The first fix wrote `snapshot_free: {free: true}` into `scoring.yaml` and had every
+paid phrase name "a free Snapshot first if they would rather start there" -- taken from
+a conversation, checked against nothing. **cindrasec.com prices the Snapshot at
+$250-$600.** So the repair moved the false free offer off one product and onto all four:
+the original reached the subset of companies with an AI surface, this one reached
+**every card the system has ever sent**.
+
+Found 2026-09-15 by reading the site's own `schema.org` `makesOffer` block, which lists
+four offers and no free tier: Snapshot $250-600, Watch $150-500/month, AI/LLM Assessment
+$2000-8000, Gig $150-500, `priceRange` `$150-$8000`.
+
+`test_only_the_snapshot_is_free` asserted `free == {"snapshot_free"}` and passed
+throughout, because it encoded the same belief as the bug -- and it went further,
+*requiring* every paid phrase to contain the words "free" and "snapshot". **A test
+written from the same source as the code tests nothing but the author's memory.**
+
+The third copy was in the fallback: `offer_phrase` returned the literal string "a free
+external attack-surface Snapshot" when a phrase was missing -- the one branch no test
+reaches, because `load` fails closed. Unreachable is not harmless; it is a sentence
+about money one config edit from a prospect's inbox.
+
+`config/company.yaml` is the fix's foundation: a verbatim copy of what the site
+publishes, with its source URL and extraction date. **`free: true` is now impossible to
+assert without a zero minimum price recorded there**, and every slug must appear in both
+files in both directions. A claim about money is checkable or it is not made. It is a
+`.yaml` under `config/` deliberately -- `source_mtime` watches that tree, so a worker
+holding a stale copy is visible as `worker:build`.
+
+**And the corpus cannot be repaired by fixing the config.** 325 sendable leads carry an
+angle written under the old rule, and **nothing will ever re-queue them**: the
+calibration matches, no trigger has moved, and `enqueue_stale_scores` only re-proses a
+lead whose angle is *missing*. A lead with a wrong angle is invisible to every
+reconciler in the system. So the guard lives at the last point before Discord, exactly
+where the trigger-code guard went and for the same reason -- and it reads
+`offer_is_free` from the running config rather than hardcoding "nothing is free", which
+would be one more claim about money written into code.
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a

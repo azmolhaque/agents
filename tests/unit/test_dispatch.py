@@ -153,8 +153,8 @@ def realistic_card() -> CardData:
         ),
         outreach_angle=(
             "You published an AI assistant handling patient data last month. I would "
-            "like to run a free prompt-injection and data-leak review of it under a "
-            "signed RoE — two days, no cost, and you keep the report either way."
+            "like to run a prompt-injection and data-leak review of it under a signed "
+            "RoE — two days, priced before any work starts, and you keep the report."
         ),
         bengali_angle=(
             "আপনারা গত মাসে রোগীর তথ্য নিয়ে কাজ করে এমন একটি এআই অ্যাসিস্ট্যান্ট "
@@ -1194,7 +1194,10 @@ def test_withholding_the_angle_does_not_withhold_the_lead(rig):
 def test_a_clean_angle_is_left_alone(rig):
     build, _posts, store = rig
     build(tier="A")
-    angle = "You announced an AI assistant two weeks ago. I'd like to review it, free."
+    angle = (
+        "You announced an AI assistant two weeks ago. I'd like to run a one-time "
+        "Snapshot of it, from $250, under a signed RoE."
+    )
     with store.tx() as conn:
         conn.execute("UPDATE leads SET outreach_angle = ?", (angle,))
 
@@ -1215,3 +1218,60 @@ def _lead_row(store):  # type: ignore[no-untyped-def]
         webhooks={"hot": "https://x.test"},
     )
     return reader.read_lead("lead1")
+
+
+# ------------------------------------- the last point before a prospect's inbox
+
+
+def test_an_angle_promising_something_free_is_withheld():
+    """325 sendable leads carry an angle written while `snapshot_free: {free: true}`
+    was in the config, and nothing will ever re-queue them: their calibration is
+    current, no trigger has moved, and `enqueue_stale_scores` only re-proses a lead
+    whose angle is *missing*. A lead with a wrong angle is invisible to every
+    reconciler in the system.
+
+    So the repair has to happen here, at the last point before Discord -- exactly as it
+    did for the trigger codes, and for the same reason. The Snapshot is $250-$600.
+    """
+    from cindraleads.agents.dispatcher import _publishable
+
+    offending = (
+        "You announced an agent that calls tools. I'd like to run a free "
+        "attack-surface Snapshot for you, under a signed RoE."
+    )
+
+    assert _publishable(offending, "lead-1", allow_free=False) == ""
+
+
+def test_a_priced_angle_goes_out():
+    from cindraleads.agents.dispatcher import _publishable
+
+    fine = (
+        "You announced an agent that calls tools. I'd like to run a one-time "
+        "attack-surface Snapshot, from $250, under a signed RoE."
+    )
+
+    assert _publishable(fine, "lead-2", allow_free=False) == fine
+
+
+def test_the_guard_matches_free_as_a_word_not_a_prefix():
+    """ "freelance" and "freedom" are ordinary words a real angle may contain. A guard
+    that withheld those would silently empty cards for a whole class of prospect."""
+    from cindraleads.agents.dispatcher import _publishable
+
+    fine = "Your careers page lists a freelance role and your freedom-of-information page."
+
+    assert _publishable(fine, "lead-3", allow_free=False) == fine
+
+
+def test_the_guard_defers_to_the_config_rather_than_hardcoding_the_answer():
+    """If Cindrasec ever does publish a free tier, the guard stops applying the day
+    `company.yaml` records a zero price -- and not a day before. A guard hardcoded to
+    "nothing is free" would be one more claim about money written into code, which is
+    the shape of the defect it exists to catch."""
+    from cindraleads.agents.dispatcher import _any_offer_is_free, _publishable
+
+    text = "I'd like to run a free Snapshot for you."
+
+    assert _publishable(text, "lead-4", allow_free=True) == text
+    assert _any_offer_is_free() is False, "nothing on the site is free today"

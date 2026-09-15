@@ -158,41 +158,50 @@ freshness:
 # them anything. Outside the fingerprint for the same reason `means` is: this
 # changes prose, never a number.
 #
-# `free` is load-bearing and was wrong for the life of the project. Rule 2 of the
-# outreach prompt hardcoded "I'd like to run X for you, free, under a signed RoE",
-# and X is whatever `recommended_offer` returned. For any company with T1_AI_SHIP
-# and an AI surface -- 487 of 1201 live triggers -- that is `ai_llm_assessment`, a
-# BDT 40k-1.5L / $2k-8k engagement. **Every Tier A and B card in the corpus offered
-# it at no charge, in writing**, and eight of the first ten on a call list said so.
+# `free` is load-bearing and was wrong twice, the second time worse than the first.
 #
-# Only `snapshot_free` is free, which is what its name says. The founding-cohort
-# Snapshot is the wedge, so a paid offer names it as the small first step rather
-# than dropping the free framing entirely -- the ask stays tiny without giving away
-# the engagement.
+# First: rule 2 of the outreach prompt hardcoded "I'd like to run X for you, free,
+# under a signed RoE" with X substituted from `recommended_offer`, so every company
+# with an AI surface was offered a $2k-8k assessment at no charge.
+#
+# The fix for that wrote `snapshot_free: {free: true}` here and had every paid phrase
+# name "a free Snapshot first" -- from a conversation, checked against nothing. The
+# site prices the Snapshot at **$250-$600**. So the repair moved the false free offer
+# off one product and onto all four, and reached **every** card rather than the subset
+# with an AI surface. Found 2026-09-15 by reading cindrasec.com's own structured data,
+# which is now committed to `config/company.yaml`.
+#
+# **Nothing here is free.** `free: true` is now impossible to assert without a zero
+# minimum price in `company.yaml` -- `test_the_free_flag_is_backed_by_the_site` fails
+# closed on it. The wedge survives as a real number instead: a paid offer names the
+# cheapest honest first step, so the ask stays small without giving anything away.
+#
+# Prices are repeated here rather than interpolated, because this string is read by a
+# 4B model and a template it has to resolve is a template it can garble. The test ties
+# them to `company.yaml`, so a stale number is a red build and not a wrong card.
 # ---------------------------------------------------------------------------
 
 offers:
   snapshot_free:
-    free: true
+    free: false
     means: >-
-      a free external attack-surface and exposed-secrets Snapshot, with a verified
-      report and a walkthrough call
+      a one-time external attack-surface and exposed-secrets Snapshot, from $250,
+      with a verified report and a walkthrough call
   watch:
     free: false
     means: >-
-      continuous monitoring of that surface with a monthly diff report, and a free
-      Snapshot first if they would rather start there
+      continuous monitoring of that surface with a monthly diff report, from $150 a
+      month
   ai_llm_assessment:
     free: false
     means: >-
       an AI/LLM security assessment covering prompt injection, data leakage, agent
-      tool abuse and the MCP tool surface, and a free attack-surface Snapshot first
-      if they would rather start small
+      tool abuse and the MCP tool surface, and a one-time Snapshot from $250 first if
+      they would rather start small
   gig:
     free: false
     means: >-
-      one tightly scoped check at a fixed price, or a free attack-surface Snapshot
-      if they would rather start there
+      one tightly scoped check at a fixed price, from $150
 
 # ---------------------------------------------------------------------------
 # What an `ai_surface` value is, in words. Prose only, outside the fingerprint.

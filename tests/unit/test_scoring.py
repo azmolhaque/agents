@@ -724,35 +724,79 @@ def test_a_stated_band_beats_an_inferred_one(cfg: ScoringConfig):
     assert (row["employee_band"] or band_from_open_roles(row["open_roles"], cfg)) == "11-50"
 
 
-def test_only_the_snapshot_is_free(cfg: ScoringConfig):
-    """The most expensive copy defect this project has produced.
+def test_the_free_flag_is_backed_by_the_site(cfg: ScoringConfig):
+    """The most expensive copy defect this project has produced, and its repair was
+    the second half of it.
 
-    Rule 2 of the outreach prompt read: *Write "I'd like to run X for you, free, under a
-    signed RoE"*, and X was `recommended_offer`'s slug substituted blindly. For any
-    company with T1_AI_SHIP and an AI surface -- 487 of 1201 live triggers -- that is
-    `ai_llm_assessment`, a BDT 40k-1.5L / $2k-8k engagement. Every Tier A and B card in
-    the corpus offered it at no charge, in writing, and eight of the first ten on a call
-    list said so in the text a human was about to paste into an email.
+    Rule 2 of the outreach prompt read *Write "I'd like to run X for you, free, under a
+    signed RoE"* with X substituted blindly from `recommended_offer`, so every company
+    with an AI surface was offered a $2k-8k assessment at no charge.
 
-    Only the founding-cohort Snapshot is free, which is exactly what its name says.
+    The fix wrote `snapshot_free: {free: true}` into `scoring.yaml` and had every paid
+    phrase name "a free Snapshot first" -- from a conversation, checked against nothing.
+    **cindrasec.com prices the Snapshot at $250-$600.** So the repair moved the false
+    free offer off one product and onto all four, and reached every card rather than the
+    subset with an AI surface. The test that was here asserted `free == {"snapshot_free"}`
+    and passed throughout, because it encoded the same belief as the bug.
+
+    A claim about money is now checkable or it is not made: `free` may be true only
+    where `config/company.yaml` -- a verbatim copy of the site's own structured data --
+    records a zero minimum price. Fails closed, so an offer nobody has priced cannot be
+    given away by an edit in another file.
     """
+    from typing import get_args
+
+    from cindraleads.config import load_yaml, settings
+    from cindraleads.models import Offer
+
+    company = load_yaml("company", base=settings().resolve(settings().config_dir))
+    published = company.get("offers") or {}
+
+    assert set(published) == set(get_args(Offer)), (
+        "every offer needs a published price behind it, in both directions"
+    )
+
+    for slug in get_args(Offer):
+        min_price = float(published[slug]["min_price"])
+        assert cfg.offer_is_free(slug) is (min_price == 0), (
+            f"{slug}: scoring.yaml says free={cfg.offer_is_free(slug)} and the site "
+            f"publishes a minimum of {min_price} {published[slug]['currency']}"
+        )
+
+
+def test_no_offer_phrase_promises_something_for_nothing(cfg: ScoringConfig):
+    """The phrase is what actually reaches the prospect, and the flag is not what the
+    model reads -- the `means` string is. Every one of them said "a free Snapshot"
+    while the flag sat on a different key entirely."""
     from typing import get_args
 
     from cindraleads.models import Offer
 
-    free = {slug for slug in get_args(Offer) if cfg.offer_is_free(slug)}
-    assert free == {"snapshot_free"}, "a paid engagement must never be marked free"
-
-    # The paid phrases still carry the wedge -- the ask stays small without giving the
-    # engagement away -- so each one has to mention the Snapshot as the free step.
     for slug in get_args(Offer):
         phrase = cfg.offer_phrase(slug)
         assert phrase and slug not in phrase, f"{slug} reaches the prompt as a slug"
         if not cfg.offer_is_free(slug):
-            assert "free" in phrase.lower() and "snapshot" in phrase.lower(), (
-                f"{slug}: a paid offer should still name the free Snapshot as the small "
-                f"first step, or the outreach ask stops being tiny"
+            assert "free" not in phrase.lower(), (
+                f"{slug}: a paid offer's phrase must not contain the word free -- got {phrase!r}"
             )
+            # The wedge survives as a real number instead of a false one: a paid offer
+            # still names the cheapest honest first step, so the ask stays small.
+            assert "$" in phrase, (
+                f"{slug}: a paid offer must carry its price, or the card asks a "
+                f"prospect to agree to an unnamed amount"
+            )
+
+
+def test_the_default_offer_phrase_is_not_free(tmp_path: Path):
+    """`offer_phrase` fell back to the literal string "a free external attack-surface
+    Snapshot" -- the same false claim a third time, in the one branch no test reaches
+    because `load` fails closed on a missing phrase. Unreachable is not harmless: it is
+    a sentence about money one config edit from a prospect's inbox."""
+    from dataclasses import replace
+
+    empty = replace(ScoringConfig.load(), offers={})
+
+    assert "free" not in empty.offer_phrase("snapshot_free").lower()
 
 
 def test_an_offer_with_no_phrase_fails_closed(tmp_path: Path):
@@ -789,7 +833,7 @@ def test_the_prompt_no_longer_hardcodes_free_around_the_offer():
     # What must be gone is the *instruction*, not every mention of it.
     assert "Write \"I'd like to run X for you, free" not in prompt
     assert "under a\n   signed RoE" in prompt
-    assert 'never add the word "free"' in prompt
+    assert 'Never write "free"' in prompt
 
 
 def test_the_prompt_asks_for_nothing_the_scorer_does_not_supply():

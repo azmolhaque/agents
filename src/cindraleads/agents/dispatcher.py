@@ -27,13 +27,14 @@ import re
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, get_args
 
 from cindraleads.config import Settings, load_yaml, settings
 from cindraleads.discord import CardData, DiscordWebhook, digest_row, lead_card, limits
 from cindraleads.errors import ConfigError
 from cindraleads.logging import get_logger
-from cindraleads.models import Job, StageResult, from_iso, to_iso, utcnow
+from cindraleads.models import Job, Offer, StageResult, from_iso, to_iso, utcnow
+from cindraleads.scoring import ScoringConfig
 from cindraleads.store import Store
 
 __all__ = [
@@ -295,8 +296,23 @@ def build_card(lead: dict[str, Any]) -> dict[str, Any]:
     return lead_card(data) if lead["tier"] in ("A", "B") else digest_row(data)
 
 
+def _any_offer_is_free(config: Any = None) -> bool:
+    """Whether the running config publishes anything at no charge.
+
+    Read from config rather than assumed in either direction. A guard hardcoded to
+    "nothing is free" would be one more claim about money written into code, which is
+    the shape of the defect it exists to catch.
+    """
+    try:
+        cfg = config or ScoringConfig.load()
+        return any(cfg.offer_is_free(slug) for slug in get_args(Offer))
+    except (ConfigError, OSError):  # a card must still render if the config is broken
+        return False
+
+
 def _card_data(lead: dict[str, Any]) -> CardData:
     now = utcnow()
+    allow_free = _any_offer_is_free()
     triggers: list[tuple[str, float, str]] = []
     for trigger in lead["triggers"]:
         age = (now - from_iso(str(trigger["observed_at"]))).days
@@ -324,8 +340,10 @@ def _card_data(lead: dict[str, Any]) -> CardData:
         # already have one, and nothing will re-queue them -- their calibration is
         # current, so the reconciler sees nothing stale. This is the last point before
         # Discord and the only one that catches prose written under an older rule.
-        outreach_angle=_publishable(str(lead["outreach_angle"] or ""), lead["lead_id"]),
-        bengali_angle=_publishable(lead["bengali_angle"], lead["lead_id"]),
+        outreach_angle=_publishable(
+            str(lead["outreach_angle"] or ""), lead["lead_id"], allow_free=allow_free
+        ),
+        bengali_angle=_publishable(lead["bengali_angle"], lead["lead_id"], allow_free=allow_free),
         surface_notes=tuple(surface),
         compliance_basis=str(compliance.get("basis", "legitimate_interest_b2b")),
         compliance_passed=bool(compliance.get("passed", True)),
@@ -437,14 +455,41 @@ async def send_digest(
 # if the generation-side rule is loosened.
 _INTERNAL_CODE = re.compile(r"\bT\d{1,2}_[A-Z][A-Z_]+\b|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
 
+# Every way an angle can tell a prospect they pay nothing.
+#
+# Withheld here for the same reason the codes are, and the case is stronger: an angle
+# naming our taxonomy is embarrassing, an angle promising a $250-$600 product at no
+# charge is a commitment in writing on a card made to be pasted into an email.
+#
+# 325 sendable leads carry an angle written while `snapshot_free: {free: true}` was in
+# the config, and **nothing will ever re-queue them** -- their calibration is current,
+# no trigger has moved, and `enqueue_stale_scores` only re-proses a lead whose angle is
+# *missing*. A lead with a wrong angle is invisible to every reconciler in the system.
+# So the repair has to happen at the last point before Discord, exactly as it did for
+# the trigger codes.
+#
+# "free" is matched as a whole word, so "freedom" and "freelance" pass. That is the
+# entire vocabulary a model reaches for when it has been told something costs nothing.
+_FREE_CLAIM = re.compile(
+    r"\bfree\b|\bno charge\b|\bat no cost\b|\bfree of charge\b|\bcomplimentary\b"
+    r"|\bgratis\b|\bon us\b|\bzero cost\b",
+    re.IGNORECASE,
+)
 
-def _publishable(text: str | None, lead_id: Any = "") -> Any:
-    """Prose, or nothing, if it names something only we should see.
+
+def _publishable(text: str | None, lead_id: Any = "", *, allow_free: bool = False) -> Any:
+    """Prose, or nothing, if it names something only we should see or promises a price
+    we do not offer.
 
     An empty angle on a card is a small loss -- the triggers, evidence and score are
     all still there and a human can write the sentence themselves. An angle reading
     "You published T1_AI_SHIP on your public page" is worse than empty: the card is
-    made to be pasted into an email, and that one cannot be.
+    made to be pasted into an email, and that one cannot be. An angle offering a paid
+    engagement for nothing is worse again, because a human may well send it.
+
+    `allow_free` is driven by the running config rather than assumed, so if Cindrasec
+    ever does publish a free tier the guard stops applying the day `company.yaml`
+    records a zero price -- and not a day before.
     """
     if not text:
         return text
@@ -453,6 +498,13 @@ def _publishable(text: str | None, lead_id: Any = "") -> Any:
             "card_prose_withheld",
             lead_id=str(lead_id),
             codes=sorted(set(_INTERNAL_CODE.findall(str(text)))),
+        )
+        return ""
+    if not allow_free and _FREE_CLAIM.search(str(text)):
+        log.warning(
+            "card_prose_withheld_free_claim",
+            lead_id=str(lead_id),
+            matched=sorted({m.lower() for m in _FREE_CLAIM.findall(str(text))}),
         )
         return ""
     return text

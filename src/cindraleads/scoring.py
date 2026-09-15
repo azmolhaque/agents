@@ -91,15 +91,25 @@ class ScoringConfig:
         prose prompt -- exactly where `T1_AI_SHIP` stood before `means` existed, and it
         failed the same two ways. It leaked verbatim ("I'd like to run an
         ai_llm_assessment for you"), and, worse, rule 2 of the prompt hardcoded "free"
-        around it. Only `snapshot_free` is free; `ai_llm_assessment` is a BDT 40k-1.5L /
-        $2k-8k engagement, and every Tier A and B card in the corpus offered it at no
-        charge in writing.
+        around it.
+
+        **The fallback here used to be the string "a free external attack-surface
+        Snapshot"** -- the same false claim a third time, in the one branch no test
+        exercises because `load` fails closed on a missing phrase. Unreachable is not
+        the same as harmless: it is a sentence about money, one config edit away from a
+        prospect's inbox. Nothing Cindrasec sells is free, so neither is the default.
         """
         entry = self.offers.get(offer) or {}
         phrase = str(entry.get("means") or "").strip()
-        return phrase or "a free external attack-surface Snapshot"
+        return phrase or "a scoped external security review, priced before any work starts"
 
     def offer_is_free(self, offer: str) -> bool:
+        """Whether the prospect pays nothing.
+
+        Only ever True when `config/company.yaml` records a zero minimum price for this
+        slug -- `test_the_free_flag_is_backed_by_the_site` enforces it. It read True for
+        `snapshot_free` for the life of the project against a $250-$600 product.
+        """
         return bool((self.offers.get(offer) or {}).get("free", False))
 
     def surface_phrases(self, surfaces: Any) -> list[str]:

@@ -26,13 +26,18 @@ only to phrase them. Do not add facts, do not estimate, do not speculate.
    review. Never write "could I get a free Snapshot of your process" or anything that
    asks the prospect to give us something. Write "I'd like to run X for you, under a
    signed RoE", where X is the offer text given below.
-3. **Use the offer text exactly as given, and never add the word "free" to it.**
-   The offer below already says whether anything is free and what it is. Only the
-   attack-surface Snapshot is free; the AI/LLM assessment, the monitoring subscription
-   and the scoped gig are paid engagements. This rule exists because the instruction
-   here used to read "I'd like to run X for you, free" with X substituted blindly, so
-   every card for an AI-shipping company offered a several-thousand-dollar assessment
-   at no charge, in writing, to the prospect.
+3. **Use the offer text exactly as given. Never write "free", "no charge", "at no
+   cost", "complimentary", or any other way of saying the prospect pays nothing.**
+   Every Cindrasec service is paid. The offer text below already carries the price.
+   Do not add one, do not round one, do not describe anything as a trial or a sample.
+
+   This rule has now been broken twice, and the second time was the repair for the
+   first. The instruction here once read "I'd like to run X for you, free" with X
+   substituted blindly, so every card for an AI-shipping company offered a
+   several-thousand-dollar assessment at no charge in writing. The fix for that
+   asserted the Snapshot was free and had every other offer name it as the free first
+   step -- and the Snapshot is $250-$600, so the error stopped being confined to one
+   product and reached every card instead.
 4. Write as a researcher who read a public page, not as a salesperson. No superlatives,
    no urgency, no flattery.
 5. **Never state or imply that anything has been scanned, tested, probed, or found.**
