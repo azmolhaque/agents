@@ -192,6 +192,31 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         "alternativeto.net",
         "slashdot.org",
         "lobste.rs",
+        # Preprint servers and academic repositories. `arxiv.org` reached **Tier A at
+        # 74**, the highest-scoring lead in the corpus, because `hn_ai_agent` surfaced a
+        # paper and the Extractor read the host it was posted on. It is the
+        # `terminaltrove.com` shape rather than the TechCrunch one -- not a publisher
+        # writing *about* companies, a repository hosting other people's work -- and it
+        # scores well for the same reason a publisher does: a real organisation, a live
+        # site, a working mailbox, and an "AI feature" on every page.
+        #
+        # A non-profit run by a university library is also not in any ICP this project
+        # has, which is the part no trigger could ever have caught.
+        "arxiv.org",
+        "biorxiv.org",
+        "medrxiv.org",
+        "ssrn.com",
+        "papers.ssrn.com",
+        "researchgate.net",
+        "semanticscholar.org",
+        "acm.org",
+        "ieee.org",
+        "springer.com",
+        "sciencedirect.com",
+        "nature.com",
+        "huggingface.co",
+        "paperswithcode.com",
+        "zenodo.org",
         "twitter.com",
         "x.com",
         "linkedin.com",

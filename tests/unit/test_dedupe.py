@@ -235,3 +235,27 @@ def test_the_company_named_in_an_article_still_resolves_from_its_own_site():
     from cindraleads.dedupe import canonical_domain
 
     assert canonical_domain("https://www.plaud.ai/products/notepin") == "plaud.ai"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://arxiv.org/abs/2509.01234",
+        "https://huggingface.co/someorg/somemodel",
+        "https://www.researchgate.net/publication/123",
+        "https://papers.ssrn.com/sol3/papers.cfm?abstract_id=1",
+    ],
+)
+def test_an_academic_repository_is_not_a_company(value):
+    """`arxiv.org` reached Tier A at 74 -- the highest-scoring lead in the corpus.
+
+    `hn_ai_agent` surfaced a paper and the Extractor read the host it was posted on.
+    The `terminaltrove.com` shape rather than the TechCrunch one: not a publisher
+    writing *about* companies but a repository hosting other people's work, and it
+    scores well for the same reason a publisher does -- a real organisation, a live
+    site, a working mailbox, and an "AI feature" on every page.
+
+    A non-profit run by a university library is also in no ICP this project has, which
+    is the part no trigger could have caught.
+    """
+    assert canonical_domain(value) is None, f"{value} would become a company row"

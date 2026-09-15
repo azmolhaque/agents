@@ -1171,6 +1171,43 @@ queued, not what remains.
 Not automatic, and that is the design. **"Some angles are worse than others" is a
 judgement about copy that no predicate can make.**
 
+**A repository is the `terminaltrove.com` shape, and `arxiv.org` reached Tier A at 74**
+-- the highest-scoring lead in the corpus. `hn_ai_agent` surfaced a paper and the
+Extractor read the host it was posted on. Not a publisher writing *about* companies but
+a repository hosting other people's work, and it scores well for the same reason a
+publisher does: a real organisation, a live site, a working mailbox, and an "AI feature"
+on every page. A non-profit run by a university library is also in no ICP this project
+has -- the part no trigger could ever have caught. Preprint servers, journals,
+`huggingface.co` and `researchgate.net` are in `PLATFORM_HOSTS` now.
+
+**CT certificate count looked like a free enterprise veto and the distribution killed
+it.** The proposal was to mirror `inferred_band_from_open_roles` with a large-band
+inference from `subdomain_count_ct` -- a public record we already collect, strong at the
+extremes, and safe under the same asymmetry (only large bands inferable, a low count
+infers nothing). Measured 2026-09-15 across 926 companies:
+
+| certs | companies | sendable |
+| --- | --- | --- |
+| unknown | 182 | 16 |
+| 0-24 | 653 | 60 |
+| 25-99 | 64 | 16 |
+| 100-299 | 19 | 10 |
+| 300-999 | 6 | 0 |
+| 1000-4999 | 2 | 1 |
+| **5000+** | **0** | **0** |
+
+**The 5000+ band is empty, and `apple.com` -- a Tier A/B lead -- is not in it.** That is
+not evidence the corpus holds no enterprises; it is evidence the signal is *missing
+precisely where it would fire*. crt.sh for a company that size returns a response past
+`defaults.max_bytes`, the truncated body fails to parse, `_subdomains` returns None, and
+`subdomain_count_ct` stays NULL. **The proposed veto would have been anti-correlated
+with what it exists to catch.**
+
+Worth keeping as the general lesson: an absent bucket in a distribution is a claim about
+the measurement first and the world second -- the same tell as `832 of 833` and
+`single_source` at 96%. Asking for the distribution before picking a threshold cost ten
+seconds and would have cost a shipped mechanism that silently never fired.
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a
