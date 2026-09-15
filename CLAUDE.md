@@ -1148,6 +1148,29 @@ build honest, redacted case studies". It needed no new `Offer` literal; it is
 `snapshot_free`, which is what the slug said. Flagging it as unresolved was right;
 concluding from `makesOffer` that nothing was free was not.
 
+**A lead whose angle is present but *wrong* is invisible to every query in the system.**
+The calibration matches, no trigger has moved, and the angle is not blank -- so
+`enqueue_stale_scores` is right to report nothing to do, because it only ever re-proses
+a lead that has no angle at all. That predicate is correct for automatic reconciliation:
+re-decoding an angle that is already fine costs ~18 s each, and a rule that fired on
+every wording change would spend the whole queue on cosmetics.
+
+It became a real backlog the day the offer wording changed twice. The corpus now holds
+angles written under **three** regimes -- the original free-Snapshot wording, the
+paid-only wording that was wrong, and the current one. The middle batch is the awkward
+one: it is not a *lie*, so no dispatch guard will ever withhold it; it simply
+undersells by omitting a free offer. Nothing asks.
+
+`cindra reconcile --reprose` is the second human override, for the case `--force` does
+not reach -- `--force` bypasses the dedupe key, and the problem here is the *predicate*,
+not the key. Bounded at `REPROSE_LIMIT` per pass for the same reason
+`DEFAULT_RESTALE_LIMIT` is: a whole corpus is hours of decode, and a backfill nobody is
+waiting on must never be what a new lead waits behind. The number it prints is what was
+queued, not what remains.
+
+Not automatic, and that is the design. **"Some angles are worse than others" is a
+judgement about copy that no predicate can make.**
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a

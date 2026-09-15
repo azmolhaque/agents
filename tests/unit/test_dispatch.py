@@ -1281,3 +1281,111 @@ def test_the_guard_asks_about_this_leads_own_offer():
     assert _any_offer_is_free(offer="ai_llm_assessment") is False
     assert _publishable(text, "lead-4", allow_free=True) == text
     assert _publishable(text, "lead-5", allow_free=False) == ""
+
+
+# ------------------------------------- an angle that is present but wrong
+
+
+def _lead_with_angle(store, *, angle: str, prompt_version: str):  # type: ignore[no-untyped-def]
+    """A scored lead carrying an angle, stamped by whichever prose build wrote it."""
+    from cindraleads.agents.scorer import calibration_version, lead_id_for
+    from cindraleads.compliance import ComplianceGate
+    from cindraleads.models import to_iso, utcnow
+    from cindraleads.scoring import ScoringConfig
+
+    now = to_iso(utcnow())
+    domain = "acme.io"
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO companies (canonical_domain, display_name, "
+            "first_seen_at, last_updated_at) VALUES (?,?,?,?)",
+            (domain, "Acme", now, now),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO triggers (trigger_id, canonical_domain, code, "
+            "confidence, observed_at, decays_at) VALUES ('t1',?,'T1_AI_SHIP',0.9,?,?)",
+            (domain, now, "2099-01-01T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO leads (lead_id, canonical_domain, score, "
+            "score_breakdown, tier, recommended_offer, outreach_angle, scoring_version, "
+            "prompt_version, first_seen_at, last_updated_at, pipeline_version) "
+            "VALUES (?,?,66,'{}','B','snapshot_free',?,?,?,?,?,'v1')",
+            (
+                lead_id_for(domain),
+                domain,
+                angle,
+                calibration_version(ScoringConfig.load(), ComplianceGate.from_config()),
+                prompt_version,
+                now,
+                now,
+            ),
+        )
+
+
+def test_a_lead_with_a_wrong_angle_is_invisible_without_reprose(store):
+    """The gap `--reprose` exists for, stated as the thing that cannot be found.
+
+    The calibration matches, no trigger has moved, and the angle is not blank -- so
+    `enqueue_stale_scores` is right to report nothing to do. Every predicate in the
+    system agrees this lead is current, while it carries copy written under an offer
+    regime that no longer exists.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _lead_with_angle(store, angle="I'd like to run a Snapshot, from $250.", prompt_version="older")
+
+    assert enqueue_stale_scores(store, JobQueue(store)) == 0
+
+
+def test_reprose_reaches_it(store):
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _lead_with_angle(store, angle="I'd like to run a Snapshot, from $250.", prompt_version="older")
+
+    assert enqueue_stale_scores(store, JobQueue(store), reprose=True) == 1
+
+
+def test_reprose_leaves_an_angle_from_the_current_build_alone(store):
+    """Bounded by the prose stamp, not by "re-do everything". Re-decoding an angle the
+    running build already wrote is ~18 s spent to produce the same sentence."""
+    from cindraleads.agents.scorer import enqueue_stale_scores, prose_version
+    from cindraleads.queue import JobQueue
+
+    _lead_with_angle(store, angle="A current angle.", prompt_version=prose_version())
+
+    assert enqueue_stale_scores(store, JobQueue(store), reprose=True) == 0
+
+
+def test_reprose_honours_its_limit(store):
+    """A whole corpus is hours of decode. The flag exists to make progress, not to put
+    a freshly harvested lead behind 800 cosmetic rewrites."""
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.models import to_iso, utcnow
+    from cindraleads.queue import JobQueue
+
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        for i in range(4):
+            domain = f"acme{i}.io"
+            conn.execute(
+                "INSERT OR REPLACE INTO companies (canonical_domain, display_name, "
+                "first_seen_at, last_updated_at) VALUES (?,?,?,?)",
+                (domain, f"Acme {i}", now, now),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO triggers (trigger_id, canonical_domain, code, "
+                "confidence, observed_at, decays_at) VALUES (?,?,'T1_AI_SHIP',0.9,?,?)",
+                (f"t{i}", domain, now, "2099-01-01T00:00:00Z"),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO leads (lead_id, canonical_domain, score, "
+                "score_breakdown, tier, recommended_offer, outreach_angle, "
+                "prompt_version, first_seen_at, last_updated_at, pipeline_version) "
+                "VALUES (?,?,66,'{}','B','snapshot_free','an angle','older',?,?,'v1')",
+                (f"lead{i}", domain, now, now),
+            )
+
+    assert enqueue_stale_scores(store, JobQueue(store), reprose=True, limit=2) == 2

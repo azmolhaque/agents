@@ -708,6 +708,7 @@ def enqueue_stale_scores(
     config: ScoringConfig | None = None,
     gate: ComplianceGate | None = None,
     force: bool = False,
+    reprose: bool = False,
 ) -> int:
     """Queue a score job for every company whose lead is behind its triggers.
 
@@ -734,6 +735,20 @@ def enqueue_stale_scores(
     calibration, and those `done` rows now hold the keys for the very work they failed
     to do — so the reconciler skips those companies forever. No query over this data
     can detect it; it needs a human saying "recompute anyway".
+
+    `reprose` drops the "angle-less" half of the prose predicate, and it is the other
+    human override. The default is right for automatic reconciliation -- re-decoding an
+    angle that is already fine costs ~18 s each -- but it makes a lead with a *wrong*
+    angle invisible to every query in the system: the calibration matches, no trigger
+    has moved, and the angle is not blank. Not hypothetical. The corpus holds angles
+    written under three different offer regimes, one of which quoted a price for
+    something that is free.
+
+    Deliberately not automatic. "Some angles are worse than others" is a judgement about
+    copy that no predicate can make, and a rule that re-decoded on every wording change
+    would spend the whole queue on cosmetics. Pass a `limit`: a whole corpus is hours of
+    inference, and a backfill nobody is waiting on must never be what a new lead waits
+    behind.
     """
     fingerprint = calibration_version(
         config or ScoringConfig.load(), gate or ComplianceGate.from_config()
@@ -750,9 +765,16 @@ def enqueue_stale_scores(
         # one whose prose leaks trigger codes -- is re-queued on every reconcile
         # forever. The scorer stamps this column even when the prose call fails, so
         # a lead that stays blank under the new build stops asking after one attempt.
-        "MIN(COALESCE(l.outreach_angle, '') != '' "
-        "    OR COALESCE(l.prompt_version, '') = ?) AS prosed "
-        "FROM companies c "
+        #
+        # `reprose` drops the first half. That is what makes a lead with a *wrong*
+        # angle reachable at all -- see the docstring.
+        + (
+            "MIN(COALESCE(l.prompt_version, '') = ?) AS prosed "
+            if reprose
+            else "MIN(COALESCE(l.outreach_angle, '') != '' "
+            "    OR COALESCE(l.prompt_version, '') = ?) AS prosed "
+        )
+        + "FROM companies c "
         "JOIN triggers t ON t.canonical_domain = c.canonical_domain "
         "LEFT JOIN leads l ON l.canonical_domain = c.canonical_domain "
         "WHERE t.active = 1 AND t.decays_at > ? "

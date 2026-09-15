@@ -761,6 +761,13 @@ def reconcile(
             help="Re-queue enrichment and scoring even where a job already ran. See the docstring."
         ),
     ] = False,
+    reprose: Annotated[
+        bool,
+        typer.Option(
+            help="Also re-write angles that already exist but were written by an older "
+            "prose build. Bounded -- see the docstring."
+        ),
+    ] = False,
 ) -> None:
     """Queue the work the event flow missed. Enqueue only -- drains nothing.
 
@@ -783,6 +790,20 @@ def reconcile(
     The data cannot tell a job that worked from one that did not, so this is the human
     override. It is not the default: rescoring costs ~18 s of Pi inference per company,
     and re-enrichment spends real fetches against the 6-per-domain daily budget.
+
+    `--reprose` is the second human override, for the case `--force` does not reach: a
+    lead whose angle is *present but wrong*. Nothing in the system can find one. The
+    calibration matches, no trigger has moved, and the angle is not blank, so
+    `enqueue_stale_scores` is right to report nothing to do -- it only ever re-proses a
+    lead that has no angle at all.
+
+    That became a real backlog when the offer wording changed twice in a day: the corpus
+    now holds angles written under three regimes, including one that quotes a price for
+    something that is free. None of them is blank, so none of them asks.
+
+    Bounded per pass, because "every lead an older build wrote an angle for" is the whole
+    corpus and ~18 s of decode each. Run it again to continue; the count in the output is
+    what was queued, not what remains.
     """
     cfg = settings()
     cfg.ensure_dirs()
@@ -800,11 +821,21 @@ def reconcile(
             # and no reason to be in a hurry about it.
             superseded = enqueue_stale_extractions(store, runtime.queue, config=cfg)
             fresh = enqueue_unenriched(store, runtime.queue, force=force)
-            stale = enqueue_stale_scores(store, runtime.queue, force=force)
+            # Bounded only when reprosing. The ordinary predicates select a handful;
+            # this one selects every lead an older build wrote an angle for, which at
+            # ~18 s of decode each is hours of queue a fresh lead would wait behind.
+            stale = enqueue_stale_scores(
+                store,
+                runtime.queue,
+                force=force,
+                reprose=reprose,
+                limit=REPROSE_LIMIT if reprose else 0,
+            )
         typer.echo(
             f"queued {stranded} for extraction, {superseded} for re-extraction, "
             f"{fresh} for enrichment, {stale} for (re)scoring"
             + (" (forced past dedupe)" if force else "")
+            + (f" (reprose, max {REPROSE_LIMIT} a pass -- re-run to continue)" if reprose else "")
         )
         record_heartbeat(
             store,
@@ -1415,6 +1446,13 @@ def work(
 # Defined in `config` so a stage can bound itself against the same number rather than
 # against a copy of it. Re-exported here because the worker is where it bites, and
 # because `tests/unit/test_health.py` reads it from this module to check the unit file.
+
+# How many angles `--reprose` re-writes per pass. ~18 s of decode each, so 50 is about
+# fifteen minutes -- long enough to make progress on a corpus of 800, short enough that
+# a lead harvested this morning is not behind all of it. Same reasoning and roughly the
+# same number as `DEFAULT_RESTALE_LIMIT` for re-extraction, and for the same reason: a
+# backfill nobody is waiting on must never be what a new lead waits behind.
+REPROSE_LIMIT = 50
 
 
 def _renewal_interval(lease: int, watchdog: Watchdog) -> float:
