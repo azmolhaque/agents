@@ -397,6 +397,25 @@ def harvest(
     asyncio.run(_run())
 
 
+def error_line(row: Any) -> str:
+    """One row of `cindra status`'s "recent errors".
+
+    `last_error` persists after a retry succeeds, so this list is "jobs that errored at
+    some point", not "jobs that are failing" -- and the heading says the second. Two
+    `enrich.company` rows sat at the top of it reading as a live fault; both had
+    completed on the next attempt, one of them three weeks earlier. A whole round of
+    diagnosis went into asking whether a bound shipped that morning was holding, and
+    the answer was in the two columns this line did not print.
+
+    Not filtered to failures, because a job that failed twice and then succeeded is
+    exactly the flakiness worth seeing. What it must not do is look identical to one
+    that is still broken.
+    """
+    state = "recovered" if str(row["status"]) == "done" else str(row["status"])
+    when = str(row["updated_at"] or "")[:16].replace("T", " ")
+    return f"  [{when} {state}] {row['kind']}: {str(row['last_error'])[:80]}"
+
+
 @app.command()
 def status() -> None:
     """What the pipeline has actually produced.
@@ -481,10 +500,10 @@ def status() -> None:
     if dead or failed:
         typer.echo("\nrecent errors")
         for row in conn.execute(
-            "SELECT kind, last_error FROM jobs WHERE last_error IS NOT NULL "
-            "ORDER BY updated_at DESC LIMIT 5"
+            "SELECT kind, status, updated_at, last_error FROM jobs "
+            "WHERE last_error IS NOT NULL ORDER BY updated_at DESC LIMIT 5"
         ):
-            typer.echo(f"  {row['kind']}: {str(row['last_error'])[:110]}")
+            typer.echo(error_line(row))
 
 
 @app.command()
