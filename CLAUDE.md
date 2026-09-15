@@ -1101,6 +1101,19 @@ reader one click away from it. `test_no_proof_claim_overstates_what_the_writeup_
 bans "critical", "severe", "bounty", "rewarded" and requires the URL to be on our own
 site.
 
+**The strongest sentence in the business reached no card at all.** `cindrasec.com/healthcare/`
+positions the whole vertical on one credential -- *"security assessment for hospitals,
+diagnostic chains, clinics and health-tech, **by a registered nurse turned security
+researcher**"* -- and `icp.yaml` has listed healthtech as primary ICP for the life of the
+project. No competitor can make that claim, and a healthtech prospect was getting a
+generic prompt-injection statistic instead.
+
+`proof` matches on **industry first**, then trigger, then surface, because specificity is
+the whole value: a healthtech company that also shipped an agent should hear about the
+nurse, not about garak trial counts. `industry` is the model's loose summary rather than
+a taxonomy, so the match is substring-against-a-term-list -- usable precisely because
+"clinic", "patient" and "diagnostic" mean one thing.
+
 **Rule 5 was a legal boundary paraphrased from memory.** `legal/Rules-of-Engagement.md`
 v3.0 says it in one line -- *"Nothing is scanned until both parties sign"* -- and the
 prompt carried my wording instead. Same failure mode as the free-offer defect, on a more

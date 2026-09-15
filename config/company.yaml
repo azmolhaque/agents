@@ -107,6 +107,19 @@ offers:
 # aimed at the reason we are writing is not.
 # ---------------------------------------------------------------------------
 proof:
+  # Checked before the others, because for a healthtech prospect this outweighs any
+  # amount of generic security credibility -- and it is not a claim anyone else can
+  # make. `icp.yaml` has listed healthtech as primary ICP for the life of the project
+  # while the single most differentiating sentence in the business reached no card.
+  healthcare:
+    industries: [health, clinic, hospital, medical, patient, diagnostic, pharma, ehr]
+    evidences: []
+    surfaces: []
+    claim: >-
+      the person who runs these assessments is a registered nurse turned security
+      researcher, so a clinical system gets reviewed by someone who has actually
+      worked one
+    url: https://cindrasec.com/healthcare/
   ai_llm:
     evidences: [T1_AI_SHIP, T4_HIRING_AI_ONLY]
     surfaces: [agent_with_tools, mcp_server, chatbot, llm_feature, rag_pipeline]

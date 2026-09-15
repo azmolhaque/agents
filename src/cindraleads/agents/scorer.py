@@ -263,6 +263,18 @@ class Scorer:
         """
         if not self._proof:
             return ""
+
+        # Industry first, and the order is the point. For a healthtech prospect, "run by
+        # a registered nurse turned security researcher" outweighs any amount of generic
+        # security credibility and is not a claim a competitor can make. A trigger match
+        # is the next most specific, then a surface.
+        industry = str(facts.get("industry") or "").lower()
+        if industry:
+            for entry in self._proof.values():
+                terms = [str(t).lower() for t in (entry.get("industries") or ())]
+                if any(term in industry for term in terms):
+                    return str(entry.get("claim") or "").strip()
+
         codes = [str(t["code"]) for t in facts.get("triggers") or ()]
         surfaces = {str(s).lower() for s in facts.get("ai_surface") or ()}
         for code in codes:
