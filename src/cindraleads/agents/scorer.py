@@ -315,7 +315,7 @@ class Scorer:
             # The phrase, never the slug -- and the phrase carries the price. Handing
             # the model `ai_llm_assessment` under a prompt that hardcoded "free" put a
             # $2k-8k engagement on every Tier A and B card at no charge.
-            "offer": self.scoring.offer_phrase(result.offer),
+            "offer": self.scoring.offer_phrase(result.offer, facts["country"]),
             "country": facts["country"] or "",
             # Four facts that were sitting in `_facts` and reaching nothing. The prompt
             # was handed a name, a domain, a description and a list of trigger phrases,

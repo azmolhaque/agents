@@ -244,6 +244,10 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         # half-a-change `suppress_platform_companies` exists to finish.
         "abc.net.au",
         "propublica.org",
+        # Seen in a maintenance pass fetching `lwn.net/Articles/924577/` as company
+        # evidence -- the same shape arriving through the evidence resampler rather
+        # than the near-miss list, which is a route nothing else was watching.
+        "lwn.net",
         "archive.org",
         "twitter.com",
         "x.com",

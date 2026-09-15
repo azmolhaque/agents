@@ -1239,6 +1239,32 @@ headcount**, and a funded startup out-posts a consultancy. Lowering the threshol
 it wrong more often, not less. Left alone, and the asymmetry is why that is survivable:
 a wrong "large" only drops a real prospect into the digest, where it is still read.
 
+**The Bengali site checked out, and checking it was the point.** `/bn/` is a faithful
+translation: **প্রথম Snapshot ফ্রি**, the same founding-cohort pill, the same four
+offers, and the same four prices. Nothing to correct -- which is worth recording,
+because the last two times a second source was consulted it disagreed with the config.
+
+What it *did* show is that every card quoted USD. cindrasec.com prices in both and its
+currency toggle **defaults to Taka for Bangladesh**, which is 40% of the ICP's
+geography. `offer_phrase(offer, country)` returns the Taka phrase for a BD lead --
+BDT 15,000-25,000, 5,000-12,000/mo, 40,000-1,50,000, 7,000-15,000, straight from the
+site.
+
+`means_bd` is optional and falls back to English rather than failing closed, unlike
+`means` itself: a missing translation should cost a card its currency, not take the
+config down -- the same call as `surfaces` against `offers`. `snapshot_free` is the live
+case, free and so carrying no price at all.
+
+The currency follows the **country, not the language**. `bengali_angle` is written for
+BD leads only, but the offer line feeds the English angle too, and a human emailing a
+Dhaka company sends one message rather than two.
+
+**`lwn.net` arrived through the evidence resampler, not the near-miss list.** A
+maintenance pass fetched `lwn.net/Articles/924577/` as company evidence -- the publisher
+shape again, by a route nothing was watching. Worth remembering that
+`suppress_platform_companies` and `cindra explain`'s near-miss table both read the
+*lead* side; a host can sit in `evidence` for a long time before it becomes a company.
+
 **A test dated by a literal fails on a day nobody changed anything.**
 `test_crtsh_growth_separates_recent_from_total` pinned `2026-08-10` as "recent" against
 a 30-day window; it was true the week it was written and quietly stopped being true a

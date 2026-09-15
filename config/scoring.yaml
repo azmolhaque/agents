@@ -197,17 +197,27 @@ offers:
     means: >-
       continuous monitoring of that surface with a monthly diff report at $150-500 a
       month, starting from a free first Snapshot
+    means_bd: >-
+      continuous monitoring of that surface with a monthly diff report at BDT
+      5,000-12,000 a month, starting from a free first Snapshot
   ai_llm_assessment:
     free: false
     means: >-
       a free first attack-surface Snapshot, and an AI/LLM security assessment after it
       covering prompt injection, data leakage, agent tool abuse and the MCP tool
       surface ($2,000-8,000, 2-5 days)
+    means_bd: >-
+      a free first attack-surface Snapshot, and an AI/LLM security assessment after it
+      covering prompt injection, data leakage, agent tool abuse and the MCP tool
+      surface (BDT 40,000-1,50,000, 2-5 days)
   gig:
     free: false
     means: >-
       one tightly scoped check at a fixed price ($150-500, delivered in hours), or a
       free first Snapshot to start
+    means_bd: >-
+      one tightly scoped check at a fixed price (BDT 7,000-15,000, delivered in hours),
+      or a free first Snapshot to start
 
 # ---------------------------------------------------------------------------
 # What an `ai_surface` value is, in words. Prose only, outside the fingerprint.

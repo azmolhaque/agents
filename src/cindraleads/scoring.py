@@ -84,7 +84,7 @@ class ScoringConfig:
     # `ai_surface` value -> the phrase a prospect would recognise. Prose only.
     surfaces: dict[str, str]
 
-    def offer_phrase(self, offer: str) -> str:
+    def offer_phrase(self, offer: str, country: str | None = None) -> str:
         """The offer in words a prospect would recognise, priced honestly.
 
         `recommended_offer` returns a slug and the Scorer handed it straight to the
@@ -94,12 +94,26 @@ class ScoringConfig:
         around it.
 
         **The fallback here used to be the string "a free external attack-surface
-        Snapshot"** -- the same false claim a third time, in the one branch no test
-        exercises because `load` fails closed on a missing phrase. Unreachable is not
-        the same as harmless: it is a sentence about money, one config edit away from a
-        prospect's inbox. Nothing Cindrasec sells is free, so neither is the default.
+        Snapshot"** -- a claim about money in the one branch no test exercises, because
+        `load` fails closed on a missing phrase. Unreachable is not the same as
+        harmless: it is one config edit from a prospect's inbox, and the *first*
+        Snapshot being free is a condition the default cannot know. So the default
+        promises nothing and names a price instead.
+
+        `country` selects the currency. cindrasec.com prices in both and its toggle
+        **defaults to Taka for Bangladesh**, while every card quoted USD -- at 40% of
+        the ICP's geography, that is the wrong number in the reader's own market, on
+        the one line the whole message is asking them to agree to.
+
+        `means_bd` is optional and falls back to English rather than failing closed,
+        unlike `means` itself. A missing translation should cost a card its currency,
+        not take the config down -- the same call as `surfaces` against `offers`.
         """
         entry = self.offers.get(offer) or {}
+        if str(country or "").upper() == "BD":
+            local = str(entry.get("means_bd") or "").strip()
+            if local:
+                return local
         phrase = str(entry.get("means") or "").strip()
         return phrase or "a scoped external security review, priced before any work starts"
 

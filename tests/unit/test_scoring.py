@@ -796,6 +796,10 @@ def test_no_offer_phrase_promises_something_for_nothing(cfg: ScoringConfig):
                 f"{slug}: a paid offer must carry its price, or the card asks a "
                 f"prospect to agree to an unnamed amount -- got {phrase!r}"
             )
+            local = cfg.offer_phrase(slug, "BD")
+            assert "BDT" in local or "$" in local, (
+                f"{slug}: the BD phrase must carry a price too -- got {local!r}"
+            )
             if "free" in phrase.lower():
                 assert cfg.offer_is_free("snapshot_free"), (
                     f"{slug}: names a free first step while nothing is actually free "
@@ -1080,3 +1084,34 @@ def test_nothing_else_builds_the_outreach_prompt_itself():
         f"these build the outreach prompt's kwargs themselves instead of calling "
         f"`Scorer.angle_kwargs`: {offenders}"
     )
+
+
+def test_a_bangladeshi_prospect_is_quoted_in_taka(cfg: ScoringConfig):
+    """cindrasec.com prices in both and its currency toggle **defaults to Taka for
+    Bangladesh**, while every card quoted USD -- at 40% of the ICP's geography that is
+    the wrong number in the reader's own market, on the one line the whole message asks
+    them to agree to. The Bengali site carries the same four prices in Taka.
+    """
+    local = cfg.offer_phrase("ai_llm_assessment", "BD")
+    default = cfg.offer_phrase("ai_llm_assessment")
+
+    assert "BDT 40,000-1,50,000" in local
+    assert "$2,000-8,000" in default
+    assert local != default
+
+
+def test_a_missing_translation_falls_back_rather_than_failing_closed(cfg: ScoringConfig):
+    """Unlike `means` itself, which `load` requires. A missing translation should cost
+    a card its currency, not take the config down -- the same call as `surfaces`
+    against `offers`, and `snapshot_free` is the live case: it is free, so it carries
+    no price and needs no Taka variant.
+    """
+    assert cfg.offer_phrase("snapshot_free", "BD") == cfg.offer_phrase("snapshot_free")
+
+
+def test_the_currency_follows_the_country_not_the_language(cfg: ScoringConfig):
+    """`bengali_angle` is written for BD leads only, but the *offer* line feeds the
+    English angle too -- and a human emailing a Dhaka company sends one message, not
+    two. Both halves of that card should name the same number."""
+    assert cfg.offer_phrase("watch", "bd") == cfg.offer_phrase("watch", "BD")
+    assert "BDT" not in cfg.offer_phrase("watch", "US")
