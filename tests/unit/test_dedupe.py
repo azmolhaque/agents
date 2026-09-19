@@ -286,3 +286,47 @@ def test_an_academic_repository_is_not_a_company(value):
     is the part no trigger could have caught.
     """
     assert canonical_domain(value) is None, f"{value} would become a company row"
+
+
+def test_a_host_that_merges_many_companies_is_refused() -> None:
+    """The dangerous half of `PLATFORM_HOSTS`, and the half with a closed rule.
+
+    A publisher produces one bogus company row. A shared host produces *one row for
+    everybody on it*: `pypi.org/project/altastata` and `pypi.org/project/anything-else`
+    canonicalize to the same string, so rung 1 merges two unrelated companies -- doing
+    exactly its job to data that should never have reached it. `teamtailor.com` is the
+    case this project already paid for.
+
+    Enumerable, unlike the publisher list, because the membership question is
+    answerable for any candidate: does this host put unrelated organisations behind a
+    path or a subdomain?
+    """
+    from cindraleads.dedupe import canonical_domain
+
+    merging = (
+        "https://pypi.org/project/altastata/",
+        "https://www.npmjs.com/package/left-pad",
+        "https://crates.io/crates/serde",
+        "https://hub.docker.com/r/someone/image",
+        "https://someapp.streamlit.app/",
+        "https://someapp.fly.dev/",
+        "https://someproject.js.org/",
+        # A DOI resolves to somebody else's article, so every paper lands here.
+        "https://doi.org/10.1038/s41591-026-04694-y",
+    )
+    for url in merging:
+        assert canonical_domain(url) is None, url
+
+
+def test_a_real_company_on_its_own_domain_still_resolves() -> None:
+    """The bound. This list only grows, and a wrong entry silently deletes every lead
+    on that host -- so the cases it must never touch are pinned beside it."""
+    from cindraleads.dedupe import canonical_domain
+
+    for url, expected in (
+        ("https://traccia.ai/", "traccia.ai"),
+        ("https://sslcommerz.com/", "sslcommerz.com"),
+        ("https://brainstation-23.com/about", "brainstation-23.com"),
+        ("https://acme.com.bd/", "acme.com.bd"),
+    ):
+        assert canonical_domain(url) == expected, url

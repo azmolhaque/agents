@@ -1686,6 +1686,32 @@ So the list stays the patch, and the general rule is still unfound. What changed
 it is now unfound *for a measured reason* rather than an argued one, and the next
 proposal has a baseline to beat.
 
+**`PLATFORM_HOSTS` is two lists with two different membership rules, and only one of
+them can be finished.** The publisher half has no closed rule -- that is what the
+`name_similarity` measurement above just confirmed -- so it grows one dispatched card at
+a time and always will. The other half does: **does this host put unrelated
+organisations behind a path or a subdomain?** That is answerable for any candidate.
+
+It is also the *dangerous* half. A publisher produces one bogus company row; `pypi.org`
+would collapse every Python package's author onto a single one, which is rung 1 doing
+its job to data that should never have reached it -- the `teamtailor.com` case this
+project already paid for.
+
+That half was half-enumerated: `vercel.app`, `netlify.app`, `github.io`, `herokuapp.com`
+and `readthedocs.io` were listed, while `fly.dev`, `js.org`, every package registry and
+`doi.org` were not -- and the gaps were arriving through the evidence resampler fetching
+`pypi.org/project/altastata` and a DOI that redirected into a Nature paper `nature.com`
+was already blocked against. Finished in one pass, with the bound pinned beside it:
+`traccia.ai`, `sslcommerz.com`, `brainstation-23.com` and a `.com.bd` domain must still
+resolve, because a wrong entry here silently deletes every lead on that host.
+
+**A competitor's blog is a third shape and nothing catches it.**
+`ebuildersecurity.se/en/cyber-news/ryde-data-breach-...` was fetched as company evidence:
+a Swedish security vendor's news post about somebody else's breach. `not_a_competitor`
+reads `industry` and `display_name`, and the extraction describes **Ryde** -- the
+breached company -- so the competitor rule never sees a competitor. The TechCrunch defect
+pointed at a rival.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

@@ -272,9 +272,46 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         # `js.org` gives away free subdomains to JavaScript projects. Exactly the
         # `teamtailor.com` shape: rung 1 doing its job to data that should never have
         # reached it. `apnews.com` is the Associated Press, the publisher shape again.
+        "apnews.com",
+        # ---- one host, many independent organisations behind a path -------------
+        #
+        # Unlike the publisher list above, **this category has a closed membership
+        # rule**: does the host put unrelated companies behind a path or a subdomain?
+        # That is answerable for any candidate, which is why these can be enumerated
+        # rather than discovered one dispatched card at a time -- and they must be,
+        # because this is the *merging* shape and it is worse than a publisher. A
+        # publisher produces one bogus company row; `pypi.org` would collapse every
+        # Python package's author onto a single one, rung 1 doing exactly its job to
+        # data that should never have reached it.
+        #
+        # The category was already half-understood -- `vercel.app`, `netlify.app`,
+        # `github.io`, `herokuapp.com` and `readthedocs.io` were here -- and the gaps
+        # were being found by the evidence resampler fetching `pypi.org/project/...`
+        # and a `doi.org` link that redirected into a Nature paper. Finishing the list
+        # is cheaper than meeting the rest of it one card at a time.
         "fly.dev",
         "js.org",
-        "apnews.com",
+        # Package registries.
+        "pypi.org",
+        "npmjs.com",
+        "crates.io",
+        "pkg.go.dev",
+        "rubygems.org",
+        "packagist.org",
+        "nuget.org",
+        "hex.pm",
+        "mvnrepository.com",
+        "hub.docker.com",
+        # Application hosting on a shared apex, the `fly.dev` shape.
+        "streamlit.app",
+        "gitlab.io",
+        "replit.app",
+        "glitch.me",
+        "onrender.com",
+        # A DOI resolves to somebody else's article, so every paper in existence
+        # canonicalizes here. `nature.com` was already blocked and the redirect walked
+        # straight past it.
+        "doi.org",
         "archive.org",
         "twitter.com",
         "x.com",
