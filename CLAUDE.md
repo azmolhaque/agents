@@ -1647,23 +1647,44 @@ four list edits in one session were spent avoiding. It buckets the corpus by
 because that is the question -- a band that is mostly junk is worth quarantining for
 review, and a band holding real leads is not. It rejects nothing.
 
-**Its first run already revises the note that has been used to block this work.**
-Spot-checked against the cases named above:
+**Measured 2026-09-19 over 1029 companies, and the answer is no.** The rule this file
+has been circling for weeks does not work:
 
-| similarity | name | domain | |
+| band | companies | sendable | share |
 | --- | --- | --- | --- |
-| 60.0 | Rover | rtrvr.ai | **the counterexample, and it is not bottom-band** |
-| 31.6 | Atomic Chat | ostechnix.com | publisher |
-| 22.2 | YouCal - AI Calorie Tracker | apple.com | store listing |
-| 19.4 | Electronic Frontier Foundation | eff.org | **a legitimate acronym** |
-| 100.0 | Brain Station 23 / SSLCOMMERZ | …-23.com / sslcommerz.com | real BD companies |
+| 0-29 shares almost nothing | 98 | 28 | **29%** |
+| 30-49 faint | 52 | 20 | 38% |
+| 50-69 partial | 74 | 24 | 32% |
+| 70-100 clearly the same name | 805 | 309 | 38% |
 
-`Rover · rtrvr.ai` scores **60**, in the partial band, not the bottom one -- so "the
-mismatch rule would have dropped Rover" is weaker than recorded. The actual hazard down
-there is **acronyms**: EFF at 19.4 is a perfectly honest name for its domain. That is a
-different objection from the one this file carried, and it points at a different rule --
-initials-match before similarity. Run the script against the real corpus before building
-either.
+**The bands barely differ, and the worst one is 29% against a 38% corpus baseline.**
+Name-domain similarity is very nearly uncorrelated with lead quality. Quarantining the
+bottom band would put **28 real leads** behind manual review to catch some publishers.
+Same shape as the CT-certificate veto: the distribution killed a mechanism that would
+have shipped looking reasonable, and asking cost ten seconds.
+
+`Rover · rtrvr.ai` scores 60, in the *partial* band. So even the counterexample this
+file recorded was aimed at the wrong place -- the hazard at the bottom is **acronyms**
+(`Electronic Frontier Foundation` against `eff.org` is 19.4 and perfectly honest), not
+Rover. Both the rule and the objection to it were wrong; only the measurement settled it.
+
+**What the run did find, by making a human read 32 rows:**
+
+- **`deepgram · fly.dev` and `Zhin.js · js.org`** -- the *merging* shape, which is worse
+  than a publisher. Fly.io's shared app domain and a free-subdomain service for JS
+  projects, so every company hosted there collapses onto one row. `teamtailor.com`
+  exactly. In `PLATFORM_HOSTS` now, with `apnews.com`.
+- **`null · bopbook.com`, industry `null`** -- the literal four-character *string*,
+  which is why it passed the `display_name IS NOT NULL AND <> ''` filter. A card would
+  greet them as "null". Not yet fixed.
+- **Personal domains are their own shape**: `Ablaut · romainflorentz.com`,
+  `Sourcery · sameerhimati.com`, `ODYSSEY EXPLORER · georgemasto.com`. Someone's own
+  name as the host, which is a person and not a B2B prospect -- and no host list can
+  enumerate those.
+
+So the list stays the patch, and the general rule is still unfound. What changed is that
+it is now unfound *for a measured reason* rather than an argued one, and the next
+proposal has a baseline to beat.
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already

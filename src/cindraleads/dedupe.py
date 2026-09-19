@@ -266,6 +266,15 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         # "Atomic Chat" against `ostechnix.com` fails it badly, and `Rover · rtrvr.ai`
         # is why the answer is quarantine-for-review rather than a veto.
         "ostechnix.com",
+        # Found by `name_mismatch.py`, and the *merging* kind rather than the publisher
+        # kind -- which is worse. `deepgram · fly.dev` is an app deployed on Fly.io's
+        # shared domain, so every company hosting there canonicalizes onto one row, and
+        # `js.org` gives away free subdomains to JavaScript projects. Exactly the
+        # `teamtailor.com` shape: rung 1 doing its job to data that should never have
+        # reached it. `apnews.com` is the Associated Press, the publisher shape again.
+        "fly.dev",
+        "js.org",
+        "apnews.com",
         "archive.org",
         "twitter.com",
         "x.com",
