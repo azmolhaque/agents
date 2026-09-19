@@ -36,6 +36,20 @@ say()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 ok()   { printf '    \033[32mok\033[0m   %s\n' "$*"; }
 warn() { printf '    \033[33mwarn\033[0m %s\n' "$*"; }
 
+# `set -e` exits silently in the middle of a hundred lines of output, and the one step
+# people run this script *for* is near the bottom. Twice now `make gate` has failed and
+# the run has ended before the systemd block, so the units were not installed and the
+# worker kept the build it was already on -- both times that was read as "the install
+# finished with a test failure" rather than "the install did not happen".
+#
+# ERR rather than EXIT: the units block sets its own EXIT trap to clean up a temp dir,
+# and a second EXIT trap would silently replace it.
+UNITS_DONE=0
+trap 'rc=$?; printf "\n\033[1;31m==> ABORTED\033[0m (exit %s) — the steps below did NOT run\n" "$rc";
+      [ "$INSTALL_UNITS" = "1" ] && [ "$UNITS_DONE" = "0" ] &&
+        printf "    systemd units were NOT installed and nothing was restarted;\n    the worker is still on the build it was already running\n";
+      exit $rc' ERR
+
 # ----------------------------------------------------------------- host checks
 
 say "Host"
@@ -198,6 +212,7 @@ if [ "$INSTALL_UNITS" = "1" ]; then
   # long-lived import to invalidate and nothing to restart.
   sudo systemctl enable --now cindraleads-harvest.timer cindraleads-reconcile.timer \
        cindraleads-digest.timer cindraleads-maintenance.timer
+  UNITS_DONE=1
   ok "units installed, enabled, and restarted onto this build"
 
   # The feedback bot is copied but only started if it can actually connect. Enabling it

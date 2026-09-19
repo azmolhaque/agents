@@ -1507,6 +1507,28 @@ pass. One lucky dispatch in a one-hour window is 24/day, so without a floor a ru
 prove throughput by being too short to measure it. Short windows are the only ones this
 grid allows; short *enough* is still too short, and the report has to say which it was.
 
+**A test asserted the box was cool, on the project that retired that exact gate.**
+`test_healthz_and_metrics_answer_over_http` checked `payload["status"] == "ok"`. Every
+other test in that file stubs the governor with `_Governor()`; this one cannot, because
+`serve` builds the handler and the handler calls `assess` with no thermal argument -- so
+it polled the real SoC. Green on a dev box with no `vcgencmd`, red on the Pi at 78 C,
+which is the *designed* state. Second test here to encode the dev machine, after the one
+that pinned a literal date, and the same family as the 3.13 `ResourceWarning`: **green
+locally is a claim about the laptop.**
+
+It now asserts what it is for -- the server binds, answers over real HTTP, and every
+check *we* control is `ok` -- while `thermal` and `disk` are named as the machine's.
+Verified by forcing a hot governor and re-running: the old assertion fails, the new one
+passes, and all ten controllable checks stay green.
+
+**`install_pi.sh` aborted before installing units twice, silently both times.** `set -e`
+exits in the middle of a hundred lines of output and the systemd block is near the
+bottom, so a failing `make gate` ends the run before the one step the flag exists for --
+and both times that read as "the install finished with a test failure" rather than "the
+install did not happen". An `ERR` trap now names what did not run. `ERR` and not `EXIT`,
+because the units block sets its own `EXIT` trap for a temp dir and a second one would
+silently replace it.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

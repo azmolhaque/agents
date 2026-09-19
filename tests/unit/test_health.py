@@ -445,8 +445,27 @@ def test_healthz_and_metrics_answer_over_http(store: Any) -> None:
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=5) as response:
             assert response.status == 200
             payload = json.loads(response.read())
-        assert payload["status"] == "ok"
         assert payload["checks"]
+
+        # Not `status == "ok"`. Every other test here stubs the governor with
+        # `_Governor()`; this one cannot, because `serve` builds the handler and the
+        # handler calls `assess` with no thermal argument -- so it polled the real SoC
+        # and asserted the machine was cool. Green on a dev box with no `vcgencmd`,
+        # red on the Pi at 78 C, which is the designed state rather than a fault.
+        #
+        # That is the `get_throttled == 0x0` gate all over again, in a test, on a
+        # project that retired that gate for exactly this reason -- and the second test
+        # here to encode the dev machine, after the one that pinned a literal date.
+        #
+        # So assert what this test is for: the server binds, answers over real HTTP and
+        # returns a well-formed report whose *controllable* checks are green. Heat and
+        # free disk belong to the machine; heartbeats, build and queue belong to us.
+        environmental = {"thermal", "disk"}
+        assert payload["status"] in ("ok", "degraded"), payload["status"]
+        for check in payload["checks"]:
+            if check["name"].split(":")[0] in environmental:
+                continue
+            assert check["status"] == "ok", (check["name"], check["detail"])
 
         with urllib.request.urlopen(f"http://127.0.0.1:{port}/metrics", timeout=5) as response:
             assert response.status == 200
