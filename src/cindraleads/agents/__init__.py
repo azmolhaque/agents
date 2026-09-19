@@ -15,10 +15,16 @@ from cindraleads.agents.extractor import (
 )
 from cindraleads.agents.harvester import EXTRACT_KIND, HARVEST_KIND, Harvester
 from cindraleads.agents.resolver import RESOLVE_KIND, Resolver
-from cindraleads.agents.scorer import SCORE_KIND, Scorer, enqueue_stale_scores
+from cindraleads.agents.scorer import (
+    DEFAULT_RESCORE_LIMIT,
+    SCORE_KIND,
+    Scorer,
+    enqueue_stale_scores,
+)
 from cindraleads.agents.scout import QueryTemplate, Scout, ScoutConfig
 
 __all__ = [
+    "DEFAULT_RESCORE_LIMIT",
     "DISPATCH_KIND",
     "ENRICH_KIND",
     "EXTRACT_KIND",

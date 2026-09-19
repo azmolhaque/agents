@@ -54,6 +54,7 @@ from cindraleads.scoring import (
 from cindraleads.store import Store
 
 __all__ = [
+    "DEFAULT_RESCORE_LIMIT",
     "DISPATCH_KIND",
     "SCORE_KIND",
     "ScoreOutcome",
@@ -722,6 +723,27 @@ def _upsert_lead(
 
 def score_stamp(when: datetime) -> str:
     return to_iso(when)
+
+
+# Rescores per reconcile pass. The ordering in the query below -- new triggers first,
+# recalibrations behind them, angle repairs last -- **only means anything with a limit**:
+# take every row and the order decides nothing except the sequence in which the whole
+# corpus is queued. That ordering is therefore direct evidence a bound was intended, and
+# both call sites passed `limit=0`.
+#
+# The comment on that ORDER BY states the problem exactly -- "a config edit makes the
+# whole corpus stale at once, and at ~18 s a lead that is hours of queue -- long enough
+# that a funding round found this morning would sit behind it" -- and then nothing
+# bounded it. Adding `not_nonprofit` moved `calibration_version`, and one
+# `reconcile --force` put 2389 score jobs in front of a worker doing ~13 s a job on a
+# box that is powered for six hours a day: four to seven days during which no newly
+# harvested lead could reach a card.
+#
+# 50 at 30-minute timer intervals is ~100/hour, which the worker keeps up with, and a
+# genuinely new trigger sorts to the front of every pass. Same number and same reasoning
+# as `DEFAULT_RESTALE_LIMIT`; a backfill nobody is waiting on must never be what a new
+# lead waits behind.
+DEFAULT_RESCORE_LIMIT = 50
 
 
 def enqueue_stale_scores(

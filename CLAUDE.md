@@ -1712,6 +1712,35 @@ reads `industry` and `display_name`, and the extraction describes **Ryde** -- th
 breached company -- so the competitor rule never sees a competitor. The TechCrunch defect
 pointed at a rival.
 
+**`enqueue_stale_scores` took a `limit` and neither caller passed one.** Ninth instance
+of built-wired-never-connected, and this one had its own evidence sitting in the query:
+the `ORDER BY` puts genuinely new triggers first, recalibrations behind them and angle
+repairs last, which **only means anything with a limit** -- take every row and the order
+decides nothing but the sequence in which the whole corpus is queued. The comment above
+it states the problem outright ("a config edit makes the whole corpus stale at once, and
+at ~18 s a lead that is hours of queue -- long enough that a funding round found this
+morning would sit behind it") and then nothing bounded it. `REPROSE_LIMIT` existed for
+`--reprose` only, which is the path that needs it least.
+
+It cost a real outage. Adding `not_nonprofit` moved `calibration_version`, one
+`reconcile --force` put **2389 score jobs** in front of a worker doing ~13 s a job on a
+box powered six hours a day, and every completing enrichment enqueues another -- so
+`pending` held at exactly 2947 across two readings while `done` climbed by 61. Four to
+seven days in which no newly harvested lead could reach a card.
+
+`DEFAULT_RESCORE_LIMIT` is 50, same number and same reasoning as `DEFAULT_RESTALE_LIMIT`:
+at 30-minute timer intervals that is ~100/hour, which the worker keeps up with, and the
+ordering means a genuinely new trigger sorts to the front of every pass. The test is on
+the **call sites** rather than the function, read out of `cli.py` with `ast`, because the
+function was never the part that was broken.
+
+**And `--force` conflates two things that cost differently.** It re-runs the arithmetic
+*and* re-decodes the prose, when a compliance-rule change moves only the first. 3100
+prose calls at ~18 s to apply a veto that rejects a handful of companies and repair
+perhaps fifty angles is the wrong trade, and there is no flag for "re-score without
+re-prosing". Recommending `--force` after a veto change was a mistake for that reason,
+not because the rescore was unnecessary.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

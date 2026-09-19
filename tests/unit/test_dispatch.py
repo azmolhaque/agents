@@ -1389,3 +1389,63 @@ def test_reprose_honours_its_limit(store):
             )
 
     assert enqueue_stale_scores(store, JobQueue(store), reprose=True, limit=2) == 2
+
+
+def test_a_bounded_rescore_leaves_room_for_new_leads(rig):
+    """A config edit makes the whole corpus stale at once, and nothing bounded it.
+
+    The `ORDER BY` in `enqueue_stale_scores` -- new triggers first, recalibrations
+    behind them, angle repairs last -- **only means anything with a limit**: take every
+    row and the order decides nothing but the sequence in which the whole corpus is
+    queued. That ordering is the evidence a bound was intended; both call sites passed
+    `limit=0`.
+
+    Adding one compliance rule moved `calibration_version`, and a single
+    `reconcile --force` put 2389 score jobs in front of a worker doing ~13 s a job on a
+    Pi powered six hours a day -- four to seven days in which no newly harvested lead
+    could reach a card, which is the one thing every other backfill bound in this
+    project exists to prevent.
+    """
+    from cindraleads.agents.scorer import DEFAULT_RESCORE_LIMIT, enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _build, _posts, store = rig
+    now, forever = "2026-09-01T00:00:00Z", "2099-01-01T00:00:00Z"
+    with store.tx() as conn:
+        for n in range(DEFAULT_RESCORE_LIMIT + 5):
+            domain = f"co{n}.io"
+            conn.execute(
+                "INSERT INTO companies (canonical_domain, display_name, first_seen_at, "
+                "last_updated_at) VALUES (?,?,?,?)",
+                (domain, f"Co {n}", now, now),
+            )
+            conn.execute(
+                "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
+                "observed_at, decays_at) VALUES (?,?,'T1_AI_SHIP',0.9,?,?)",
+                (f"t{n}", domain, now, forever),
+            )
+
+    queued = enqueue_stale_scores(store, JobQueue(store), limit=DEFAULT_RESCORE_LIMIT)
+
+    assert queued == DEFAULT_RESCORE_LIMIT, "the pass tops out rather than draining the corpus"
+
+
+def test_the_reconcile_command_passes_the_bound(rig):
+    """The half that was missing. The parameter existed and neither caller used it, so
+    the check is on the call site rather than on the function -- the same reason
+    `test_nothing_else_builds_the_outreach_prompt_itself` reads the source."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "src/cindraleads/cli.py").read_text()
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "enqueue_stale_scores"
+    ]
+    assert calls, "no call site found; this test has stopped testing"
+    for call in calls:
+        limits = [k for k in call.keywords if k.arg == "limit"]
+        assert limits, f"unbounded enqueue_stale_scores at cli.py:{call.lineno}"

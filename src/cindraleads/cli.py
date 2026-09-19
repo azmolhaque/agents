@@ -26,6 +26,7 @@ import typer
 
 from cindraleads import PIPELINE_VERSION, __version__
 from cindraleads.agents import (
+    DEFAULT_RESCORE_LIMIT,
     DISPATCH_KIND,
     ENRICH_KIND,
     EXTRACT_KIND,
@@ -535,7 +536,7 @@ def pipeline(
             fresh = enqueue_unenriched(store, runtime.queue)
             if fresh:
                 typer.echo(f"queued {fresh} company/companies for enrichment")
-            stale = enqueue_stale_scores(store, runtime.queue)
+            stale = enqueue_stale_scores(store, runtime.queue, limit=DEFAULT_RESCORE_LIMIT)
             if stale:
                 typer.echo(f"queued {stale} company/companies for (re)scoring")
             record_heartbeat(store, "reconcile", queued_enrich=fresh, queued_score=stale)
@@ -829,7 +830,7 @@ def reconcile(
                 runtime.queue,
                 force=force,
                 reprose=reprose,
-                limit=REPROSE_LIMIT if reprose else 0,
+                limit=REPROSE_LIMIT if reprose else DEFAULT_RESCORE_LIMIT,
             )
         typer.echo(
             f"queued {stranded} for extraction, {superseded} for re-extraction, "
