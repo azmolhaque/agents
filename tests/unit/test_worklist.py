@@ -244,3 +244,71 @@ def test_a_quarantined_lead_is_not_on_the_call_list(store: Any) -> None:
         )
 
     assert [i.canonical_domain for i in worklist(store).items] == ["rtrvr.ai"]
+
+
+def _evidence_urls(store: Any, domain: str, urls: list[str]) -> None:
+    """Replace the domain's evidence, in an order the query will actually return.
+
+    The join has no ORDER BY and SQLite walks it by `evidence_id`, not by insertion --
+    verified directly, because the first version of this test inserted the platform URL
+    first and still got the good one. So which URL a card cites is decided by a random
+    hex id: the defect is a coin flip per company rather than a consistent wrong answer,
+    which is exactly why it reached production on Findcheap and not on the fixture.
+
+    Ids are assigned in order here so the *bad* URL is the one the old code would pick.
+    A test whose outcome depends on unspecified row order proves nothing either way.
+    """
+    now = to_iso(utcnow())
+    with store.tx() as conn:
+        tid = conn.execute(
+            "SELECT trigger_id FROM triggers WHERE canonical_domain = ?", (domain,)
+        ).fetchone()["trigger_id"]
+        conn.execute("DELETE FROM trigger_evidence WHERE trigger_id = ?", (tid,))
+        for n, url in enumerate(urls):
+            eid = f"{n:016d}"
+            conn.execute(
+                "INSERT INTO evidence (evidence_id, url, source_id, snippet, observed_at, "
+                "content_sha256) VALUES (?,?,'company_site','s',?,'h')",
+                (eid, url, now),
+            )
+            conn.execute("INSERT INTO trigger_evidence VALUES (?,?)", (tid, eid))
+
+
+def test_the_cited_evidence_is_the_company_own_page_not_a_store_listing(store: Any) -> None:
+    """A URL that is not theirs proves nothing about them.
+
+    The first real call list cited `chromewebstore.google.com/detail/findcheap/...` as
+    proof of what findcheap.ai had announced. A trigger can carry several evidence rows
+    and `_top_trigger` took whichever the join returned first; `PLATFORM_HOSTS` is
+    applied when a *company* is canonicalized and nowhere near an evidence URL, so the
+    store listing reached the one line the reader is invited to click.
+
+    Same family as the TechCrunch defect: a live page *about* the company standing in
+    for the company's own word.
+    """
+    _lead(store, "findcheap.ai", emails=(("jake@findcheap.ai", "verified", ""),))
+    _evidence_urls(
+        store,
+        "findcheap.ai",
+        [
+            "https://chromewebstore.google.com/detail/findcheap/fpghkhnkfjlen",
+            "https://findcheap.ai/",
+        ],
+    )
+
+    assert worklist(store, limit=5).items[0].evidence_url == "https://findcheap.ai/"
+
+
+def test_a_platform_link_is_still_shown_when_it_is_all_we_have(store: Any) -> None:
+    """Reported, not silently dropped.
+
+    Blanking the URL would make a weakly-evidenced trigger look like a well-evidenced
+    one with a rendering bug. The operator has to see that the only proof we hold is
+    somebody else's page *before* deciding to send -- the same choice as printing the
+    unreachable count beside `jobs_lost` rather than hiding the exemption.
+    """
+    only = "https://chromewebstore.google.com/detail/onlystore/xyz"
+    _lead(store, "onlystore.ai", emails=(("hi@onlystore.ai", "verified", ""),))
+    _evidence_urls(store, "onlystore.ai", [only])
+
+    assert worklist(store, limit=5).items[0].evidence_url == only

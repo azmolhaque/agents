@@ -1529,6 +1529,36 @@ install did not happen". An `ERR` trap now names what did not run. `ERR` and not
 because the units block sets its own `EXIT` trap for a temp dir and a second one would
 silently replace it.
 
+**The first real call list, read card by card before sending: 7 problems in 10.** The
+guardrails held -- no trigger code, no offer slug, no invented quote, the free-Snapshot
+wording correct on every card -- and the *content* is where it went wrong. Worth
+recording as the answer to "are we ready to send": the things built to stop us saying
+something forbidden work; nothing had yet checked whether we were saying something true.
+
+- **Findcheap cited `chromewebstore.google.com/detail/findcheap/...`** as proof of what
+  findcheap.ai announced. `_top_trigger` took whichever evidence row the join returned
+  and `PLATFORM_HOSTS` is applied when a *company* is canonicalized, nowhere near an
+  evidence URL. **The join has no ORDER BY and SQLite walks it by `evidence_id`**, which
+  is a random hex, so the cited URL is a coin flip per company -- which is why it hit
+  production and not the first version of the test. Own domain first, then any
+  non-platform URL, and a platform link only when it is all we hold, shown rather than
+  blanked so the operator can see the proof is weak.
+- **Matcha's `why:` says T3_HIRING_SEC and its angle describes a mail-auth gap.**
+  `_top_trigger` returns the heaviest trigger and the model opened with a different one,
+  so the URL printed beside the text does not support the text. Not yet fixed.
+- **Findcheap's angle says "announced an AI feature today"** on a Chrome Web Store
+  listing -- the re-dating shape again, by a route `restore_first_observation` scopes
+  out (it keys on `content_sha256`, and this evidence is not a page sighting we hashed).
+- **Pamir opens "Pamir announced an AI feature 10 days ago; you published..."** -- third
+  person then second in one sentence.
+- **Pamir and Vigilator both list three triggers**, against a prompt that says at most
+  one because "a list of three reads as a report".
+- **Tavus, the top lead at 85, still has an empty `description`** -- so the strongest
+  card in the corpus is written without knowing what the company does, after both the
+  prompt fix and the re-extraction backfill.
+- **ThunderPhone's best contact is `legal@`**, which `_best_contact` ranks on status
+  and never on what the local part implies.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

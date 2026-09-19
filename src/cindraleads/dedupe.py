@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 __all__ = [
     "DuplicateMatch",
     "canonical_domain",
+    "is_platform_url",
     "name_similarity",
     "rapidfuzz_available",
     "same_company",
@@ -395,6 +396,22 @@ def _is_platform(host: str) -> bool:
     """True if `host` is a platform host or lives under one."""
     labels = host.split(".")
     return any(".".join(labels[i:]) in PLATFORM_HOSTS for i in range(len(labels)))
+
+
+def is_platform_url(url: str) -> bool:
+    """True if `url` points at a platform host rather than at somebody's own site.
+
+    A second caller for `_is_platform`, and a different question from the one
+    `canonical_domain` answers. That returns None for a platform host *and* for a
+    malformed string, so "is this worth citing" could not be asked of it without
+    treating garbage as a platform -- and the worklist needs to rank a URL, not
+    resolve it.
+    """
+    try:
+        host = urlparse(url if "//" in url else f"https://{url}").netloc.lower()
+    except ValueError:
+        return False
+    return bool(host) and _is_platform(host.split("@")[-1].split(":")[0])
 
 
 def normalize_name(name: str) -> str:

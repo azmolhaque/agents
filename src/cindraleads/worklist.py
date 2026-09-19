@@ -179,8 +179,23 @@ def _top_trigger(store: Store, domain: str) -> tuple[str, str]:
     The evidence URL is the whole reason a cold email lands: "your DMARC record is
     p=none" is checkable in ten seconds, and quoting it is what separates this from a
     blast. A trigger whose evidence nobody can open is one the project refuses to send.
+
+    **And a URL that is not theirs proves nothing about them.** A trigger can cite
+    several evidence rows and this took whichever the join returned first, so the
+    Findcheap card on the first real call list cited
+    `chromewebstore.google.com/detail/findcheap/...` as proof of what findcheap.ai had
+    announced. `PLATFORM_HOSTS` is applied when a *company* is canonicalized and nowhere
+    near an evidence URL, so the store listing sailed through to the one line the reader
+    is invited to click. Same family as the TechCrunch defect: a live page about the
+    company, standing in for the company's own word.
+
+    So the preference is their own domain first, then any non-platform URL, and a
+    platform link only when it is the single thing we hold -- reported rather than
+    silently dropped, because the operator needs to see that this trigger's proof is
+    weak before they decide to send it.
     """
     from cindraleads.agents.dispatcher import TRIGGER_ORDER
+    from cindraleads.dedupe import canonical_domain, is_platform_url
 
     rows = store.conn.execute(
         "SELECT t.code, e.url FROM triggers t "
@@ -191,8 +206,16 @@ def _top_trigger(store: Store, domain: str) -> tuple[str, str]:
     ).fetchall()
     if not rows:
         return ("", "")
-    best = max(rows, key=lambda r: TRIGGER_ORDER.get(str(r["code"]), 0))
-    return (str(best["code"]), str(best["url"] or ""))
+
+    code = str(max(rows, key=lambda r: TRIGGER_ORDER.get(str(r["code"]), 0))["code"])
+    urls = [str(r["url"]) for r in rows if str(r["code"]) == code and r["url"]]
+
+    def rank(url: str) -> int:
+        if canonical_domain(url) == domain:
+            return 0  # their own page: what we want to quote
+        return 2 if is_platform_url(url) else 1
+
+    return (code, min(urls, key=rank) if urls else "")
 
 
 def render_worklist(report: Worklist) -> str:
