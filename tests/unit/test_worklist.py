@@ -312,3 +312,34 @@ def test_a_platform_link_is_still_shown_when_it_is_all_we_have(store: Any) -> No
     _evidence_urls(store, "onlystore.ai", [only])
 
     assert worklist(store, limit=5).items[0].evidence_url == only
+
+
+def test_borrowed_evidence_is_marked_on_the_card(store: Any) -> None:
+    """Preferring their own page is only half the job.
+
+    When a platform link is all we hold the card still cites it -- deliberately -- and
+    an unmarked store listing reads exactly like the company's own announcement. The
+    operator is about to tell a stranger "you published this"; they have to see whose
+    page it actually is first. Same reasoning as printing the unreachable count beside
+    `jobs_lost`: an exemption nobody can see is not an exemption, it is a silent
+    downgrade.
+    """
+    only = "https://chromewebstore.google.com/detail/onlystore/xyz"
+    _lead(store, "onlystore.ai", emails=(("hi@onlystore.ai", "verified", ""),))
+    _evidence_urls(store, "onlystore.ai", [only])
+
+    rendered = render_worklist(worklist(store, limit=5))
+
+    assert only in rendered
+    assert "not their page" in rendered
+
+
+def test_their_own_page_carries_no_warning(store: Any) -> None:
+    """The bound. A marker on every card is a marker nobody reads."""
+    _lead(store, "traccia.ai", emails=(("founders@traccia.ai", "verified", ""),))
+    _evidence_urls(store, "traccia.ai", ["https://traccia.ai/"])
+
+    rendered = render_worklist(worklist(store, limit=5))
+
+    assert "https://traccia.ai/" in rendered
+    assert "not their page" not in rendered

@@ -1559,6 +1559,42 @@ something forbidden work; nothing had yet checked whether we were saying somethi
 - **ThunderPhone's best contact is `legal@`**, which `_best_contact` ranks on status
   and never on what the local part implies.
 
+**Preferring their own page was half the fix, and the next call list said so.**
+Findcheap still cited the Chrome Web Store after the change, because that *is* the only
+evidence its T1 trigger holds -- the intended behaviour, chosen so a weakly-evidenced
+trigger is visible rather than blanked. Except nothing made it visible: an unmarked
+store listing renders exactly like the company's own announcement. The card now says
+`[!] not their page -- verify before sending`, and a second test asserts the marker is
+absent when the URL *is* theirs, because a warning on every card is one nobody reads.
+
+**Every card opens with the weakest trigger it has, and the cause is structural.** The
+prompt says "the first one is the reason to write" and the list is ordered by scoring
+weight -- so T1_AI_SHIP at 30 always leads, and T1_AI_SHIP is "you announced an AI
+feature", which this file already calls true of half the internet. Both previews read in
+detail show the same burial:
+
+- **Tavus** carries a funding round from *3 days ago* under an AI feature from 3 weeks
+  ago, and the card never mentions the funding.
+- **Traccia** carries T10_VENDOR_PRESSURE -- *a customer asked them for a pentest
+  report*, the highest-intent signal in the taxonomy -- and the card leads with the AI
+  feature and a DMARC gap instead.
+
+**Weight answers "how much is this lead worth"; an opening line needs "what does this
+prospect already know they need".** Those are different questions and one ordering is
+serving both. Not changed here: re-ordering what the prompt sees invalidates prose for
+the whole corpus through `prose_version`, and picking the opener is a judgement about
+copy -- but the current order is a *default nobody chose*, not a decision.
+
+**`description` was empty on both companies previewed** -- Tavus at 85 and Traccia at 67
+-- after the prompt fix and the re-extraction backfill. Two of two is a sample, not a
+proof, but it is the second time this column has been declared fixed.
+
+**And one quote handed to the model was scraped UI chrome**: Traccia's second verified
+snippet is `"Unified Agent Registry traccia · governance console $ traccia agents list
+142 agents · 3 environments Customer Support ·"`. It passed the literal-match rule
+because it genuinely appears on the page -- the rule proves *we did not invent it*, and
+was never a claim that it reads like a sentence a human wrote.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

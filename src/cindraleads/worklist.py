@@ -47,6 +47,8 @@ class WorkItem:
     email_status: str
     role_title: str = ""
     full_name: str = ""
+    # True when the only proof we hold for the top trigger is somebody else's page.
+    evidence_is_platform: bool = False
     angle: str = ""
     trigger: str = ""
     evidence_url: str = ""
@@ -129,7 +131,7 @@ def worklist(
             # and hiding it would make the list look like the whole opportunity.
             unreachable += 1
             continue
-        trigger, evidence = _top_trigger(store, str(row["canonical_domain"]))
+        trigger, evidence, borrowed = _top_trigger(store, str(row["canonical_domain"]))
         items.append(
             WorkItem(
                 lead_id=str(row["lead_id"]),
@@ -145,6 +147,7 @@ def worklist(
                 angle=str(row["outreach_angle"] or ""),
                 trigger=trigger,
                 evidence_url=evidence,
+                evidence_is_platform=borrowed,
                 contacts_total=int(row["contacts_total"] or 1),
             )
         )
@@ -173,7 +176,7 @@ def _best_contact(store: Store, domain: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def _top_trigger(store: Store, domain: str) -> tuple[str, str]:
+def _top_trigger(store: Store, domain: str) -> tuple[str, str, bool]:
     """The heaviest live trigger and one URL that proves it.
 
     The evidence URL is the whole reason a cold email lands: "your DMARC record is
@@ -205,7 +208,7 @@ def _top_trigger(store: Store, domain: str) -> tuple[str, str]:
         (domain,),
     ).fetchall()
     if not rows:
-        return ("", "")
+        return ("", "", False)
 
     code = str(max(rows, key=lambda r: TRIGGER_ORDER.get(str(r["code"]), 0))["code"])
     urls = [str(r["url"]) for r in rows if str(r["code"]) == code and r["url"]]
@@ -215,7 +218,10 @@ def _top_trigger(store: Store, domain: str) -> tuple[str, str]:
             return 0  # their own page: what we want to quote
         return 2 if is_platform_url(url) else 1
 
-    return (code, min(urls, key=rank) if urls else "")
+    if not urls:
+        return (code, "", False)
+    best = min(urls, key=rank)
+    return (code, best, rank(best) == 2)
 
 
 def render_worklist(report: Worklist) -> str:
@@ -240,7 +246,15 @@ def render_worklist(report: Worklist) -> str:
         )
         out.append(f"      {item.email}  [{who}]{extra}")
         if item.trigger:
-            out.append(f"      why: {item.trigger}  {item.evidence_url}")
+            # Marked, not hidden. Preferring the company's own page is only half the
+            # job: when a platform link is all we hold the card still cites it, and an
+            # unmarked store listing reads exactly like their own announcement. The
+            # operator is about to tell a stranger "you published this" -- they need to
+            # see whose page it actually is before they do.
+            borrowed = (
+                "  [!] not their page -- verify before sending" if item.evidence_is_platform else ""
+            )
+            out.append(f"      why: {item.trigger}  {item.evidence_url}{borrowed}")
         if item.angle:
             out.append(f"      {item.angle}")
         else:
