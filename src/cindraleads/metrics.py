@@ -24,6 +24,7 @@ something is already wrong.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -39,12 +40,14 @@ __all__ = [
     "HEARTBEAT_UNITS",
     "OPTIONAL_UNITS",
     "Heartbeat",
+    "boot_id",
     "heartbeats",
     "last_heartbeat",
     "record_heartbeat",
     "render_prometheus",
     "snapshot",
     "source_mtime",
+    "worker_identity",
 ]
 
 log = get_logger("cindraleads.metrics")
@@ -99,6 +102,46 @@ class Heartbeat:
 
     def age_seconds(self, *, now: datetime | None = None) -> float:
         return ((now or utcnow()) - self.at).total_seconds()
+
+
+def boot_id() -> str | None:
+    """A token that changes on every boot, or None where that is not knowable.
+
+    `/proc/sys/kernel/random/boot_id` is a fresh UUID per boot. None on anything
+    without it, and the caller must treat that as "no information" rather than as a
+    constant -- the same three-valued discipline as `uptime_seconds`, `SecurityTxt.
+    present` and `evidence.reachable`.
+    """
+    try:
+        raw = Path("/proc/sys/kernel/random/boot_id").read_text().strip().replace("-", "")
+    except OSError:
+        return None
+    return raw[:8] or None
+
+
+def worker_identity() -> str:
+    """Who is running, in a form that survives a reboot being asked about.
+
+    `hostname:pid` was the whole identity, and a PID is unique only *within* a boot.
+    That is wrong in both directions and both bit. Two ids were read as two concurrent
+    workers when they were one worker across a restart -- several rounds of diagnosis
+    spent looking for a process that did not exist. And the reverse is worse and
+    silent: PIDs are small and predictable right after boot, so the same number
+    genuinely recurs across reboots and two unrelated worker lifetimes would collapse
+    into one id with nothing to say they were different.
+
+    The boot token discriminates both. Absent, the identity degrades to the old
+    `hostname:pid` rather than inventing a constant -- a made-up boot id would claim
+    every lifetime was the same one, which is the failure it exists to prevent.
+
+    Built here because it was built in two places, which is the shape this project
+    keeps paying for. Nothing matches on this value -- it is provenance, written to
+    `jobs.worker_id` and the heartbeat and read by humans -- so the format is free to
+    say more.
+    """
+    host = os.uname().nodename
+    boot = boot_id()
+    return f"{host}:{boot}:{os.getpid()}" if boot else f"{host}:{os.getpid()}"
 
 
 def record_heartbeat(

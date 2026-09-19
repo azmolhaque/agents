@@ -41,7 +41,7 @@ from cindraleads.config import MAX_STAGE_SECONDS, settings
 from cindraleads.dedupe import canonical_domain
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
-from cindraleads.metrics import record_heartbeat, source_mtime
+from cindraleads.metrics import record_heartbeat, source_mtime, worker_identity
 from cindraleads.models import Job, StageResult, to_iso, utcnow
 from cindraleads.queue import JobQueue
 from cindraleads.runtime import Runtime
@@ -546,7 +546,7 @@ def pipeline(
                     store,
                     stages,
                     kinds=[kind],
-                    worker_id=f"{os.uname().nodename}:{os.getpid()}",
+                    worker_id=worker_identity(),
                     lease=600,  # an extraction is ~64 s; a short lease would expire mid-page
                     max_jobs=max_jobs,
                     idle_exit=True,
@@ -1431,7 +1431,7 @@ def work(
     def _opts() -> dict[str, Any]:
         return {
             "kinds": wanted,
-            "worker_id": worker_id or f"{os.uname().nodename}:{os.getpid()}",
+            "worker_id": worker_id or worker_identity(),
             "lease": lease,
             "max_jobs": max_jobs,
             "idle_exit": idle_exit,

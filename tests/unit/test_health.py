@@ -812,3 +812,77 @@ def test_systemd_waits_longer_than_a_stage_may_run() -> None:
         f"so a deploy during a long stage is a SIGKILL and the worker never records "
         f"that it was shutting down"
     )
+
+
+# ------------------------------------------------------- who is running, and when
+
+
+def test_the_worker_identity_names_the_boot_not_only_the_pid():
+    """`hostname:pid` cannot answer the question it was used to answer.
+
+    A PID is unique within a boot and nothing more, so two ids were read as two
+    concurrent workers when a `systemctl restart` produces exactly that -- several
+    rounds of diagnosis spent hunting a process that did not exist. The reverse is the
+    quieter half: PIDs are small and predictable right after boot, so one genuinely
+    recurs across reboots and two unrelated lifetimes would share an id.
+    """
+    from cindraleads.metrics import boot_id, worker_identity
+
+    identity = worker_identity()
+    assert identity.startswith(f"{os.uname().nodename}:")
+    assert identity.endswith(f":{os.getpid()}")
+
+    token = boot_id()
+    if token is None:
+        pytest.skip("no /proc/sys/kernel/random/boot_id on this platform")
+    assert f":{token}:" in identity
+    assert worker_identity() == identity, "the token is per boot, not per call"
+
+
+def test_an_unknowable_boot_degrades_rather_than_inventing_one(monkeypatch):
+    """Three-valued, like `uptime_seconds` and `evidence.reachable`.
+
+    A fabricated constant would claim every worker lifetime on the box was the same
+    one -- which is the exact failure the token exists to prevent, restated as a
+    default. Falling back to the old `hostname:pid` says less and lies about nothing.
+    """
+    from cindraleads import metrics
+
+    monkeypatch.setattr(metrics, "boot_id", lambda: None)
+    assert metrics.worker_identity() == f"{os.uname().nodename}:{os.getpid()}"
+
+
+def test_boot_id_is_none_when_the_file_is_missing(monkeypatch, tmp_path):
+    from cindraleads import metrics
+
+    missing = tmp_path / "nope"
+    monkeypatch.setattr(metrics, "Path", lambda _p: missing)
+    assert metrics.boot_id() is None
+
+
+def test_nothing_else_assembles_a_worker_identity():
+    """The same guard as `test_nothing_else_builds_the_outreach_prompt_itself`.
+
+    This format was built in two places in `cli.py`, which is why widening it was a
+    change in two files rather than one. Two call sites that must agree will stop
+    agreeing, so the duplicate is deleted rather than synchronised.
+    """
+    import ast
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+    for tree in (repo / "src", repo / "scripts"):
+        for path in tree.rglob("*.py"):
+            if path.name == "metrics.py":
+                continue  # the one place allowed to know the format
+            source = path.read_text()
+            if "getpid" not in source:
+                continue
+            for node in ast.walk(ast.parse(source)):
+                if not isinstance(node, ast.JoinedStr):
+                    continue
+                rendered = ast.dump(node)
+                if "getpid" in rendered and "nodename" in rendered:
+                    offenders.append(f"{path.relative_to(repo)}:{node.lineno}")
+    assert not offenders, f"worker identity assembled outside metrics.py: {offenders}"

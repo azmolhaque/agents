@@ -1379,6 +1379,35 @@ and was converted with it.
 limitation cost more than testing it would have, which is the `makesOffer` lesson in a
 new costume: **check the second source before describing what it must say.**
 
+**There was never a second worker.** `ps` on 2026-09-19 shows one `cindra work`, one
+`cindra serve`, one `feedback-bot` -- and `worker_id` is `f"{nodename}:{getpid()}"`,
+which is unique only *within a boot*. So `cindrasec-node:1723` and `:55895` are two
+process **lifetimes**, which one `systemctl restart` produces, and reading them as two
+concurrent processes was never supported by the field. Several rounds of diagnosis went
+into hunting a process that did not exist -- the `apple.com` shape again: a confident
+explanation built on a row nobody checked.
+
+The reverse is worse and silent: PIDs are small and predictable right after boot, so the
+same number genuinely recurs across reboots and two unrelated lifetimes would collapse
+into one id. `worker_identity()` puts `/proc/sys/kernel/random/boot_id` between them and
+degrades to the old `hostname:pid` when there is none, because a fabricated constant
+would claim every lifetime was the same one -- the failure it exists to prevent,
+restated as a default. Nothing matches on the value; it is provenance, so the format is
+free to say more. It was assembled in two places in `cli.py`, and
+`test_nothing_else_assembles_a_worker_identity` is the guard.
+
+**The 43-minute stall is now unrecoverable, and the reason is recorded here as a
+standing cost.** journald is volatile on this box and it rebooted on 2026-09-19, so the
+window is gone. Three asks for `ps` and `dmesg` produced a clean answer about *today*
+and nothing about the day in question. **A diagnostic that only exists at the moment of
+asking cannot answer a question about last week** -- which is the argument for
+persistent journald, not for asking a fourth time.
+
+**And the box is rebooting uncleanly.** `EXT4-fs (mmcblk0p2): orphan cleanup on readonly
+fs` at mount is a dirty filesystem, which is the third such shutdown. No `i/o error` and
+no mmc fault in that boot's ring buffer -- but `dmesg` after a reboot covers only the
+current boot, so that is 2 h of evidence about the card and not a verdict on it.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
