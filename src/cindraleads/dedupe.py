@@ -248,6 +248,13 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         # evidence -- the same shape arriving through the evidence resampler rather
         # than the near-miss list, which is a route nothing else was watching.
         "lwn.net",
+        # Both off the near-miss list on 2026-09-19, both one point under the Tier C
+        # floor and therefore one enrichment pass from being dispatched. `brecorder.com`
+        # is Business Recorder, a Pakistani financial daily -- the `dhakatribune.com`
+        # shape again, in the other half of the ICP's geography. `startupstorymedia.com`
+        # writes about startups, which is the TechCrunch defect stated in the domain.
+        "brecorder.com",
+        "startupstorymedia.com",
         "archive.org",
         "twitter.com",
         "x.com",

@@ -1329,6 +1329,50 @@ Extractor then reads the company's own homepage and the Enricher runs against th
 domain, which is where a T1 or a DMARC gap is actually found. Weights 70 and 62 are
 guesses, and `cindra explain`'s yield row is what settles them.
 
+**Measured 2026-09-19, one day in: it works, and the predicted failure is real at 38%.**
+29 companies against `hn_south_asia`'s 6 for the life of the project, and the hits are
+the best-converting in the file -- 18 hits to 15-16 candidates, ~85%, against 33% for
+`hn_ai_agent` and 2% for `hn_south_asia`. That ratio is the whole thesis restated: an
+org with a website *is* a company domain, so almost nothing is dropped as a platform URL.
+The corpus finally contains SSLCOMMERZ, Brain Station 23, Vivasoft, Themeum, Technext --
+real Bangladeshi software companies, not a tic-tac-toe game from Show HN.
+
+And ~11 of the 29 are not prospects: two universities, a foundation, a student rover
+team at BRAC, and five individual educators' personal brands. **The note above predicted
+exactly this and it should be read as a warning that came true, not as one that was
+heeded** -- shipping the template with the risk written down did not stop the risk.
+
+`not_academic` closes the university half, suffix-first for the same reason
+`not_government_or_cni` is: `iutoic-dhaka.edu` arrived as "Department of Computer Science
+and Engineering", which contains no word any rule looks for. **The nonprofit half is
+deliberately left open.** Bare "foundation" would veto a "Foundation Health", which is
+primary ICP -- the trap that killed bare "media" in the publication list and the
+name-does-not-match-domain rule that `Rover · rtrvr.ai` killed. A rule that cannot be
+made safe is left unwritten, and `test_the_nonprofits_the_academic_rule_deliberately_misses`
+records the gap so the next person does not think it is closed.
+
+**Two data-quality findings from the same 29 rows, neither of them a rule.**
+`templatecookie.com` has `display_name` "LAUTANTOTO" -- an Indonesian gambling brand on a
+Bangladeshi template company's domain, so the site is spammed or parked, and a card would
+open by addressing them as a casino. And `hasinhayder.com` came out as
+"লার্ন উইথ হাসিন হাFRINGদার", with "FRING" spliced into the middle of a Bengali name.
+Both would reach a prospect's inbox as written. Neither is caught by anything.
+
+**`ComplianceGate.fingerprint` hashed the veto *config* under a docstring promising the
+veto *rules*, and adding `not_academic` proved it.** A new rule is worth -100 to every
+university in the corpus and moves neither `excluded_sectors` nor `max_employees`, so
+`calibration_version` matched, `enqueue_stale_scores` had nothing to do, and
+`mbstu.ac.bd` would have kept its score forever. **That is the identical defect this
+function was written to fix -- `exclude_sectors` invisible to `scoring.yaml`'s hash --
+recurring one level up inside the fix.** Found by reading the docstring against its own
+last line, which is the cheapest audit available and had never been done.
+
+`sorted(RULES)` and the suffix/word tuples are in the hash now, because adding `ac.pk`
+to `_ACADEMIC_SUFFIXES` is as much a veto change as adding a sector. A change to a rule's
+*body* that touches no constant still escapes; that is stated rather than papered over,
+because `inspect.getsource` would invalidate 959 leads on a reworded comment and a
+staleness signal that cries wolf is one nobody reads.
+
 It is a separate **engine** rather than a parameter on `github_api` because a source id
 is a cache namespace: both would key through `GitHubClient.cache_key`, which builds from
 the repo-search URL, so an org plan would read a repo plan's cached body. Two

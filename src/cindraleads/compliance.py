@@ -197,8 +197,67 @@ def not_government_or_cni(facts: LeadFacts) -> bool:
 
 
 def _has_government_tld(domain: str) -> bool:
+    return _has_suffix(domain, _GOV_SUFFIXES)
+
+
+def _has_suffix(domain: str, suffixes: tuple[str, ...]) -> bool:
+    """Suffix match, never substring. `govinda.io` and `datagov.com` are ordinary
+    companies, and `eduflow.com` is a real prospect -- a rule that vetoed them would
+    shrink the corpus silently, which is the failure mode a hard exclude can least
+    afford."""
     host = domain.strip().lower().strip(".")
-    return any(host == suffix or host.endswith(f".{suffix}") for suffix in _GOV_SUFFIXES)
+    return any(host == suffix or host.endswith(f".{suffix}") for suffix in suffixes)
+
+
+_ACADEMIC_WORDS = ("university", "college", "polytechnic", "faculty of")
+
+# Suffixes reserved for accredited education by registry policy, exactly like
+# `_GOV_SUFFIXES`. A domain under one of these is a school as a matter of fact, which
+# is the only evidence strong enough here: `iutoic-dhaka.edu` arrived as "Department of
+# Computer Science and Engineering", which contains none of the words above.
+_ACADEMIC_SUFFIXES = (
+    "edu",
+    "ac.uk",
+    "ac.bd",
+    "ac.in",
+    "ac.jp",
+    "ac.kr",
+    "ac.nz",
+    "ac.za",
+    "ac.lk",
+    "edu.au",
+    "edu.bd",
+    "edu.in",
+    "edu.pk",
+    "edu.np",
+    "edu.sg",
+    "edu.my",
+)
+
+
+def not_academic(facts: LeadFacts) -> bool:
+    """A university is not a B2B prospect, and `github_orgs` finds them by design.
+
+    The location search asks who is *there*, and what is there includes the computer
+    science department. Predicted when the engine shipped -- "an org account with a
+    site is a team, not a payroll; an OSS collective and a university lab both qualify"
+    -- and confirmed on the first 29 companies: `mbstu.ac.bd` and `iutoic-dhaka.edu`.
+
+    Suffix first and words second, the same shape and the same reasoning as
+    `not_government_or_cni`: the TLD is a fact about the organisation, the `industry`
+    field is a 4B model's guess about it.
+
+    **Deliberately does not cover the nonprofits in that same batch.** `arced.foundation`
+    and a student rover team at `bracu-mongoltori.com` are also out of ICP, and no safe
+    general rule reaches them -- bare "foundation" would veto a "Foundation Health",
+    which is primary ICP, the same trap as bare "media" in the publication list and the
+    name-does-not-match-domain rule that `Rover · rtrvr.ai` killed. A rule that cannot
+    be made safe is left unwritten rather than shipped narrow and trusted wide.
+    """
+    if _has_suffix(facts.canonical_domain or "", _ACADEMIC_SUFFIXES):
+        return False
+    text = f"{facts.industry or ''} {facts.display_name}".lower()
+    return not any(word in text for word in _ACADEMIC_WORDS)
 
 
 def not_a_competitor(facts: LeadFacts) -> bool:
@@ -225,6 +284,7 @@ RULES: dict[str, Callable[[LeadFacts], bool]] = {
     "under_employee_ceiling": under_employee_ceiling,
     "not_government_or_cni": not_government_or_cni,
     "not_a_competitor": not_a_competitor,
+    "not_academic": not_academic,
     "not_an_excluded_sector": not_an_excluded_sector,
     "has_canonical_domain": has_canonical_domain,
 }
@@ -263,8 +323,38 @@ class ComplianceGate:
         the wrong trade -- suppression is already applied live by `worklist` and at plan
         time by the Scout. What belongs here is the part that is a *rule* rather than a
         row: which sectors we refuse, and how large is too large.
+
+        **And for one build it hashed the veto config while claiming to hash the veto
+        rules.** Adding `not_academic` to `RULES` changes what a lead scores by 100
+        points and moved neither `excluded_sectors` nor `max_employees`, so the stamp
+        matched, `enqueue_stale_scores` found nothing to do, and `mbstu.ac.bd` would
+        have kept its score forever -- the *identical* defect this function was written
+        to fix, one level up, found by reading the docstring against its own last line.
+
+        So the rule names are in it, and so are the literals the rules match on: adding
+        `ac.pk` to `_ACADEMIC_SUFFIXES` is as much a veto change as adding a sector.
+        What still escapes is a change to a rule's *body* that touches no constant --
+        said out loud rather than papered over, because `inspect.getsource` would
+        invalidate the whole corpus on a reworded comment, which is the trade that makes
+        a staleness signal get ignored.
         """
-        shape = f"{sorted(s.lower() for s in self.excluded_sectors)}|{self.max_employees}"
+        shape = "|".join(
+            (
+                str(sorted(s.lower() for s in self.excluded_sectors)),
+                str(self.max_employees),
+                str(sorted(RULES)),
+                str(
+                    (
+                        *_GOV_SUFFIXES,
+                        *_GOV_WORDS,
+                        *_CNI_WORDS,
+                        *_ACADEMIC_SUFFIXES,
+                        *_ACADEMIC_WORDS,
+                        *_COMPETITOR_WORDS,
+                    )
+                ),
+            )
+        )
         return hashlib.sha256(shape.encode()).hexdigest()[:16]
 
     def load_suppression(self, conn: sqlite3.Connection) -> None:

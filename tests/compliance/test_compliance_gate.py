@@ -287,3 +287,98 @@ def test_every_rule_has_a_test():
     tested = {name[len("test_rule_") :] for name in dir(module) if name.startswith("test_rule_")}
     missing = set(RULES) - tested
     assert not missing, f"compliance rules with no test: {sorted(missing)}"
+
+
+def test_a_university_is_vetoed_whatever_the_page_calls_itself(gate: ComplianceGate):
+    """`github_orgs` finds universities by design, and the first 29 companies proved it.
+
+    The location search asks who is *there*, and what is there includes the computer
+    science department. `iutoic-dhaka.edu` arrived as "Department of Computer Science
+    and Engineering" -- no word in the rule matches that, which is why the suffix is
+    checked first, exactly as it is for `nyc.gov`.
+    """
+    for domain in ("iutoic-dhaka.edu", "mbstu.ac.bd", "mit.edu", "ox.ac.uk", "iitb.ac.in"):
+        verdict = gate.review(facts(canonical_domain=domain, display_name="Research Group"))
+        assert "not_academic" in verdict.vetoes, domain
+
+
+def test_rule_not_academic(gate: ComplianceGate):
+    """A school on a `.com` is still a school. The suffix is the strong evidence, not
+    the only one."""
+    for name in ("Mawlana Bhashani Science and Technology University", "Dhaka City College"):
+        verdict = gate.review(facts(canonical_domain="example.com", display_name=name))
+        assert "not_academic" in verdict.vetoes, name
+
+
+def test_a_company_whose_domain_merely_contains_edu_is_not_vetoed(gate: ComplianceGate):
+    """The bound, and the reason this is a suffix match.
+
+    Edtech is a real prospect and several are in the corpus -- a rule that vetoed every
+    domain containing "edu" would delete a sector, silently, which is the one thing a
+    hard exclude must never do.
+    """
+    for domain in ("eduflow.com", "edutech.io", "stacklearner.com", "educative.io"):
+        verdict = gate.review(facts(canonical_domain=domain, display_name="Course Platform"))
+        assert "not_academic" not in verdict.vetoes, domain
+
+
+def test_the_nonprofits_the_academic_rule_deliberately_misses(gate: ComplianceGate):
+    """Documents a known gap rather than pretending it is closed.
+
+    `arced.foundation` and a student rover team at `bracu-mongoltori.com` came from the
+    same batch and are equally out of ICP, and no safe general rule reaches them: bare
+    "foundation" would veto a "Foundation Health", which is primary ICP -- the trap that
+    killed bare "media" in the publication list and the name-does-not-match-domain rule
+    that `Rover · rtrvr.ai` killed.
+
+    If this test ever starts failing because a rule was added, check that the rule
+    cannot also veto a healthtech company before deleting it.
+    """
+    known_gaps = (
+        ("arced.foundation", "ARCED Foundation"),
+        ("bracu-mongoltori.com", "Mongol-Tori"),
+    )
+    for domain, name in known_gaps:
+        assert gate.review(facts(canonical_domain=domain, display_name=name)).passed, domain
+
+
+def test_adding_a_veto_rule_invalidates_the_stored_corpus():
+    """A veto is arithmetic, so a new one must re-score what the old rules produced.
+
+    `fingerprint` hashed `excluded_sectors` and `max_employees` under a docstring
+    promising the identity of the veto *rules*. Adding `not_academic` moves neither, so
+    the stamp matched, `enqueue_stale_scores` reported nothing to do, and every
+    university already in the corpus would have kept its score -- the same defect this
+    function exists to fix, one level up.
+    """
+    from cindraleads.compliance import RULES, ComplianceGate
+
+    base = ComplianceGate(excluded_sectors=("government",), max_employees=1000)
+    before = base.fingerprint()
+
+    original = dict(RULES)
+    try:
+        RULES["a_new_veto"] = lambda _facts: True
+        assert base.fingerprint() != before, (
+            "a rule added to RULES did not move the stamp; the corpus would never "
+            "be re-scored under it"
+        )
+    finally:
+        RULES.clear()
+        RULES.update(original)
+    assert base.fingerprint() == before, "and removing it must restore the old identity"
+
+
+def test_widening_a_veto_list_invalidates_the_stored_corpus(monkeypatch):
+    """The other half: a rule whose *literals* changed vetoes different companies.
+
+    Adding `ac.pk` to the academic suffixes is as much a veto change as adding a sector,
+    and it happens in a tuple rather than in `icp.yaml` -- so hashing the config alone
+    would miss it exactly the way hashing `scoring.yaml` alone missed `exclude_sectors`.
+    """
+    from cindraleads import compliance
+
+    gate = compliance.ComplianceGate(excluded_sectors=("government",), max_employees=1000)
+    before = gate.fingerprint()
+    monkeypatch.setattr(compliance, "_ACADEMIC_SUFFIXES", (*compliance._ACADEMIC_SUFFIXES, "ac.pk"))
+    assert gate.fingerprint() != before
