@@ -322,24 +322,23 @@ def test_a_company_whose_domain_merely_contains_edu_is_not_vetoed(gate: Complian
         assert "not_academic" not in verdict.vetoes, domain
 
 
-def test_the_nonprofits_the_academic_rule_deliberately_misses(gate: ComplianceGate):
-    """Documents a known gap rather than pretending it is closed.
+def test_the_out_of_icp_organisations_no_rule_reaches(gate: ComplianceGate):
+    """What is still open, named precisely, so nobody mistakes it for closed.
 
-    `arced.foundation` and a student rover team at `bracu-mongoltori.com` came from the
-    same batch and are equally out of ICP, and no safe general rule reaches them: bare
-    "foundation" would veto a "Foundation Health", which is primary ICP -- the trap that
-    killed bare "media" in the publication list and the name-does-not-match-domain rule
-    that `Rover · rtrvr.ai` killed.
+    This test used to cover `arced.foundation` too. `not_nonprofit` now catches that --
+    the instruction left here said to check the new rule cannot veto a healthtech
+    company before deleting a case, and `test_the_nonprofit_rule_does_not_veto_real_
+    prospects` is that check.
 
-    If this test ever starts failing because a rule was added, check that the rule
-    cannot also veto a healthtech company before deleting it.
+    `Mongol-Tori` is a student rover team at BRAC University on a `.com`. Its name says
+    nothing, its domain says nothing, and its industry is whatever a 4B made of a
+    robotics page. No rule reaches it that would not also reach real companies, so the
+    catch is a human reading the card.
     """
-    known_gaps = (
-        ("arced.foundation", "ARCED Foundation"),
-        ("bracu-mongoltori.com", "Mongol-Tori"),
+    verdict = gate.review(
+        facts(canonical_domain="bracu-mongoltori.com", display_name="Mongol-Tori")
     )
-    for domain, name in known_gaps:
-        assert gate.review(facts(canonical_domain=domain, display_name=name)).passed, domain
+    assert verdict.passed
 
 
 def test_adding_a_veto_rule_invalidates_the_stored_corpus():
@@ -382,3 +381,39 @@ def test_widening_a_veto_list_invalidates_the_stored_corpus(monkeypatch):
     before = gate.fingerprint()
     monkeypatch.setattr(compliance, "_ACADEMIC_SUFFIXES", (*compliance._ACADEMIC_SUFFIXES, "ac.pk"))
     assert gate.fingerprint() != before
+
+
+def test_rule_not_nonprofit(gate: ComplianceGate):
+    """EFF reached Tier B at 59 and was dispatched to Discord with a free-Snapshot offer.
+
+    A digital-rights litigator is the worst possible audience for a cold security pitch,
+    and this gap was left open deliberately two commits earlier -- recorded in a test
+    rather than pretended away -- on the grounds that bare "foundation" would veto a
+    "Foundation Health". The position of the word is what makes it safe.
+    """
+    for name in ("Electronic Frontier Foundation", "Wikimedia Foundation", "Some Trust"):
+        verdict = gate.review(facts(canonical_domain="eff.org", display_name=name))
+        assert "not_nonprofit" in verdict.vetoes, name
+
+    verdict = gate.review(facts(industry="non-profit advocacy", display_name="Acme"))
+    assert "not_nonprofit" in verdict.vetoes
+
+
+def test_the_nonprofit_rule_does_not_veto_real_prospects(gate: ComplianceGate):
+    """The bound, and every entry here is a trap the obvious version falls into.
+
+    `Foundation Health` is primary ICP and *begins* with the word. `MongoDB` contains
+    "ngo", which is why no short token is in the list. A DRM vendor sells digital
+    rights management and would have been caught by "digital rights". `.org` is
+    unrestricted and proves nothing.
+    """
+    survivors = (
+        ("foundationhealth.com", "Foundation Health", "healthtech"),
+        ("mongodb.com", "MongoDB", "developer tools"),
+        ("acme.com", "Acme DRM", "digital rights management"),
+        ("openssl.org", "OpenSSL Software", "developer tools"),
+        ("trustpilot.com", "Trustpilot", "saas"),
+    )
+    for domain, name, industry in survivors:
+        verdict = gate.review(facts(canonical_domain=domain, display_name=name, industry=industry))
+        assert "not_nonprofit" not in verdict.vetoes, name

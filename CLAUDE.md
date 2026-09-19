@@ -1595,6 +1595,45 @@ snippet is `"Unified Agent Registry traccia · governance console $ traccia agen
 because it genuinely appears on the page -- the rule proves *we did not invent it*, and
 was never a claim that it reads like a sentence a human wrote.
 
+**The Bengali angle is not fit to send, and no guard fixes the reason.** Read as a
+Bengali speaker rather than as JSON, the dispatched cards are machine-translation
+garbage in the one language whose whole purpose is sounding local:
+
+- `স্বাধীন রো ই সঙ্গে` -- "RoE" transliterated phonetically as *ro-i*, meaningless.
+- `এই আই` and `এই-এলএম` -- "AI" and "AI-LLM" spelled out letter by letter.
+- `এটি আপনার জন্য মুক্ত হবে` -- **মুক্ত means *liberated*, not *free of charge*.** The
+  word for that is বিনামূল্যে. The free-offer claim, which two commits have now been
+  spent getting exactly right in English, is simply wrong in Bengali.
+- `যার গুরুত্ব বিভক্ত হয়েছে` for "with gaps in it" -- not a sentence anyone would write.
+
+**This is a capability limit, not a bug.** A 4B writing marketing Bengali produces text
+that reads as foreign to a native speaker, which is the precise opposite of the
+local-trust wedge `T12_LOCAL` and Taka pricing exist to build. `PROSE_MAX_TOKENS_BENGALI`
+is about *length*; nothing in this project has ever checked the Bengali for *quality*,
+and every test of it asserts a stub. **Do not send a Bengali card until a native reader
+has approved the wording** -- and the honest fix is a human-written template with slots,
+not a bigger budget.
+
+**Two things in those cards were mechanical, and are now guarded.**
+`shovels.ai` ended in twenty-odd dandas -- `। । । । ।` -- a 4B degenerating into
+repetition at the end of a decode rather than truncating, so no token budget touches it.
+And `moza · jigjoy.ai` opened *"You announced an AI feature today; you published code
+using an LLM agent framework today"* on a card whose own trigger list reads **16d ago**:
+the model invented a date the prompt had supplied correctly, and the card contradicts
+itself where the reader can see it.
+
+The prompt already forbids both. It says "Where there is no time, do not invent one ...
+'today' would be wrong", and it says so because this had happened before. **A rule in the
+prompt is a preference; a rule in the code is a rule** -- the same conclusion `means`,
+the offer slugs and the free-offer flag each reached by the same route. Both guards are
+in `prose_version`, because widening what counts as unusable makes an angle the old
+build accepted one this build must re-ask for.
+
+The recency guard counts **dated triggers only**: a derived trigger is a standing fact
+re-derived from a fresh lookup and carries no date, so it can neither support a "today"
+nor refute one, and counting it would discard an angle for disagreeing with a claim
+nothing made.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

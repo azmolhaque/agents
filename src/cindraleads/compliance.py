@@ -235,6 +235,49 @@ _ACADEMIC_SUFFIXES = (
 )
 
 
+# Words specific enough to mean one thing, held to the same standard as the publication
+# terms in `exclude_sectors`. Short tokens are deliberately absent: "ngo" is a substring
+# of "mongodb", and a veto that rejects MongoDB to catch a charity is not a trade worth
+# making. "digital rights" went the same way -- digital rights *management* is a real
+# software sector, and DRM vendors are prospects.
+_NONPROFIT_WORDS = (
+    "non-profit",
+    "nonprofit",
+    "not-for-profit",
+    "charitable",
+    "charity",
+    "civil liberties",
+)
+
+
+def not_nonprofit(facts: LeadFacts) -> bool:
+    """A foundation does not buy a security assessment.
+
+    Left unwritten two commits ago, on the grounds that bare "foundation" would veto a
+    "Foundation Health" -- primary ICP -- and that a rule which cannot be made safe is
+    better absent than shipped narrow and trusted wide. The gap was recorded in a test
+    rather than pretended away, and then it produced a card: **Electronic Frontier
+    Foundation reached Tier B at 59 and was dispatched to Discord**, with a
+    `snapshot_free` offer and 484 CT subdomains. EFF is a digital-rights *litigator*;
+    cold-pitching it a security engagement is the worst audience this corpus could find.
+
+    What makes it safe now is the position of the word rather than its presence.
+    "Electronic Frontier Foundation" *ends* with it; "Foundation Health" begins with it,
+    and a company named for what it does keeps the word in front. That distinction is
+    the whole rule, and it is why this exists today and did not exist then.
+
+    Still narrower than the problem, and deliberately so. A nonprofit that names itself
+    neither "Foundation" nor anything in `_NONPROFIT_WORDS` gets through, and `.org`
+    cannot help -- it is unrestricted and half the corpus's real prospects could hold
+    one. The remaining catch is a human reading the card.
+    """
+    name = facts.display_name.strip().lower()
+    if name.endswith(" foundation") or name.endswith(" trust"):
+        return False
+    text = f"{facts.industry or ''} {name}"
+    return not any(word in text for word in _NONPROFIT_WORDS)
+
+
 def not_academic(facts: LeadFacts) -> bool:
     """A university is not a B2B prospect, and `github_orgs` finds them by design.
 
@@ -285,6 +328,7 @@ RULES: dict[str, Callable[[LeadFacts], bool]] = {
     "not_government_or_cni": not_government_or_cni,
     "not_a_competitor": not_a_competitor,
     "not_academic": not_academic,
+    "not_nonprofit": not_nonprofit,
     "not_an_excluded_sector": not_an_excluded_sector,
     "has_canonical_domain": has_canonical_domain,
 }
@@ -350,6 +394,7 @@ class ComplianceGate:
                         *_CNI_WORDS,
                         *_ACADEMIC_SUFFIXES,
                         *_ACADEMIC_WORDS,
+                        *_NONPROFIT_WORDS,
                         *_COMPETITOR_WORDS,
                     )
                 ),

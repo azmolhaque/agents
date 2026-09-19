@@ -256,6 +256,16 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         # writes about startups, which is the TechCrunch defect stated in the domain.
         "brecorder.com",
         "startupstorymedia.com",
+        # `Atomic Chat · ostechnix.com`, Tier B 62, dispatched to Discord: a Linux
+        # tutorial site whose article about Atomic Chat became a company row named for
+        # the product it reviewed. The TechCrunch shape exactly, and the fourth host
+        # added to this list from a card that had already been sent.
+        #
+        # The list is the patch and it is still losing. The general rule this needs is
+        # the `name_similarity` measurement CLAUDE.md asks for and nobody has run --
+        # "Atomic Chat" against `ostechnix.com` fails it badly, and `Rover · rtrvr.ai`
+        # is why the answer is quarantine-for-review rather than a veto.
+        "ostechnix.com",
         "archive.org",
         "twitter.com",
         "x.com",

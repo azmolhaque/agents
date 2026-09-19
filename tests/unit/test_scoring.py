@@ -1173,3 +1173,84 @@ def test_the_local_tlds_that_score_as_local_can_also_be_named():
         if country_from_domain(f"x{tld}", cctlds) is None
     ]
     assert not unnamed, f"these score as local but name no country: {unnamed}"
+
+
+# --------------------------------------------- prose that contradicts the card itself
+
+
+def test_a_degenerate_bengali_angle_is_discarded() -> None:
+    """`shovels.ai` shipped a Bengali angle ending in twenty-odd dandas.
+
+    A 4B degenerating into repetition at the end of a decode, not a truncation -- so
+    raising the token budget does not touch it. The angle is discarded and the lead
+    ships without one, the same trade as a leaked trigger code: no angle is usable, a
+    broken one is not.
+    """
+    from cindraleads.agents.scorer import _degenerate_run
+    from cindraleads.models import LeadProse
+
+    shovels = LeadProse(
+        outreach_angle="You published a mail-authentication policy with gaps in it.",
+        bengali_angle=(
+            "আপনি একটি মেইল অ্যাথেন্টিকেশন নীতি প্রকাশ করেছেন। । । । । । । । । । । । । । । । । । । । ।"
+        ),
+        rationale="x",
+    )
+    assert _degenerate_run(shovels)
+    assert not _degenerate_run(
+        LeadProse(outreach_angle="You shipped an agent... happy to look!", rationale="x")
+    )
+
+
+def test_an_angle_cannot_claim_a_freshness_the_triggers_deny() -> None:
+    """`moza · jigjoy.ai` opened "You announced an AI feature today" on a card whose own
+    trigger list says 16d ago.
+
+    The prompt already forbids this -- "Where there is no time, do not invent one ...
+    'today' would be wrong" -- and says so because it had happened before. **A rule in
+    the prompt is a preference; a rule in the code is a rule**, which is the same
+    conclusion `means` and the offer slugs each reached.
+    """
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from cindraleads.agents.scorer import _false_recency
+    from cindraleads.models import LeadProse, utcnow
+
+    moza = LeadProse(
+        outreach_angle="You announced an AI feature today; you published code today.",
+        rationale="x",
+    )
+    sixteen_days = [SimpleNamespace(code="T1_AI_SHIP", observed_at=utcnow() - timedelta(days=16))]
+    assert _false_recency(moza, sixteen_days) == "today"
+
+
+def test_a_genuinely_fresh_trigger_may_still_say_today() -> None:
+    """The bound. "Today" is the strongest opening a cold email has when it is true,
+    and a guard that withheld it would cost the freshest leads their best sentence."""
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from cindraleads.agents.scorer import _false_recency
+    from cindraleads.models import LeadProse, utcnow
+
+    prose = LeadProse(outreach_angle="You announced an AI feature today.", rationale="x")
+    hours_old = [SimpleNamespace(code="T1_AI_SHIP", observed_at=utcnow() - timedelta(hours=3))]
+    assert _false_recency(prose, hours_old) == ""
+
+
+def test_a_derived_trigger_cannot_refute_a_recency_claim() -> None:
+    """A DMARC gap is a standing fact re-derived from a fresh lookup, with no date of
+    its own -- so it can neither support a "today" nor deny one. Counting it would
+    discard an angle for disagreeing with a trigger that never made a claim."""
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    from cindraleads.agents.scorer import _false_recency
+    from cindraleads.models import LeadProse, utcnow
+
+    prose = LeadProse(outreach_angle="You announced an AI feature today.", rationale="x")
+    only_derived = [
+        SimpleNamespace(code="T8_HYGIENE_GAP", observed_at=utcnow() - timedelta(days=40))
+    ]
+    assert _false_recency(prose, only_derived) == ""

@@ -148,6 +148,10 @@ def prose_version(base: Path | None = None) -> str:
     """
     digest = hashlib.sha256(prompt_version(base).encode())
     digest.update(f"|{PROSE_MAX_TOKENS}|{PROSE_MAX_TOKENS_BENGALI}".encode())
+    # The guards belong here for the same reason the leak pattern does: widening what
+    # counts as unusable makes an angle the old build accepted one this build re-asks
+    # for, and `enqueue_stale_scores` has to be able to find those leads.
+    digest.update(f"|{_DEGENERATE.pattern}|{_RECENCY_CLAIM.pattern}".encode())
     bounds = "|".join(
         f"{name}:{_max_length(field)}" for name, field in sorted(LeadProse.model_fields.items())
     )
@@ -419,6 +423,15 @@ class Scorer:
                 prose_pauses=pauses,
             )
         prose = structured.value
+        # Three guards, one discard path. Each is a claim the card makes that we can
+        # check mechanically, and each exists because the prompt already forbade it and
+        # the model did it anyway.
+        if run := _degenerate_run(prose):
+            log.warning("scorer_prose_degenerate", canonical_domain=domain, run=run)
+            return ScoreOutcome(canonical_domain=domain)
+        if stale := _false_recency(prose, self._score_input(facts).triggers):
+            log.warning("scorer_prose_false_recency", canonical_domain=domain, claim=stale)
+            return ScoreOutcome(canonical_domain=domain)
         leaked = _leaked_codes(prose)
         if leaked:
             # Discard the prose, keep the lead. An angle naming our internal taxonomy
@@ -1026,6 +1039,57 @@ _CODE_PATTERN = re.compile(r"\bT\d{1,2}_[A-Z][A-Z_]+\b")
 # better prompt. Underscores only -- a card saying "watch" or "snapshot" in running
 # English is fine, and matching those words would withhold half the corpus.
 _SLUG_PATTERN = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+
+
+# A run of one character, whitespace removed first. The Bengali angle for shovels.ai
+# ended in twenty-odd dandas separated by spaces -- `। । । । ।` -- which is a 4B
+# degenerating into repetition at the end of a decode, not a truncation. Eight is well
+# clear of "..." and "!!!", and prose does not otherwise repeat a character that far.
+_DEGENERATE = re.compile(r"(.)\1{7,}")
+
+# Words that assert the prospect did something in the last day or so. `moza · jigjoy.ai`
+# opened "You announced an AI feature today; you published code using an LLM agent
+# framework today" on a card whose own trigger list says **16d ago** -- the model
+# inventing a date the prompt had given it correctly, and it contradicts itself in a
+# place the reader can see.
+_RECENCY_CLAIM = re.compile(r"\b(today|yesterday|this morning|just now)\b", re.IGNORECASE)
+
+
+def _prose_text(prose: LeadProse) -> str:
+    """Every prospect-facing field, joined. `rationale` is ours to read; both angles
+    are pasted into an email, so both are checked."""
+    return " ".join(str(v) for v in (prose.outreach_angle, prose.bengali_angle) if v)
+
+
+def _degenerate_run(prose: LeadProse) -> str:
+    """A repeated character, or "" if the prose is clean."""
+    match = _DEGENERATE.search(re.sub(r"\s+", "", _prose_text(prose)))
+    return match.group(0)[:12] if match else ""
+
+
+def _false_recency(prose: LeadProse, triggers: Any) -> str:
+    """A "today" the triggers do not support, or "".
+
+    The prompt already says it: "Where there is no time, do not invent one ... 'today'
+    would be wrong." It says so because this happened before. An instruction a model
+    disobeys needs a check, which is the same conclusion `means` and the offer slugs
+    each reached -- **a rule in the prompt is a preference; a rule in the code is a
+    rule.**
+
+    Dated triggers only. A derived trigger is a standing fact with no date, so it can
+    neither support nor refute a claim about when something happened.
+    """
+    claim = _RECENCY_CLAIM.search(_prose_text(prose))
+    if not claim:
+        return ""
+    ages = [
+        (utcnow() - t.observed_at).days
+        for t in triggers
+        if str(t.code) not in DERIVED_TRIGGERS and t.observed_at
+    ]
+    if not ages or min(ages) <= 1:
+        return ""
+    return claim.group(0)
 
 
 def _leaked_codes(prose: LeadProse) -> list[str]:
