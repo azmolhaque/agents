@@ -1634,6 +1634,37 @@ re-derived from a fresh lookup and carries no date, so it can neither support a 
 nor refute one, and counting it would discard an angle for disagreeing with a claim
 nothing made.
 
+**The denylist gained four hosts in one session and one maintenance pass found five
+more shapes it does not cover.** `phoronix.com` and `theconversation.com` (publishers --
+the latter fetched as company evidence for an article about *Star Trek*),
+`reactorcore.itch.io` (a game host), `blog.lukesalamone.com` (a personal blog) and
+`bollywoodle.app` (a Bollywood guessing game). Every host added this session was added
+*after* a card had already been dispatched.
+
+`scripts/name_mismatch.py` is the measurement this file has asked for for weeks and that
+four list edits in one session were spent avoiding. It buckets the corpus by
+`name_similarity(display_name, domain-stem)` and prints the **sendable count per band**,
+because that is the question -- a band that is mostly junk is worth quarantining for
+review, and a band holding real leads is not. It rejects nothing.
+
+**Its first run already revises the note that has been used to block this work.**
+Spot-checked against the cases named above:
+
+| similarity | name | domain | |
+| --- | --- | --- | --- |
+| 60.0 | Rover | rtrvr.ai | **the counterexample, and it is not bottom-band** |
+| 31.6 | Atomic Chat | ostechnix.com | publisher |
+| 22.2 | YouCal - AI Calorie Tracker | apple.com | store listing |
+| 19.4 | Electronic Frontier Foundation | eff.org | **a legitimate acronym** |
+| 100.0 | Brain Station 23 / SSLCOMMERZ | …-23.com / sslcommerz.com | real BD companies |
+
+`Rover · rtrvr.ai` scores **60**, in the partial band, not the bottom one -- so "the
+mismatch rule would have dropped Rover" is weaker than recorded. The actual hazard down
+there is **acronyms**: EFF at 19.4 is a perfectly honest name for its domain. That is a
+different objection from the one this file carried, and it points at a different rule --
+initials-match before similarity. Run the script against the real corpus before building
+either.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
