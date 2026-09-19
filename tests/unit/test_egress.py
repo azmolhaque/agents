@@ -559,57 +559,76 @@ AUTH_REGISTRY = SourceRegistry.from_dict(
 )
 
 
-def _auth_egress(tmp_path, tokens, seen):  # type: ignore[no-untyped-def]
+@pytest.fixture
+def auth_egress(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """An egress over a throwaway store, closed on the way out.
+
+    A fixture rather than a plain helper because the helper leaked: three tests each
+    opened a `Store` and none closed it, so three `sqlite3.Connection` objects were
+    finalized whenever the garbage collector got to them. `-W error` turns that
+    `ResourceWarning` into a `PytestUnraisableExceptionWarning` charged to **whichever
+    test happens to be running at the time**, which was neither the leak nor a real
+    failure -- the suite reported a green assertion as a red test. Teardown also runs
+    when an assertion fails, which a close at the end of the test body does not.
+    """
     from cindraleads.sources import DocumentCache, SourceBreakers
     from cindraleads.store import Store
 
-    store = Store(tmp_path / "auth.db", migrations_dir=MIGRATIONS)
-    store.migrate()
+    stores: list[Store] = []
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        seen.append(dict(request.headers))
-        return httpx.Response(200, text="{}")
+    def build(tokens: dict[str, str], seen: list[dict[str, str]]) -> EgressClient:
+        store = Store(tmp_path / f"auth{len(stores)}.db", migrations_dir=MIGRATIONS)
+        store.migrate()
+        stores.append(store)
 
-    return EgressClient(
-        store=store,
-        registry=AUTH_REGISTRY,
-        cache=DocumentCache(store, cache_dir=tmp_path / "cache"),
-        breakers=SourceBreakers(),
-        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-        auth_tokens=tokens,
-    )
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(dict(request.headers))
+            return httpx.Response(200, text="{}")
+
+        return EgressClient(
+            store=store,
+            registry=AUTH_REGISTRY,
+            cache=DocumentCache(store, cache_dir=tmp_path / "cache"),
+            breakers=SourceBreakers(),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            auth_tokens=tokens,
+        )
+
+    yield build
+    for store in stores:
+        store.close()
 
 
-async def test_a_bearer_source_sends_its_token(tmp_path):
+async def test_a_bearer_source_sends_its_token(auth_egress):
     seen: list[dict[str, str]] = []
-    egress = _auth_egress(tmp_path, {"GITHUB_TOKEN": "ghp_secret"}, seen)
+    egress = auth_egress({"GITHUB_TOKEN": "ghp_secret"}, seen)
     await egress.fetch("bearer_src", "https://api.example.com/a")
     assert seen[0].get("authorization") == "Bearer ghp_secret"
 
 
-async def test_a_query_scheme_source_sends_no_header(tmp_path):
+async def test_a_query_scheme_source_sends_no_header(auth_egress):
     """SerpAPI puts its key in `secret_params` and must keep doing so. A blanket
     "attach every auth_env as a header" would send the key a second way, on the wire,
     for no benefit -- and a credential travelling by two routes is two things to get
     wrong rather than one."""
     seen: list[dict[str, str]] = []
-    egress = _auth_egress(tmp_path, {"SERPAPI_KEY": "sk_secret"}, seen)
+    egress = auth_egress({"SERPAPI_KEY": "sk_secret"}, seen)
     await egress.fetch("query_src", "https://api.example.com/b")
     assert "authorization" not in {k.lower() for k in seen[0]}
 
 
-async def test_a_missing_token_still_fetches(tmp_path):
+async def test_a_missing_token_still_fetches(auth_egress):
     """Unauthenticated GitHub works; it is slower, not broken. Refusing to fetch would
     turn a rate-limit downgrade into a dead source on any box without a token, which is
     every dev checkout."""
     seen: list[dict[str, str]] = []
-    egress = _auth_egress(tmp_path, {}, seen)
+    egress = auth_egress({}, seen)
     result = await egress.fetch("bearer_src", "https://api.example.com/c")
     assert result.body == "{}"
     assert "authorization" not in {k.lower() for k in seen[0]}
 
 
-async def test_rotating_the_token_does_not_invalidate_the_cache(tmp_path):
+async def test_rotating_the_token_does_not_invalidate_the_cache(store, tmp_path):
     """Handled exactly like `secret_params`, for exactly that reason: a credential in
     the key means rotating it silently re-fetches every document cached under the old
     one, and puts the credential in a column nothing redacts.
@@ -617,11 +636,6 @@ async def test_rotating_the_token_does_not_invalidate_the_cache(tmp_path):
     Asserted through `cached`, not by comparing a key to itself -- what matters is that
     the second client, with a different token, reads what the first one wrote.
     """
-    from cindraleads.sources import DocumentCache, SourceBreakers
-    from cindraleads.store import Store
-
-    store = Store(tmp_path / "rotate.db", migrations_dir=MIGRATIONS)
-    store.migrate()
     cache = DocumentCache(store, cache_dir=tmp_path / "cache")
     fetches: list[str] = []
 
@@ -645,7 +659,6 @@ async def test_rotating_the_token_does_not_invalidate_the_cache(tmp_path):
     assert first.cached is False
     assert second.cached is True, "a rotated token must not orphan the cached document"
     assert len(fetches) == 1
-    store.close()
 
 
 def test_a_bearer_source_with_no_auth_env_is_fatal():

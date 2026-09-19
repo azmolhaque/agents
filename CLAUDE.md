@@ -1353,6 +1353,32 @@ key (a rotated token would orphan every cached document) and never in a log.
 the real registry, and a missing token is info and not an error: unauthenticated GitHub
 is slower, not broken, which is every dev checkout.
 
+**CI caught the follow-on defect two minutes after the push and nobody read it.** Run
+#139, `check (py3.13)` failed and `check (py3.11)` passed, at 21:17 on 2026-09-15. It
+was found four days later by a human running `install_pi.sh` on the hardware. The 3.13
+matrix entry exists precisely for this and its comment says so; **a guard that fires
+into a log nobody opens is not a guard.** Green locally is not green, and the last step
+of a push is reading the run it triggered.
+
+The defect itself: three auth tests each opened a `Store` and none closed it. On 3.13 --
+what Debian 13 and so the Pi ships, and what 3.11 does not do -- a collected
+`sqlite3.Connection` raises `ResourceWarning: unclosed database`, `filterwarnings =
+["error"]` promotes it, and pytest charges an unraisable warning to **whichever test is
+running when the collector gets to it**. So a passing assertion was reported as the
+failing test, in the same shape as `recent errors` listing jobs that had already
+recovered: the line named something true and attributed it to the wrong row.
+
+Both rigs are fixtures now, closing in teardown rather than at the end of a test body --
+that line does not run when an assertion fails, which would turn one real failure into
+two, in different files. `_counting_rig` in `test_enrich.py` had the same latent shape
+and was converted with it.
+
+**And "I cannot reproduce it locally" was wrong.** The dev `.venv` is 3.11 and
+`/usr/bin/python3.13` was on the same box the whole time; a throwaway `uv venv --python
+3.13` reproduced the failure exactly and then proved the fix against it. Asserting the
+limitation cost more than testing it would have, which is the `makesOffer` lesson in a
+new costume: **check the second source before describing what it must say.**
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

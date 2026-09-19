@@ -802,40 +802,59 @@ def test_two_people_without_an_address_are_still_two_people(store):
     assert rows["n"] == 2
 
 
-def _counting_rig(tmp_path: Path, pages: dict[str, str]):  # type: ignore[no-untyped-def]
-    """An Enricher whose site fetches are recorded, so budget spend is assertable."""
-    fetched: list[str] = []
+@pytest.fixture
+def counting_rig(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """An Enricher whose site fetches are recorded, so budget spend is assertable.
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        path = request.url.path
-        if path.endswith("robots.txt"):
-            return httpx.Response(200, text="User-agent: *\nAllow: /")
-        fetched.append(path)
-        if path in pages:
-            return httpx.Response(200, text=pages[path])
-        return httpx.Response(404, text="nope")
+    A fixture rather than a helper so the store is closed by teardown rather than by a
+    line at the end of each test body -- that line does not run when an assertion
+    fails, and on Python 3.13 (what the Pi runs, and what CI's second matrix entry
+    covers) the collected connection raises a `ResourceWarning` that `filterwarnings =
+    ["error"]` charges to whichever test is running when the collector gets to it. One
+    real failure would then present as two, in different files.
+    """
+    from cindraleads.store import Store
 
-    store = Store(tmp_path / "c.db", migrations_dir=MIGRATIONS)
-    store.migrate()
-    registry = SourceRegistry.from_dict(
-        {
-            "sources": [{"id": "company_site", "legality_class": "public_web"}],
-            "defaults": {"retries": 1, "backoff_base_seconds": 0.001},
-            "public_web_policy": {"min_interval_seconds": 0.0, "respect_robots": True},
-        }
-    )
-    egress = EgressClient(
-        store=store,
-        registry=registry,
-        cache=DocumentCache(store, cache_dir=tmp_path / "cache"),
-        breakers=SourceBreakers(),
-        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
-    )
-    enricher = Enricher(store=store, egress=egress, enabled_sources=frozenset({"site"}))
-    return enricher, fetched, store
+    stores: list[Store] = []
+
+    def build(pages: dict[str, str]):  # type: ignore[no-untyped-def]
+        fetched: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path.endswith("robots.txt"):
+                return httpx.Response(200, text="User-agent: *\nAllow: /")
+            fetched.append(path)
+            if path in pages:
+                return httpx.Response(200, text=pages[path])
+            return httpx.Response(404, text="nope")
+
+        store = Store(tmp_path / f"c{len(stores)}.db", migrations_dir=MIGRATIONS)
+        store.migrate()
+        stores.append(store)
+        registry = SourceRegistry.from_dict(
+            {
+                "sources": [{"id": "company_site", "legality_class": "public_web"}],
+                "defaults": {"retries": 1, "backoff_base_seconds": 0.001},
+                "public_web_policy": {"min_interval_seconds": 0.0, "respect_robots": True},
+            }
+        )
+        egress = EgressClient(
+            store=store,
+            registry=registry,
+            cache=DocumentCache(store, cache_dir=tmp_path / "cache"),
+            breakers=SourceBreakers(),
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        enricher = Enricher(store=store, egress=egress, enabled_sources=frozenset({"site"}))
+        return enricher, fetched
+
+    yield build
+    for store in stores:
+        store.close()
 
 
-async def test_the_site_loop_stops_once_it_has_an_address(tmp_path: Path):
+async def test_the_site_loop_stops_once_it_has_an_address(counting_rig):
     """The whole page loop exists to find a contact -- `site.text` has exactly one
     consumer, `extract_contacts` -- yet it always ran every path. Those fetches cannot
     change the outcome and they spend a per-domain budget of 6 per rolling 24 h that
@@ -844,19 +863,16 @@ async def test_the_site_loop_stops_once_it_has_an_address(tmp_path: Path):
     `/` is still fetched after security.txt yields one, because a role account is not a
     named human and `reachability` prices those differently.
     """
-    enricher, fetched, store = _counting_rig(
-        tmp_path, {"/": '<a href="mailto:hello@acme.io">Get in touch</a>'}
-    )
+    enricher, fetched = counting_rig({"/": '<a href="mailto:hello@acme.io">Get in touch</a>'})
 
     findings = await enricher._site("acme.io")
 
     assert "hello@acme.io" in findings.emails
     assert "/contact" not in fetched, "no page is fetched once an address is in hand"
     assert "/about" not in fetched
-    store.close()
 
 
-async def test_a_legally_mandated_page_is_reached_when_the_others_are_silent(tmp_path: Path):
+async def test_a_legally_mandated_page_is_reached_when_the_others_are_silent(counting_rig):
     """The addition that matters for `reachability`, which was zero on 374 of 481 leads.
 
     A privacy notice must name a controller contact under GDPR Art. 13 and an Impressum
@@ -864,8 +880,7 @@ async def test_a_legally_mandated_page_is_reached_when_the_others_are_silent(tmp
     else useful -- exactly the companies that scored zero. They are only reached because
     the loop no longer burns its budget on pages that already answered.
     """
-    enricher, fetched, store = _counting_rig(
-        tmp_path,
+    enricher, fetched = counting_rig(
         {
             "/": "<h1>Acme</h1><p>We do things.</p>",
             "/privacy": '<p>Controller: <a href="mailto:legal@acme.io">legal@acme.io</a></p>',
@@ -876,10 +891,9 @@ async def test_a_legally_mandated_page_is_reached_when_the_others_are_silent(tmp
 
     assert "legal@acme.io" in findings.emails
     assert "/privacy" in fetched
-    store.close()
 
 
-async def test_security_txt_is_fetched_even_when_the_page_budget_runs_out(tmp_path: Path):
+async def test_security_txt_is_fetched_even_when_the_page_budget_runs_out(counting_rig):
     """It used to be fetched *after* the content loop, so a domain whose budget ran out
     during the loop never got one -- and `security_txt` feeds `hygiene_gaps`, so an
     exhausted budget silently cost a trigger as well as a contact.
@@ -887,7 +901,7 @@ async def test_security_txt_is_fetched_even_when_the_page_budget_runs_out(tmp_pa
     Asserted by ordering rather than by exhausting a real budget: security.txt is now
     the first request made, so no amount of page fetching can crowd it out.
     """
-    enricher, fetched, store = _counting_rig(tmp_path, {"/": "<p>nothing here</p>"})
+    enricher, fetched = counting_rig({"/": "<p>nothing here</p>"})
 
     await enricher._site("acme.io")
 
@@ -895,7 +909,6 @@ async def test_security_txt_is_fetched_even_when_the_page_budget_runs_out(tmp_pa
     assert fetched[0] == "/.well-known/security.txt", (
         "the fixed-cost fact goes first so the page loop cannot starve it"
     )
-    store.close()
 
 
 async def test_the_open_role_count_is_kept_not_just_the_triggers(tmp_path: Path):
