@@ -180,10 +180,25 @@ if [ "$INSTALL_UNITS" = "1" ]; then
   done
   sudo cp "${UNIT_TMP}"/cindraleads-*.service "${UNIT_TMP}"/cindraleads-*.timer /etc/systemd/system/
   sudo systemctl daemon-reload
-  sudo systemctl enable --now cindraleads-worker cindraleads-health
+  # `enable` for boot persistence, `restart` to actually pick this up. `--now` starts a
+  # *stopped* unit and does nothing at all to a running one, so on every box where the
+  # worker was already up -- which is every box after the first install -- this script
+  # copied new units, reloaded them, reported success, and left the old process running
+  # the code and the unit config it started with.
+  #
+  # Third layer of the same defect. CLAUDE.md already records that a `git pull` does not
+  # change what is running and that `daemon-reload` does not rescue a unit change; the
+  # part nobody had checked is that **the script written to deploy unit changes did not
+  # rescue it either.** `restart` is the whole fix, and it is safe: `TimeoutStopSec` is
+  # 960 s, longer than `MAX_STAGE_SECONDS`, so a stage in flight finishes and the worker
+  # writes its `exiting` heartbeat rather than being killed.
+  sudo systemctl enable cindraleads-worker cindraleads-health
+  sudo systemctl restart cindraleads-worker cindraleads-health
+  # Timers are exempt and keep `--now`: each firing is a fresh process, so there is no
+  # long-lived import to invalidate and nothing to restart.
   sudo systemctl enable --now cindraleads-harvest.timer cindraleads-reconcile.timer \
        cindraleads-digest.timer cindraleads-maintenance.timer
-  ok "units installed and enabled"
+  ok "units installed, enabled, and restarted onto this build"
 
   # The feedback bot is copied but only started if it can actually connect. Enabling it
   # without a token would give a unit that restart-loops every 30 s forever, which is a

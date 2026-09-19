@@ -1407,6 +1407,31 @@ persistent journald, not for asking a fourth time.
 fs` at mount is a dirty filesystem, which is the third such shutdown. No `i/o error` and
 no mmc fault in that boot's ring buffer -- but `dmesg` after a reboot covers only the
 current boot, so that is 2 h of evidence about the card and not a verdict on it.
+`PRAGMA integrity_check` returned `ok` again on 2026-09-19, three unclean shutdowns in.
+Still luck rather than design, and the install script's own warning names the reason:
+SQLite WAL on microSD is the documented corruption path.
+
+**`install_pi.sh --install-units` did not deploy a unit change either, which is the
+third layer of one defect.** `enable --now` starts a *stopped* unit and does nothing to a
+running one -- so on every box past the first install the script copied new units,
+reloaded them, printed `units installed and enabled`, and left the worker holding the
+code and the unit config it started with. The two layers already recorded above are that
+a `git pull` does not change what is running and that `daemon-reload` does not rescue a
+unit change; **nobody asked whether the script written to fix that fixed it.** `enable`
+for boot persistence and `restart` to pick it up, which is safe because `TimeoutStopSec`
+is 960 s and a stage in flight finishes and writes its `exiting` heartbeat. Timers keep
+`--now`: each firing is a fresh process, so there is no long-lived import to invalidate.
+
+`test_installing_units_restarts_the_long_lived_ones` reads the script text, for the same
+reason `test_systemd_waits_longer_than_a_stage_may_run` reads the unit file rather than
+restating its number.
+
+**`/healthz`'s `worker:build` is what makes this self-reporting.** The worker stamps
+`source_mtime` on its heartbeat and health compares it against the newest file across
+`src/`, `prompts/` and `config/`, so a pull without a restart is visible rather than
+inferred. That probe was built for exactly this and is the first thing to read after a
+deploy -- the question "is the running process this build" has an endpoint, and it had
+been answered by argument three times running.
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already

@@ -886,3 +886,33 @@ def test_nothing_else_assembles_a_worker_identity():
                 if "getpid" in rendered and "nodename" in rendered:
                     offenders.append(f"{path.relative_to(repo)}:{node.lineno}")
     assert not offenders, f"worker identity assembled outside metrics.py: {offenders}"
+
+
+def test_installing_units_restarts_the_long_lived_ones() -> None:
+    """`enable --now` is not a deploy, and this is the third layer of one defect.
+
+    CLAUDE.md already records that a `git pull` does not change what is running, and
+    that `daemon-reload` does not rescue a unit change because the live unit is a copy
+    `install_pi.sh` made. The part nobody checked is that **the script written to deploy
+    unit changes did not deploy them either**: `--now` starts a *stopped* unit and does
+    nothing to a running one, so on every box past the first install it copied new
+    units, reloaded, reported success, and left the old process holding the code and
+    unit config it booted with.
+
+    Asserted against the script text because that is where the decision lives -- the
+    same reason `test_systemd_waits_longer_than_a_stage_may_run` reads the unit file
+    rather than restating its number.
+    """
+    from pathlib import Path
+
+    script = (Path(__file__).resolve().parents[2] / "deploy/install_pi.sh").read_text()
+    restarts = [
+        line.strip()
+        for line in script.splitlines()
+        if "systemctl restart" in line and not line.lstrip().startswith("#")
+    ]
+    for unit in ("cindraleads-worker", "cindraleads-health"):
+        assert any(unit in line for line in restarts), (
+            f"install_pi.sh never restarts {unit}; a running one keeps the build it "
+            "started with, which is the whole reason --install-units exists"
+        )
