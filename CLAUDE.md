@@ -1477,6 +1477,36 @@ inferred. That probe was built for exactly this and is the first thing to read a
 deploy -- the question "is the running process this build" has an endpoint, and it had
 been answered by argument three times running.
 
+**The 72 h unattended run is not achievable on this grid, and the gate was measuring
+the grid.** Heartbeat coverage per day, read 2026-09-19: `09-19` 6.6 h, `09-16` 23.4 h,
+`09-15` 26.9 h, `09-14` 13.8 h — and **17 and 18 September have no rows at all.** Load
+shedding, plus the unclean shutdowns already recorded. So a 72 h window covered 12.5 h
+of running, and two criteria graded the electricity supply rather than the software:
+
+- `no_silent_unit` counted the outage as a worker gap. A power cut has no `exiting`
+  beat, so it read as "the worker died on Tuesday" — a failure no code change can fix,
+  which is exactly why `get_throttled == 0x0` was retired and why an unreachable
+  prospect was taken out of `no_job_lost`.
+- `throughput` divided by wall-clock: 0.7/day for a worker that was managing ~11.5 per
+  hour-of-running. **A rate whose denominator is mostly darkness is not a rate.**
+
+**The discriminator was already in the heartbeat again — for the third time.** `worker_id`
+carries the boot token as of `worker_identity()`, so a gap the machine rebooted across
+is one it was switched off for. Same shape as `exiting=True` sitting unread immediately
+before a gap, and as `_facts` building thirteen values while six were passed.
+
+Both exemptions follow the `no_job_lost` discipline exactly: **positive evidence, never
+absence of it** — the boot token must be known on *both* sides and different, so a beat
+predating the token (None) buys no alibi and a worker that genuinely died while the box
+stayed up still fails — and **both numbers are always printed**, the rate beside the
+hours it was measured over, because an exemption nobody can see is a weakened gate and
+hours lost to power is the number that argues for a UPS rather than for a code change.
+
+`MIN_THROUGHPUT_HOURS` is 6: below that the criterion reports `n/a` and does **not**
+pass. One lucky dispatch in a one-hour window is 24/day, so without a floor a run could
+prove throughput by being too short to measure it. Short windows are the only ones this
+grid allows; short *enough* is still too short, and the report has to say which it was.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

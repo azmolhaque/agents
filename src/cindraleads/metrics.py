@@ -41,6 +41,7 @@ __all__ = [
     "OPTIONAL_UNITS",
     "Heartbeat",
     "boot_id",
+    "boot_of",
     "heartbeats",
     "last_heartbeat",
     "record_heartbeat",
@@ -142,6 +143,18 @@ def worker_identity() -> str:
     host = os.uname().nodename
     boot = boot_id()
     return f"{host}:{boot}:{os.getpid()}" if boot else f"{host}:{os.getpid()}"
+
+
+def boot_of(worker_id: str) -> str | None:
+    """The boot token inside a `worker_identity()`, or None if it carries none.
+
+    Parsing lives here, next to the function that builds the string, so the format is
+    known in exactly one module. A beat written before `worker_identity` existed is
+    `host:pid` and yields None -- which callers must treat as "no information", never
+    as "same boot": guessing the latter would excuse a real worker death as a power cut.
+    """
+    parts = worker_id.split(":")
+    return parts[1] if len(parts) == 3 and parts[1] else None
 
 
 def record_heartbeat(

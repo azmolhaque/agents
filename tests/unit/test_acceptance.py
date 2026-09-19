@@ -566,3 +566,124 @@ def test_the_announced_bound_is_the_one_a_stage_was_sized_for() -> None:
 
     assert ANNOUNCED_STOP_SECONDS > MAX_STAGE_SECONDS
     assert ANNOUNCED_STOP_SECONDS > HEARTBEAT_GAP_SECONDS
+
+
+# ------------------------------------------------- the grid is not the software
+
+
+def _beats_over(store: Any, *, from_min: int, to_min: int, worker_id: str) -> None:
+    """A worker beating every minute across a span, under one boot identity."""
+    for minute in range(from_min, to_min, -1):
+        _beat(
+            store,
+            "worker",
+            ago_minutes=minute,
+            worker_id=worker_id,
+            source_mtime=1_000.0,
+            thermal_state="nominal",
+            temp_c=60.0,
+            throttled_now=False,
+        )
+
+
+def _timers_alive(store: Any) -> None:
+    for unit in HEARTBEAT_UNITS:
+        if unit not in ("worker", *OPTIONAL_UNITS):
+            _beat(store, unit, ago_minutes=30)
+
+
+def test_a_power_cut_is_not_a_silent_unit(store: Any) -> None:
+    """The gate grades what the software controls, and the grid is not the software.
+
+    This box loses power: 17 and 18 September have no heartbeat rows at all. Reading
+    every gap as "the worker died on Tuesday" reports a fault on every outage, and a
+    criterion that fails for a reason no code change can fix is one you learn to
+    explain away -- which is exactly why `get_throttled == 0x0` was retired and why an
+    unreachable prospect was taken out of `no_job_lost`.
+
+    The discriminator is the boot token the heartbeat already carries: a gap the
+    machine rebooted across is one it was switched off for.
+    """
+    _beats_over(store, from_min=600, to_min=420, worker_id="pi:aaaa1111:100")
+    _beats_over(store, from_min=180, to_min=0, worker_id="pi:bbbb2222:200")
+    _timers_alive(store)
+
+    report = assess_run(store, hours=24)
+
+    assert report.worker_gaps == [], "a reboot gap must not count as a silent unit"
+    assert len(report.power_gaps) == 1
+    assert report.criteria["no_silent_unit"] is True
+
+
+def test_a_worker_that_died_without_rebooting_still_fails(store: Any) -> None:
+    """The bound, and the reason the excuse is an allow-list.
+
+    Same boot on both sides means the machine stayed up and the worker did not -- which
+    is precisely the outage this criterion exists for. Without this the power-cut
+    exemption would swallow every real death.
+    """
+    _beats_over(store, from_min=600, to_min=420, worker_id="pi:aaaa1111:100")
+    _beats_over(store, from_min=180, to_min=0, worker_id="pi:aaaa1111:100")
+    _timers_alive(store)
+
+    report = assess_run(store, hours=24)
+
+    assert report.power_gaps == []
+    assert len(report.worker_gaps) == 1
+    assert report.criteria["no_silent_unit"] is False
+
+
+def test_a_gap_with_no_boot_token_is_not_excused(store: Any) -> None:
+    """Positive evidence, never absence of it.
+
+    A beat written before `worker_identity` carried a boot token yields None, and None
+    must not buy an alibi -- the same allow-list discipline as the unreachable markers
+    in `no_job_lost`, where an unrecognised error still counts as lost.
+    """
+    _beats_over(store, from_min=600, to_min=420, worker_id="pi:100")
+    _beats_over(store, from_min=180, to_min=0, worker_id="pi:200")
+    _timers_alive(store)
+
+    report = assess_run(store, hours=24)
+
+    assert report.power_gaps == []
+    assert len(report.worker_gaps) == 1
+
+
+def test_throughput_is_measured_over_running_time_not_wall_clock(store: Any) -> None:
+    """Dividing by the window measured the electricity supply.
+
+    A 72 h window covering 12.5 h of running reported 0.7/day for a worker that was
+    managing ~11.5. The run either produced leads at a rate or it did not; how long the
+    power was out is a separate fact, and it is printed separately.
+    """
+    _beats_over(store, from_min=720, to_min=0, worker_id="pi:aaaa1111:100")
+    _timers_alive(store)
+    _dispatch(store, 10, ago_hours=6)
+
+    report = assess_run(store, hours=72)
+
+    assert 11.5 <= report.covered_hours <= 12.5, report.covered_hours
+    # 10 leads over ~12 h is ~20/day, not 10 / 3 days.
+    assert report.leads_per_day > LEADS_PER_DAY_TARGET
+    assert report.criteria["throughput"] is True
+
+
+def test_a_run_too_short_to_judge_reports_n_a_rather_than_passing(store: Any) -> None:
+    """A criterion that cannot be evaluated does not pass -- the same three-valued rule
+    as a box with no thermal sensor.
+
+    One lucky dispatch in a one-hour window is 24/day, which would let a run prove
+    throughput by being too short to measure it. Short windows are the only ones this
+    grid allows, so the report has to say which kind of short it was.
+    """
+    _beats_over(store, from_min=120, to_min=0, worker_id="pi:aaaa1111:100")
+    _timers_alive(store)
+    _dispatch(store, 5, ago_hours=1)
+
+    report = assess_run(store, hours=4)
+
+    assert report.covered_hours < 6.0
+    assert report.criteria["throughput"] is None, "too little running time to judge"
+    assert report.passed is False, "an unmeasurable criterion never passes the run"
+    assert "too short to judge" in render_markdown(report)

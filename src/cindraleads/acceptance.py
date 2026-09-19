@@ -40,7 +40,12 @@ from itertools import pairwise
 from typing import Any
 
 from cindraleads.config import MAX_STAGE_SECONDS
-from cindraleads.metrics import HEARTBEAT_METRIC, HEARTBEAT_UNITS, OPTIONAL_UNITS
+from cindraleads.metrics import (
+    HEARTBEAT_METRIC,
+    HEARTBEAT_UNITS,
+    OPTIONAL_UNITS,
+    boot_of,
+)
 from cindraleads.models import to_iso, utcnow
 from cindraleads.store import Store
 
@@ -78,6 +83,17 @@ ANNOUNCED_STOP_SECONDS = MAX_STAGE_SECONDS + 120.0
 # that counts as "did not recover". Generous on purpose: the failure worth catching is a
 # box wedged hot indefinitely, not one that is simply busy at the moment you looked.
 OPEN_SPELL_GRACE_MINUTES = 90.0
+
+# Running time below which a leads-per-day figure is noise rather than a measurement.
+# At the 15/day target six hours expects under four leads, and one lucky dispatch in a
+# one-hour window would read as 24/day. Below this the criterion reports `n/a` and does
+# **not** pass, the same three-valued rule as a box with no thermal sensor: a run too
+# short to prove throughput must not be recorded as one that proved it.
+#
+# This is what makes a short window honest rather than merely convenient. The grid here
+# does not permit 72 unbroken hours, so short runs are the only runs available -- but
+# short enough is still too short, and the report has to say which it was.
+MIN_THROUGHPUT_HOURS = 6.0
 
 
 @dataclass(frozen=True)
@@ -118,6 +134,11 @@ class AcceptanceReport:
     worker_gaps: list[tuple[datetime, float]] = field(default_factory=list)
     # Gaps that follow an announced exit: a deploy, not an outage. Reported, not graded.
     announced_gaps: list[tuple[datetime, float]] = field(default_factory=list)
+    # Gaps that span a reboot: the machine was off. Reported, not graded.
+    power_gaps: list[tuple[datetime, float]] = field(default_factory=list)
+    # Hours the worker was actually beating. The denominator throughput deserves on a
+    # box that is not on for the whole window.
+    covered_hours: float = 0.0
     silent_units: list[str] = field(default_factory=list)
     worker_restarts: int = 0
     builds_seen: int = 0
@@ -132,7 +153,11 @@ class AcceptanceReport:
         old `0x0` gate would have been quietly satisfied by a box with no sensor.
         """
         return {
-            "throughput": self.leads_per_day >= LEADS_PER_DAY_TARGET,
+            "throughput": (
+                self.leads_per_day >= LEADS_PER_DAY_TARGET
+                if self.covered_hours >= MIN_THROUGHPUT_HOURS
+                else None
+            ),
             "no_job_lost": self.jobs_lost == 0,
             "no_silent_unit": not self.silent_units and not self.worker_gaps,
             "one_build_throughout": self.builds_seen <= 1 if self.builds_seen else None,
@@ -184,14 +209,28 @@ def assess_run(
     report = AcceptanceReport(window_hours=hours, since=since)
 
     beats = _heartbeat_rows(store, "worker", stamp)
-    _throughput(report, store, stamp, hours)
     _job_integrity(report, store, stamp)
+    # After `_liveness`, which is what measures `covered_hours` -- the denominator.
     _liveness(report, store, stamp, beats, now=at)
+    _throughput(report, store, stamp)
     report.thermal = _thermal(beats)
     return report
 
 
-def _throughput(report: AcceptanceReport, store: Store, stamp: str, hours: float) -> None:
+def _throughput(report: AcceptanceReport, store: Store, stamp: str) -> None:
+    """Leads per day, over the time the box was **on**.
+
+    It divided by the wall-clock window, which on a grid with load shedding measures the
+    electricity supply. 17 and 18 September have no heartbeat rows at all, so a 72 h
+    window covered 12.5 h of running and reported 0.7/day for a worker that was actually
+    managing ~11.5. That is the same defect as grading `get_throttled` and as counting an
+    unreachable prospect against `no_job_lost`: **the gate judges what the software
+    controls.** The software controls leads per hour of running; the grid controls hours.
+
+    Both numbers are always printed, exactly as with the unreachable count -- an
+    exemption nobody can see is a weakened gate, and hours lost to power is the number
+    that argues for a UPS.
+    """
     row = store.conn.execute(
         "SELECT COUNT(DISTINCT lead_id) AS total, "
         "COUNT(DISTINCT CASE WHEN tier IN ('A','B') THEN lead_id END) AS ab "
@@ -200,6 +239,7 @@ def _throughput(report: AcceptanceReport, store: Store, stamp: str, hours: float
     ).fetchone()
     report.dispatched_total = int(row["total"] or 0)
     report.dispatched_ab = int(row["ab"] or 0)
+    hours = report.covered_hours
     report.leads_per_day = report.dispatched_ab / (hours / 24) if hours else 0.0
 
 
@@ -256,7 +296,7 @@ def _liveness(
     dead for six hours and came back leaves a queue that looks exactly like one that was
     merely idle.
     """
-    for (earlier, before), (later, _) in pairwise(beats):
+    for (earlier, before), (later, after) in pairwise(beats):
         gap = (later - earlier).total_seconds()
         if gap <= HEARTBEAT_GAP_SECONDS:
             continue
@@ -269,7 +309,35 @@ def _liveness(
         if before.get("exiting") and gap <= ANNOUNCED_STOP_SECONDS:
             report.announced_gaps.append((earlier, gap))
             continue
+        # The machine was off. A power cut is not a silent unit, for exactly the reason
+        # `get_throttled == 0x0` was retired from this gate and an unreachable prospect
+        # was taken out of `no_job_lost`: it grades something the software does not
+        # control. This box is on a grid with load shedding -- 17 and 18 September have
+        # no heartbeat rows at all -- so without this the criterion reports a fault
+        # every time the power fails, and a gate that cries wolf is one nobody reads.
+        #
+        # Positive evidence, never absence of it: the boot token must be *known on both
+        # sides and different*. An old beat carries no token and yields None, and None
+        # is not an excuse -- same allow-list discipline as the unreachable markers,
+        # so a worker that genuinely died cannot acquire an alibi by having no data.
+        before_boot = boot_of(str(before.get("worker_id") or ""))
+        after_boot = boot_of(str(after.get("worker_id") or ""))
+        if before_boot and after_boot and before_boot != after_boot:
+            report.power_gaps.append((earlier, gap))
+            continue
         report.worker_gaps.append((earlier, gap))
+
+    # Time the worker was demonstrably alive: every inter-beat interval short enough
+    # to be an ordinary beat. Gaps of any kind are excluded -- an outage is not uptime,
+    # whoever caused it -- so this is a floor on running time rather than an estimate.
+    report.covered_hours = (
+        sum(
+            (later - earlier).total_seconds()
+            for (earlier, _b), (later, _a) in pairwise(beats)
+            if (later - earlier).total_seconds() <= HEARTBEAT_GAP_SECONDS
+        )
+        / 3600.0
+    )
 
     builds = {d.get("source_mtime") for _, d in beats if d.get("source_mtime")}
     report.builds_seen = len(builds)
@@ -376,8 +444,19 @@ def render_markdown(report: AcceptanceReport) -> str:
         "| --- | --- | --- |",
     ]
     detail = {
-        "throughput": f"{report.leads_per_day:.1f} Tier A+B/day "
-        f"(target {LEADS_PER_DAY_TARGET}); {report.dispatched_total} dispatched in total",
+        # Both numbers, always: the rate and the hours it was measured over. A rate
+        # divided by uptime with the uptime hidden is unfalsifiable, and hours lost to
+        # power is the number that argues for a UPS rather than for a code change.
+        "throughput": (
+            f"{report.leads_per_day:.1f} Tier A+B/day over {report.covered_hours:.1f} h "
+            f"running of {report.window_hours:g} h elapsed "
+            f"(target {LEADS_PER_DAY_TARGET}); {report.dispatched_total} dispatched in total"
+            + (
+                f" -- under {MIN_THROUGHPUT_HOURS:g} h running, too short to judge"
+                if report.covered_hours < MIN_THROUGHPUT_HOURS
+                else ""
+            )
+        ),
         # Both numbers, always. An exemption nobody can see is a weakened gate, and a
         # rising unreachable count is how a broken uplink on this end would present.
         "no_job_lost": f"{report.jobs_lost} lost of {report.dead_lettered} dead-lettered "
@@ -392,6 +471,7 @@ def render_markdown(report: AcceptanceReport) -> str:
                 if report.announced_gaps
                 else ""
             )
+            + (f"; {len(report.power_gaps)} power cut(s), not graded" if report.power_gaps else "")
             + (f"; silent: {', '.join(report.silent_units)}" if report.silent_units else "")
         ),
         "one_build_throughout": f"{report.builds_seen} build(s) seen, "
