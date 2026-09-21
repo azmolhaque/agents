@@ -37,6 +37,7 @@ from cindraleads.agents import (
     enqueue_stale_scores,
     enqueue_unenriched,
     enqueue_unextracted,
+    reprose_backlog,
 )
 from cindraleads.config import MAX_STAGE_SECONDS, settings
 from cindraleads.dedupe import canonical_domain
@@ -832,11 +833,22 @@ def reconcile(
                 reprose=reprose,
                 limit=REPROSE_LIMIT if reprose else DEFAULT_RESCORE_LIMIT,
             )
+        # Both numbers, always. `stale` is what this pass *newly* queued; run again
+        # before the worker drains and every dedupe key already exists, so it prints 0
+        # -- indistinguishable from "nothing to do", which is the exact reading that
+        # made a real defect invisible for a week. The backlog says which it is, and
+        # at ~18 s of decode each it is also the size of the job.
+        remaining = reprose_backlog(store) if reprose else 0
         typer.echo(
             f"queued {stranded} for extraction, {superseded} for re-extraction, "
             f"{fresh} for enrichment, {stale} for (re)scoring"
             + (" (forced past dedupe)" if force else "")
-            + (f" (reprose, max {REPROSE_LIMIT} a pass -- re-run to continue)" if reprose else "")
+            + (
+                f" (reprose, max {REPROSE_LIMIT} a pass; {remaining} lead(s) still carry "
+                "an angle from an older build -- re-run once the queue drains)"
+                if reprose
+                else ""
+            )
         )
         record_heartbeat(
             store,

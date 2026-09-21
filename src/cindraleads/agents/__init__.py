@@ -20,6 +20,7 @@ from cindraleads.agents.scorer import (
     SCORE_KIND,
     Scorer,
     enqueue_stale_scores,
+    reprose_backlog,
 )
 from cindraleads.agents.scout import QueryTemplate, Scout, ScoutConfig
 
@@ -44,4 +45,5 @@ __all__ = [
     "enqueue_stale_scores",
     "enqueue_unenriched",
     "enqueue_unextracted",
+    "reprose_backlog",
 ]

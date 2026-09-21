@@ -1953,6 +1953,26 @@ every other field; the Dispatcher now refuses it and nothing told the reader tha
 card, because an instrument for deciding what to send has to answer the question it is
 being asked.
 
+**`queued 0` had a second way to mean nothing is wrong, and the message invited it.**
+`--reprose` reports what a pass *newly* enqueued; run it again before the worker drains
+and the same rows are selected, every dedupe key already exists, and it prints 0 --
+which is exactly what the defect above printed for a week. "re-run to continue" was
+advice to produce that second run.
+
+`reprose_backlog` prints beside it: `42 queued ... 871 lead(s) still carry an angle
+from an older build`. Same discipline as `no_job_lost` printing the unreachable count
+beside the lost one and `throughput` printing the hours it was measured over -- **one
+number cannot tell "already queued" from "nothing to do"**, and which it is decides
+whether you wait or go looking for a bug. It is also the size of the job: ~18 s of
+decode a row, so a corpus-wide backfill is hours on this box, and the operator should
+get that number before the eighth pass rather than after it.
+
+The count and the selection come from **one** `_stale_rows`, because a count that
+drifted from the work the command queues would be a confident wrong number -- and a
+confident wrong number is how `832 of 833` was read as a finding about the corpus.
+`test_the_backlog_and_the_selection_cannot_disagree` asserts the predicate has exactly
+two readers, by name, out of the source.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

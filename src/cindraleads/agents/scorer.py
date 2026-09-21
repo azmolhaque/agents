@@ -755,6 +755,74 @@ def score_stamp(when: datetime) -> str:
 DEFAULT_RESCORE_LIMIT = 50
 
 
+def _stale_rows(
+    conn: sqlite3.Connection,
+    *,
+    fingerprint: str,
+    prose_ver: str,
+    now: str,
+    reprose: bool,
+    limit: int,
+) -> list[sqlite3.Row]:
+    """Every company whose lead is behind its triggers, its calibration or its prose.
+
+    One function because two callers need the *same* predicate: `enqueue_stale_scores`
+    selects with a limit, and `reprose_backlog` counts without one. Two copies of this
+    query would be the shape this project keeps paying for -- `calibration_version`
+    against `ScoringConfig.fingerprint`, the prose bound against its token budget --
+    and here the drift would be silent: the count printed to the operator would stop
+    describing the work the command actually queues.
+    """
+    return conn.execute(
+        "SELECT c.canonical_domain AS domain, "
+        "MAX(t.observed_at) AS newest, "
+        "MIN(COALESCE(l.scoring_version, '') = ?) AS calibrated, "
+        # Angle-less *and* written by an older prose build. Both halves are load
+        # bearing: without the first this re-decodes angles that are already fine,
+        # and without the second a lead the model can never write an angle for --
+        # one whose prose leaks trigger codes -- is re-queued on every reconcile
+        # forever. The scorer stamps this column even when the prose call fails, so
+        # a lead that stays blank under the new build stops asking after one attempt.
+        #
+        # `reprose` drops the first half **and reads a different column**, which is the
+        # part that was wrong. It asked `prompt_version`, which `_upsert_lead` writes
+        # unconditionally while preserving a non-empty angle -- so a rescore that never
+        # called the model still stamped the row current, and after the 2947-job drain
+        # the whole corpus matched. `queued 0` on every run, permanently. `angle_version`
+        # moves only when an angle is actually written, so it answers the question this
+        # override is asking.
+        + (
+            "MIN(COALESCE(l.angle_version, '') = ?) AS prosed "
+            if reprose
+            else "MIN(COALESCE(l.outreach_angle, '') != '' "
+            "    OR COALESCE(l.prompt_version, '') = ?) AS prosed "
+        )
+        + "FROM companies c "
+        "JOIN triggers t ON t.canonical_domain = c.canonical_domain "
+        "LEFT JOIN leads l ON l.canonical_domain = c.canonical_domain "
+        "WHERE t.active = 1 AND t.decays_at > ? "
+        "GROUP BY c.canonical_domain "
+        "HAVING l.lead_id IS NULL "
+        "   OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '') "
+        "   OR calibrated = 0 "
+        "   OR prosed = 0 "
+        # Genuinely new triggers first, recalibrations behind them, angle repairs last.
+        # A config edit makes the whole corpus stale at once, and at ~18 s a lead that
+        # is hours of queue -- long enough that a funding round found this morning
+        # would sit behind it. An angle repair is the least urgent of the three: the
+        # lead already dispatched, and what is being fixed is the copy on the card.
+        #
+        # Ranked by a row's *most* urgent reason, not by each flag in turn. A row can
+        # be selected for several at once, and ordering on the flags alone let an
+        # incidental one decide: a company with a funding round found this morning
+        # also had no angle yet, so `prosed` sorted it behind a pure recalibration.
+        "ORDER BY (l.lead_id IS NULL "
+        "          OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '')) DESC, "
+        "         calibrated DESC, prosed DESC, newest DESC" + (" LIMIT ?" if limit else ""),
+        (fingerprint, prose_ver, now, *([limit] if limit else [])),
+    ).fetchall()
+
+
 def enqueue_stale_scores(
     store: Store,
     queue: Any,
@@ -810,56 +878,14 @@ def enqueue_stale_scores(
     )
     prose_ver = prose_version()
     now = to_iso(utcnow())
-    rows = store.conn.execute(
-        "SELECT c.canonical_domain AS domain, "
-        "MAX(t.observed_at) AS newest, "
-        "MIN(COALESCE(l.scoring_version, '') = ?) AS calibrated, "
-        # Angle-less *and* written by an older prose build. Both halves are load
-        # bearing: without the first this re-decodes angles that are already fine,
-        # and without the second a lead the model can never write an angle for --
-        # one whose prose leaks trigger codes -- is re-queued on every reconcile
-        # forever. The scorer stamps this column even when the prose call fails, so
-        # a lead that stays blank under the new build stops asking after one attempt.
-        #
-        # `reprose` drops the first half. That is what makes a lead with a *wrong*
-        # angle reachable at all -- see the docstring.
-        # `reprose` drops the first half **and reads a different column**, which is the
-        # part that was wrong. It asked `prompt_version`, which `_upsert_lead` writes
-        # unconditionally while preserving a non-empty angle -- so a rescore that never
-        # called the model still stamped the row current, and after the 2947-job drain
-        # the whole corpus matched. `queued 0` on every run, permanently. `angle_version`
-        # moves only when an angle is actually written, so it answers the question this
-        # override is asking.
-        + (
-            "MIN(COALESCE(l.angle_version, '') = ?) AS prosed "
-            if reprose
-            else "MIN(COALESCE(l.outreach_angle, '') != '' "
-            "    OR COALESCE(l.prompt_version, '') = ?) AS prosed "
-        )
-        + "FROM companies c "
-        "JOIN triggers t ON t.canonical_domain = c.canonical_domain "
-        "LEFT JOIN leads l ON l.canonical_domain = c.canonical_domain "
-        "WHERE t.active = 1 AND t.decays_at > ? "
-        "GROUP BY c.canonical_domain "
-        "HAVING l.lead_id IS NULL "
-        "   OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '') "
-        "   OR calibrated = 0 "
-        "   OR prosed = 0 "
-        # Genuinely new triggers first, recalibrations behind them, angle repairs last.
-        # A config edit makes the whole corpus stale at once, and at ~18 s a lead that
-        # is hours of queue -- long enough that a funding round found this morning
-        # would sit behind it. An angle repair is the least urgent of the three: the
-        # lead already dispatched, and what is being fixed is the copy on the card.
-        #
-        # Ranked by a row's *most* urgent reason, not by each flag in turn. A row can
-        # be selected for several at once, and ordering on the flags alone let an
-        # incidental one decide: a company with a funding round found this morning
-        # also had no angle yet, so `prosed` sorted it behind a pure recalibration.
-        "ORDER BY (l.lead_id IS NULL "
-        "          OR MAX(t.observed_at) > COALESCE(l.last_updated_at, '')) DESC, "
-        "         calibrated DESC, prosed DESC, newest DESC" + (" LIMIT ?" if limit else ""),
-        (fingerprint, prose_ver, now, *([limit] if limit else [])),
-    ).fetchall()
+    rows = _stale_rows(
+        store.conn,
+        fingerprint=fingerprint,
+        prose_ver=prose_ver,
+        now=now,
+        reprose=reprose,
+        limit=limit,
+    )
 
     queued = 0
     with store.tx() as conn:
@@ -896,6 +922,43 @@ def enqueue_stale_scores(
             if existing is None:
                 queued += 1
     return queued
+
+
+def reprose_backlog(
+    store: Store,
+    *,
+    config: ScoringConfig | None = None,
+    gate: ComplianceGate | None = None,
+) -> int:
+    """How many leads still carry an angle from an older prose build.
+
+    `queued` counts what this pass *newly* enqueued, and that is not the same number:
+    run `--reprose` twice before the worker drains and the same rows are selected, every
+    dedupe key already exists, and the command prints **0**. Which reads exactly like
+    the defect that made it print 0 for a week -- and "re-run to continue" invites
+    precisely that second run.
+
+    So the operator gets both numbers, for the same reason `no_job_lost` prints the
+    unreachable count beside the lost one and `throughput` prints the hours it was
+    measured over: one number alone cannot tell "already queued" from "nothing to do",
+    and the difference decides whether you wait or go looking for a bug.
+
+    It is also the scale of the job. Every row is ~18 s of decode, so a corpus-wide
+    backfill is hours on this box, and that is a decision the operator should get to
+    make with the number in front of them rather than after the eighth pass.
+    """
+    return len(
+        _stale_rows(
+            store.conn,
+            fingerprint=calibration_version(
+                config or ScoringConfig.load(), gate or ComplianceGate.from_config()
+            ),
+            prose_ver=prose_version(),
+            now=to_iso(utcnow()),
+            reprose=True,
+            limit=0,
+        )
+    )
 
 
 # Failures that will plausibly answer differently later. A schema violation from the

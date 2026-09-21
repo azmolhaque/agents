@@ -1905,3 +1905,61 @@ def test_the_preview_says_when_a_card_could_never_be_sent(rig, monkeypatch, caps
     printed = capsys.readouterr().out
     assert "WOULD NOT BE DISPATCHED" in printed
     assert "compliance veto" in printed
+
+
+def test_a_second_reprose_pass_reports_the_backlog_not_a_zero(store):
+    """`queued` counts what a pass *newly* enqueued, which is not what the operator is
+    asking.
+
+    Run `--reprose` twice before the worker drains and the same rows are selected,
+    every dedupe key already exists, and the count is 0 -- indistinguishable from
+    "nothing to do". That is the exact reading that hid a real defect for a week, and
+    the old message ("re-run to continue") invited the second run that produces it.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores, reprose_backlog
+    from cindraleads.queue import JobQueue
+
+    _lead_with_angle(store, angle="I'd like to run a Snapshot, from $250.", prompt_version="older")
+    queue = JobQueue(store)
+
+    assert enqueue_stale_scores(store, queue, reprose=True) == 1
+    assert enqueue_stale_scores(store, queue, reprose=True) == 0, "already queued"
+    assert reprose_backlog(store) == 1, (
+        "the backlog must still show the work; 0 queued and 0 remaining are different "
+        "answers and only one of them means 'done'"
+    )
+
+
+def test_the_backlog_empties_when_the_angle_is_rewritten(store):
+    """The other direction, and what makes successive passes walk forward: an angle
+    written by the running build drops out of the selection."""
+    from cindraleads.agents.scorer import prose_version, reprose_backlog
+
+    _lead_with_angle(store, angle="A current angle.", prompt_version=prose_version())
+
+    assert reprose_backlog(store) == 0
+
+
+def test_the_backlog_and_the_selection_cannot_disagree():
+    """One query, two callers. A count that stopped describing the work the command
+    queues would be worse than no count -- it would be a confident wrong number, which
+    is how `832 of 833` was read as a finding about the corpus for a week."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "src/cindraleads/agents/scorer.py").read_text()
+    callers = {
+        node.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef)
+        and any(
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Name)
+            and inner.func.id == "_stale_rows"
+            for inner in ast.walk(node)
+        )
+    }
+    assert callers == {"enqueue_stale_scores", "reprose_backlog"}, (
+        f"a third reader of this predicate, or a lost one: {sorted(callers)}"
+    )
+    assert source.count("HAVING l.lead_id IS NULL") == 1, "the predicate was duplicated"
