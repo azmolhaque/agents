@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import timedelta
 from pathlib import Path
 
@@ -1609,3 +1610,46 @@ def test_the_card_explains_its_own_trigger_codes(rig):
 
     assert means, "scoring.yaml validates this non-empty; the fixture is wrong"
     assert means in field, f"the card still speaks only taxonomy: {field}"
+
+
+def test_the_card_preview_renders_the_real_card(rig, monkeypatch, capsys):
+    """`preview_card.py` is the instrument, and an instrument nobody drives is the
+    defect it exists to catch.
+
+    `preview_angle.py` kept its own copy of the Scorer's `format()` call and stopped
+    rendering at all the day a fact was added -- `KeyError: 'proof'`, found by running
+    it, not by a test. This drives the script's own `main()` against a real database
+    and asserts the card it prints is the one `build_card` produces.
+    """
+    import importlib.util
+
+    build, _posts, store = rig
+    build(tier="A")
+
+    spec = importlib.util.spec_from_file_location(
+        "preview_card", REPO_ROOT / "scripts" / "preview_card.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    from cindraleads.config import settings as real_settings
+
+    cfg = real_settings().model_copy(update={"db_file": store.db_path})
+    monkeypatch.setattr(module, "settings", lambda: cfg)
+    monkeypatch.setattr(module, "Store", lambda *_a, **_k: store)
+    monkeypatch.setattr(sys, "argv", ["preview_card.py", "acme.io"])
+
+    # `main()` closes the store it was handed, and that is left alone deliberately.
+    # Patching `close` to a no-op leaks the connection: `monkeypatch` undoes *after*
+    # `rig` tears down, so the rig's own `store.close()` called the no-op and 3.13
+    # charged the `ResourceWarning` to a random test in `test_egress.py`. `Store.close`
+    # clears `_conn`, so the read below reopens and the rig closes that one.
+
+    assert module.main() == 0
+
+    printed = capsys.readouterr().out
+    card = build_card(_lead_row(store))
+    assert "Acme Health" in printed
+    assert _triggers_field(card) in printed, "the preview must show the real trigger field"
+    assert _evidence_field(card) in printed, "the preview must show the real evidence field"

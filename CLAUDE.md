@@ -1817,6 +1817,39 @@ one nobody re-reads. It is a `TriggerLine` with named fields, and
 constants, because a literal is how a third value enters the column with no phrase for
 it. Every new test was checked against the old renderers first.
 
+`scripts/preview_card.py <domain>` is the sibling of `preview_angle.py`, and the reason
+is the same one this file keeps writing down: **all three card defects were obvious in
+one rendered card and invisible in `_fmt_triggers`.** Before it, seeing a card meant
+waiting for a score job to reach the front of the queue and a dispatch to fire -- which
+on a drained queue never happens at all, so a format change could not be checked on the
+box it was deployed to. It renders the real embed through the real `build_card` and
+posts nothing: the webhook carries a transport that raises on any request, **and**
+`webhooks` is non-empty, because `{}` tests falsy and `__post_init__` reads the
+configured secrets instead. A tool for *reading* cards must not be one keystroke from
+sending one.
+
+`test_the_card_preview_renders_the_real_card` drives the script's own `main()` and
+compares against `build_card`, because `preview_angle.py` -- built for exactly this --
+stopped rendering at all the day `{proof}` was added, and that was found by running it
+rather than by a test.
+
+**Writing its test leaked a connection, and 3.13 named the wrong test four times.**
+`test_egress.py::test_the_domain_budget_survives_a_new_client` on one run,
+`test_the_configured_cap_applies_without_anyone_registering_a_guard` on the next three,
+each passing in isolation, 3.11 green throughout. **Identical to the three unclosed
+`Store` connections**, and the tell is the same: *the failing test moves between runs*.
+
+The cause was not what I first said it was. I blamed the script's unclosed
+`httpx.AsyncClient`, fixed that, and the suite stayed red -- the warning names
+`sqlite3.Connection`, which I had not read. `PYTHONTRACEMALLOC` pointed at the *rig's
+own* store, opened in the fixture: the test patched `store.close` to a no-op so `main()`
+could not close a store the rig still needed, and **`monkeypatch` undoes after `rig`
+tears down**, so the rig's `store.close()` called the no-op and closed nothing. The
+no-op was unnecessary in the first place -- `Store.close` clears `_conn`, so the next
+read reopens. Third time in this file that a confident explanation was written before
+the row was read, after `apple.com` and the second worker; the traceback cost one
+command.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
