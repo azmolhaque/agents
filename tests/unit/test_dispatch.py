@@ -1653,3 +1653,147 @@ def test_the_card_preview_renders_the_real_card(rig, monkeypatch, capsys):
     assert "Acme Health" in printed
     assert _triggers_field(card) in printed, "the preview must show the real trigger field"
     assert _evidence_field(card) in printed, "the preview must show the real evidence field"
+
+
+# ----------------------------------------------- what may leave the building
+
+
+@pytest.fixture
+def allow_bengali(monkeypatch):  # type: ignore[no-untyped-def]
+    """Turn `DISPATCH_BENGALI_ANGLE` on for one test, and off again afterwards.
+
+    A fixture rather than two lines in a test body, because `settings()` is an
+    `lru_cache` and a test that clears it on the way in but not on the way out leaves
+    the next test reading this one's environment.
+    """
+    from cindraleads.config import settings as real_settings
+
+    monkeypatch.setenv("DISPATCH_BENGALI_ANGLE", "true")
+    real_settings.cache_clear()
+    yield
+    monkeypatch.delenv("DISPATCH_BENGALI_ANGLE", raising=False)
+    real_settings.cache_clear()
+
+
+def _with_bengali(store, text: str = "আপনি একটি AI ফিচার ঘোষণা করেছেন।") -> None:  # type: ignore[no-untyped-def]
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET bengali_angle = ?", (text,))
+
+
+def test_a_bengali_angle_is_not_dispatched_unless_a_human_approved_it(rig):
+    """CLAUDE.md has said so since the first batch was read, and nothing implemented it.
+
+    What a 4B writes is machine-translation garbage to a native speaker -- `মুক্ত`
+    (*liberated*) where `বিনামূল্যে` (*free of charge*) belongs -- which is the opposite
+    of what a Bengali card is for. Five of five cards previewed on the Pi carried one.
+    """
+    build, _posts, store = rig
+    build(tier="A")
+    _with_bengali(store)
+
+    card = build_card(_lead_row(store))
+
+    names = {f["name"] for f in card["fields"]}
+    assert not any("বাংলা" in n for n in names), (
+        f"a Bengali angle reached a card with the flag off: {sorted(names)}"
+    )
+
+
+def test_the_flag_is_what_turns_it_back_on(rig, allow_bengali):
+    """The other direction. The field is gated, not deleted -- the honest fix is a
+    human-written template with slots, and this is the line that ships it."""
+    build, _posts, store = rig
+    build(tier="A")
+    _with_bengali(store)
+
+    card = build_card(_lead_row(store))
+
+    assert any("বাংলা" in f["name"] for f in card["fields"])
+
+
+def test_the_free_guard_reads_bengali(rig, allow_bengali):
+    """The guard was English-only and the Bengali made the same promise.
+
+    Five of five cards previewed logged `card_prose_withheld_free_claim` against the
+    English angle and then shipped `আমি একটি মুক্ত পরীক্ষা প্রস্তাব করছি` -- an
+    `ai_llm_assessment`, a $2k-8k engagement, offered at no charge in a language the
+    guard could not read. It withheld the compliant text and passed the other.
+    """
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET recommended_offer = 'ai_llm_assessment'")
+    _with_bengali(store, "আমি আপনার জন্য একটি মুক্ত AI-LLM পরীক্ষা প্রস্তাব করছি।")
+
+    card = build_card(_lead_row(store))
+
+    assert not any("বাংলা" in f["name"] for f in card["fields"]), (
+        "a paid engagement was offered free in Bengali"
+    )
+
+
+def test_the_bengali_free_words_do_not_need_a_word_boundary():
+    """`\\b` is meaningless in Bengali and gives both errors at once.
+
+    Vowel signs are category Mc/Mn and so are not word characters: `\\bবিনামূল্যে\\b`
+    fails to match the word itself, because it *ends* in one. The terms are substrings
+    on purpose, and the asymmetry is the argument -- a wrong match costs a card its
+    angle, a miss puts a price commitment in a prospect's inbox.
+    """
+    from cindraleads.agents.dispatcher import _FREE_CLAIM
+
+    for phrase in ("এটি বিনামূল্যে হবে।", "প্রথম Snapshot ফ্রি", "একটি মুক্ত পরীক্ষা"):
+        assert _FREE_CLAIM.search(phrase), f"unguarded free claim: {phrase}"
+
+
+async def test_a_vetoed_lead_is_never_dispatched(rig):
+    """`arxiv.org` rendered `⚖️ Compliance: VETO` on a Tier A card at score 74 and
+    nothing refused to send it. The gate quarantines; `_upsert_lead` still stores the
+    tier the arithmetic computed, and every dispatch predicate was about tier."""
+    build, posts, store = rig
+    dispatcher = build(tier="A")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET compliance = '{\"passed\": false}'")
+
+    result = await dispatcher.run(job())
+
+    assert result.ok, "not a failure -- a lead that may not be sent"
+    assert posts == [], "a vetoed lead reached Discord"
+    await dispatcher.webhook.client.aclose()
+
+
+async def test_a_suppressed_domain_is_never_dispatched(rig):
+    """A suppression is deliberately outside `calibration_version`, so a suppressed
+    company keeps its tier forever and no rescore is ever coming. `worklist` joins the
+    table live and says why; the Dispatcher joined neither table."""
+    build, posts, store = rig
+    dispatcher = build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO suppression_list (kind, value, reason, created_at) "
+            "VALUES ('domain','acme.io','platform', ?)",
+            (to_iso(utcnow()),),
+        )
+
+    result = await dispatcher.run(job())
+
+    assert result.ok
+    assert posts == [], "a suppressed domain reached Discord"
+    await dispatcher.webhook.client.aclose()
+
+
+async def test_the_digest_asks_the_same_question(rig):
+    """The other route to Discord, and Tier C is the larger population -- a gate that
+    covered only the per-lead stage would leave most of the corpus unguarded."""
+    from cindraleads.agents.dispatcher import send_digest
+
+    build, posts, store = rig
+    dispatcher = build(tier="C")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET compliance = '{\"passed\": false}'")
+
+    report = await send_digest(dispatcher)
+
+    assert report.pending == 0, "a vetoed lead was batched into the digest"
+    assert posts == []
+    await dispatcher.webhook.client.aclose()

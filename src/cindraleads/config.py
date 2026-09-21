@@ -93,6 +93,28 @@ class Settings(BaseSettings):
     # model load (~32 s off microSD) on top of a p95 page.
     ollama_timeout_seconds: float = 180.0
 
+    # --- prose ---------------------------------------------------------------
+    # Whether a `bengali_angle` may reach a card. **Off, and the default is the
+    # decision**, not caution pending a tidy-up.
+    #
+    # Read as a Bengali speaker rather than as JSON, what a 4B writes is
+    # machine-translation garbage: `মুক্ত` (*liberated*) where `বিনামূল্যে` (*free of
+    # charge*) belongs, "RoE" transliterated to `রো ই`, "AI" spelled out letter by
+    # letter as `এই আই`. That is the precise opposite of the local-trust wedge
+    # `T12_LOCAL` and Taka pricing exist to build, and it is a capability limit rather
+    # than a bug -- `PROSE_MAX_TOKENS_BENGALI` is about length and nothing in this
+    # project has ever checked the Bengali for quality.
+    #
+    # CLAUDE.md has said "do not send a Bengali card until a native reader has approved
+    # the wording" since the first batch was read, and nothing implemented it: five of
+    # five cards previewed on 2026-09-21 carried one. A rule in a document is a
+    # preference; a rule in the code is a rule.
+    #
+    # A flag rather than deleting the field, because the honest fix is a human-written
+    # template with slots and this is what turns it back on in one line when that
+    # exists.
+    dispatch_bengali_angle: bool = False
+
     # --- secrets -----------------------------------------------------------
     serpapi_key: SecretStr | None = None
     anthropic_api_key: SecretStr | None = None

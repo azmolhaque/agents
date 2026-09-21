@@ -169,6 +169,9 @@ class Dispatcher:
         tier = str(lead["tier"])
         if tier == "REJECT":
             return DispatchOutcome(lead_id=lead_id, skipped="tier REJECT is never dispatched")
+        blocked = self._blocked(lead)
+        if blocked:
+            return DispatchOutcome(lead_id=lead_id, tier=tier, skipped=blocked)
         if tier not in IMMEDIATE_TIERS:
             # Not dropped -- deferred. `send_digest` picks it up on the daily timer by
             # querying for tiers nothing has logged yet, so no state is needed here.
@@ -257,6 +260,46 @@ class Dispatcher:
             "SELECT 1 FROM dispatch_log WHERE idempotency_key = ? LIMIT 1", (key,)
         ).fetchone()
         return row is not None
+
+    def _blocked(self, lead: dict[str, Any]) -> str:
+        """Why this lead may not be dispatched, or "" if it may.
+
+        **`arxiv.org` rendered `⚖️ Compliance: VETO` on a Tier A card at score 74 and
+        nothing refused to send it.** `compliance_passed` was read, printed, and never
+        acted on: the gate quarantines a vetoed lead while `_upsert_lead` still stores
+        the tier the arithmetic computed, so the row keeps Tier A and every dispatch
+        predicate here is about tier. The card said the right thing in a field nothing
+        read.
+
+        Three questions, and they are genuinely different, which is why all three are
+        asked. The stored verdict answers "was this allowed when we scored it"; the
+        quarantine and suppression tables answer "may I write to them *now*" and change
+        without moving a single lead row -- `suppressed_domains` is deliberately outside
+        `calibration_version` for exactly that reason, so a suppressed company keeps its
+        tier forever and no rescore will ever come.
+
+        `worklist` already joins both tables live and says why in its own comment. The
+        Dispatcher is the other reader of the same question and it joined neither --
+        which is how a suppression added after a lead was scored stopped the operator's
+        call list and not the Discord card.
+        """
+        compliance = json.loads(lead["compliance"] or "{}")
+        if not bool(compliance.get("passed", True)):
+            return "compliance veto"
+        domain = str(lead["canonical_domain"])
+        row = self.store.conn.execute(
+            "SELECT "
+            "  (SELECT 1 FROM suppression_list "
+            "     WHERE kind = 'domain' AND value = ?) AS suppressed, "
+            "  (SELECT 1 FROM quarantine "
+            "     WHERE subject_kind = 'lead' AND subject_id = ?) AS quarantined",
+            (domain, str(lead["lead_id"])),
+        ).fetchone()
+        if row and row["suppressed"]:
+            return "domain suppressed"
+        if row and row["quarantined"]:
+            return "lead quarantined"
+        return ""
 
     def read_lead(self, lead_id: str) -> dict[str, Any] | None:
         row = self.store.conn.execute(
@@ -390,7 +433,7 @@ def _card_data(lead: dict[str, Any]) -> CardData:
         outreach_angle=_publishable(
             str(lead["outreach_angle"] or ""), lead["lead_id"], allow_free=allow_free
         ),
-        bengali_angle=_publishable(lead["bengali_angle"], lead["lead_id"], allow_free=allow_free),
+        bengali_angle=_bengali(lead["bengali_angle"], lead["lead_id"], allow_free=allow_free),
         surface_notes=tuple(surface),
         compliance_basis=str(compliance.get("basis", "legitimate_interest_b2b")),
         compliance_passed=bool(compliance.get("passed", True)),
@@ -436,6 +479,15 @@ async def send_digest(
     for row in rows:
         lead = dispatcher.read_lead(str(row["lead_id"]))
         if lead is None:
+            continue
+        # The same question the per-lead stage asks, because this is the other route to
+        # Discord and a veto that only one of them honours is not a veto. Tier C is the
+        # *larger* population, so a gate that covered only A and B would leave most of
+        # the corpus unguarded -- the `digest_pages` shape again, seen from the gate
+        # side rather than the renderer's.
+        blocked = dispatcher._blocked(lead)
+        if blocked:
+            log.info("digest_skipped", lead_id=str(lead["lead_id"]), why=blocked)
             continue
         key = idempotency_key(
             str(lead["lead_id"]), [t["code"] for t in lead["triggers"]], int(lead["score"])
@@ -517,9 +569,24 @@ _INTERNAL_CODE = re.compile(r"\bT\d{1,2}_[A-Z][A-Z_]+\b|\b[a-z][a-z0-9]*(?:_[a-z
 #
 # "free" is matched as a whole word, so "freedom" and "freelance" pass. That is the
 # entire vocabulary a model reaches for when it has been told something costs nothing.
+#
+# **It was English-only, and the Bengali angle made the same promise unguarded.** Five
+# of five cards previewed on 2026-09-21 logged `card_prose_withheld_free_claim` against
+# the English and then shipped `আমি একটি মুক্ত পরীক্ষা প্রস্তাব করছি` -- an
+# `ai_llm_assessment`, a $2k-8k engagement, offered at no charge in a language the
+# guard could not read. The guard withheld the compliant text and passed the other.
+#
+# The Bengali terms deliberately carry **no `\b`**, because `\b` is meaningless here:
+# Bengali vowel signs are category Mc/Mn and so are not word characters, which makes
+# `\bবিনামূল্যে\b` fail to match the word itself (it ends in `ে`) while `\bমুক্ত\b`
+# happily matches inside `মুক্তিযুদ্ধ`. Word boundaries give the false negative *and*
+# the false positive. A substring gives only the false positive, and the asymmetry
+# says take it: a wrong match costs a card its angle, a miss puts a price commitment
+# in a prospect's inbox.
 _FREE_CLAIM = re.compile(
     r"\bfree\b|\bno charge\b|\bat no cost\b|\bfree of charge\b|\bcomplimentary\b"
-    r"|\bgratis\b|\bon us\b|\bzero cost\b",
+    r"|\bgratis\b|\bon us\b|\bzero cost\b"
+    r"|বিনামূল্যে|মুক্ত|ফ্রি|নিখরচায়|বিনা খরচে|বিনা মূল্যে",
     re.IGNORECASE,
 )
 
@@ -555,6 +622,32 @@ def _publishable(text: str | None, lead_id: Any = "", *, allow_free: bool = Fals
         )
         return ""
     return text
+
+
+def _bengali(text: str | None, lead_id: Any = "", *, allow_free: bool = False) -> Any:
+    """The Bengali angle, which by default does not reach a card at all.
+
+    Everything `_publishable` withholds, plus the whole field unless
+    `DISPATCH_BENGALI_ANGLE` is set. `Settings` carries the reasoning; the short of it
+    is that a 4B writing marketing Bengali reads as foreign to a native speaker, which
+    is the opposite of what a Bengali card is for.
+
+    **The guards could not have covered it anyway, and that is a separate finding.**
+    `_FREE_CLAIM` was English-only, so the same free promise two commits were spent
+    getting exactly right in English sailed through in Bengali -- and on the five cards
+    previewed it was the *only* angle that survived, because the English one was
+    correctly withheld by the guard the Bengali is invisible to. The guard withheld
+    the compliant text and shipped the non-compliant text.
+
+    The order matters: the flag is checked first, so turning it on is a deliberate act
+    and the content guards still apply after it.
+    """
+    if not text:
+        return text
+    if not settings().dispatch_bengali_angle:
+        log.info("card_bengali_withheld", lead_id=str(lead_id), why="not reviewed by a human")
+        return None
+    return _publishable(text, lead_id, allow_free=allow_free)
 
 
 def digest_pages(cards: list[CardData]) -> list[list[dict[str, Any]]]:

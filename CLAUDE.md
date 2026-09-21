@@ -1850,6 +1850,61 @@ read reopens. Third time in this file that a confident explanation was written b
 the row was read, after `apple.com` and the second worker; the traceback cost one
 command.
 
+**The first five cards rendered through the preview showed three defects the preview
+was built to find, and the worst one was that the guard withheld the compliant text
+and shipped the other.**
+
+Every one of the five logged `card_prose_withheld_free_claim` against its English
+angle -- correctly: they were written under the old free-everything wording and their
+offer is `ai_llm_assessment`, a $2k-8k engagement. So the English field was dropped
+and the card went out carrying **only** the Bengali, which said
+`আমি একটি মুক্ত পরীক্ষা প্রস্তাব করছি` -- the same promise, in the one language
+`_FREE_CLAIM` could not read. **A guard that covers one language on a card that
+carries two is not a guard**, and the failure direction is the cruel one: it removed
+the safe text and kept the dangerous text.
+
+- **`\b` is meaningless in Bengali, so the obvious patch silently does nothing.**
+  Vowel signs are category Mc/Mn and are not word characters, so `\bবিনামূল্যে\b`
+  never matches the word itself -- it *ends* in one -- while `\bমুক্ত\b` matches
+  happily inside `মুক্তিযুদ্ধ`. Word boundaries give the false negative **and** the
+  false positive. The terms are substrings on purpose, and the asymmetry is the whole
+  argument: a wrong match costs a card its angle, a miss puts a price commitment in a
+  prospect's inbox.
+- **The Bengali angle is now withheld entirely, behind `DISPATCH_BENGALI_ANGLE`,
+  default off.** This file has said "do not send a Bengali card until a native reader
+  has approved the wording" since the first batch was read, and nothing implemented
+  it. A rule in a document is a preference; **a rule in the code is a rule** -- the
+  fourth time that sentence has been written here, after `means`, the offer slugs and
+  the recency guard. A flag rather than deleting the field, because the honest fix is
+  a human-written template with slots and this is the line that ships it.
+- **The prompt asks for Bengali "only when country is BD" and all five companies are
+  American.** `country` is NULL for 91% of the corpus, so the condition has nothing to
+  test against and a 4B fills the field regardless. Same shape, same lesson.
+
+**`arxiv.org` rendered `⚖️ Compliance: VETO` on a Tier A card at score 74 and nothing
+refused to send it.** `compliance_passed` was read, printed and never acted on: the
+gate quarantines a vetoed lead while `_upsert_lead` still stores the tier the
+arithmetic computed, and every dispatch predicate was about *tier*. The card said the
+right thing in a field nothing read.
+
+`_blocked` asks three genuinely different questions -- the stored verdict ("was this
+allowed when we scored it"), and the quarantine and suppression tables ("may I write to
+them *now*"). The tables change without moving a lead row: `suppressed_domains` is
+deliberately outside `calibration_version`, so a suppressed company keeps its tier
+forever and no rescore is ever coming. `worklist` already joined both live and says so
+in its own comment; **the Dispatcher is the other reader of the same question and
+joined neither**, which is how a suppression stopped the operator's call list and not
+the Discord card.
+
+And it is asked on **both** routes. `send_digest` is the other path to Discord and Tier
+C is the larger population, so a gate covering only the per-lead stage would have left
+most of the corpus unguarded -- the `digest_pages` shape again, from the gate side.
+Against the old code that test reports `digest_sent pages=1 sent=1` for a vetoed lead.
+
+**Nothing covered any of this, because every renderer test builds `CardData` directly**
+and the four defects all live in `_card_data` and `prepare`. 968 tests passed over a
+card that was shipping a free $2k-8k engagement in Bengali.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
