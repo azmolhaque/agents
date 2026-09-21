@@ -46,7 +46,14 @@ from cindraleads.contacts import (
 from cindraleads.dns_hygiene import DnsProbe, hygiene_gaps, lookup_hygiene, mail_auth_weakness
 from cindraleads.errors import CindraError
 from cindraleads.logging import get_logger
-from cindraleads.models import DnsHygiene, Job, StageResult, to_iso, utcnow
+from cindraleads.models import (
+    PUBLIC_RECORD_CONFIDENCE,
+    DnsHygiene,
+    Job,
+    StageResult,
+    to_iso,
+    utcnow,
+)
 from cindraleads.sources.clients import (
     AshbyClient,
     CrtShClient,
@@ -633,7 +640,7 @@ def _trigger(conn: sqlite3.Connection, domain: str, code: str, evidence_id: str,
                 trigger_id,
                 domain,
                 code,
-                0.8,  # a public record read directly, not a model's reading of a page
+                PUBLIC_RECORD_CONFIDENCE,
                 to_iso(now),
                 to_iso(now + timedelta(days=decay)),
                 f"public record at {url}"[:280],

@@ -9,12 +9,19 @@ webhooks cannot receive a reaction.
 """
 
 from cindraleads.discord import embeds, limits
-from cindraleads.discord.embeds import CardData, digest_row, digest_summary, lead_card
+from cindraleads.discord.embeds import (
+    CardData,
+    TriggerLine,
+    digest_row,
+    digest_summary,
+    lead_card,
+)
 from cindraleads.discord.webhook import DiscordWebhook, WebhookResult
 
 __all__ = [
     "CardData",
     "DiscordWebhook",
+    "TriggerLine",
     "WebhookResult",
     "digest_row",
     "digest_summary",

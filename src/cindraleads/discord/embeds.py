@@ -20,11 +20,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
+from cindraleads.dedupe import is_platform_url
 from cindraleads.discord import limits
-from cindraleads.models import to_iso
+from cindraleads.models import provenance_of, to_iso
 
-__all__ = ["TIER_COLORS", "CardData", "digest_row", "digest_summary", "lead_card"]
+__all__ = [
+    "TIER_COLORS",
+    "CardData",
+    "TriggerLine",
+    "digest_row",
+    "digest_summary",
+    "lead_card",
+]
 
 # Ember, amber, cyan. Tier A is the one you should feel in your peripheral vision.
 TIER_COLORS: dict[str, int] = {
@@ -38,6 +47,31 @@ TIER_MARK = {"A": "▲", "B": "◆", "C": "•", "REJECT": "✕"}
 
 
 @dataclass(frozen=True)
+class TriggerLine:
+    """One trigger as the card shows it.
+
+    This was a bare `(code, confidence, when)` tuple, and the anonymity is most of why
+    the card read badly. `confidence` is **provenance, not probability** -- exactly two
+    constants, 0.7 for what a 4B read off a page and 0.8 for a public record we looked
+    up ourselves -- and printing it as `0.70` told the reader we were 70% sure of *this
+    claim about this company*, which is a measurement nobody made. `code` is our
+    internal taxonomy and means nothing to the person deciding whether to send.
+
+    So the card now prints what the number means and what the code means, and `means`
+    is the same phrase the outreach prompt is handed. One row, read end to end:
+
+        `T10_VENDOR_PRESSURE` a customer has asked them for a pentest report
+            · read off their page · 3d ago
+    """
+
+    code: str
+    confidence: float
+    when: str = ""
+    #: The `means` phrase from `scoring.yaml`, empty when the config could not be read.
+    means: str = ""
+
+
+@dataclass(frozen=True)
 class CardData:
     lead_id: str
     canonical_domain: str
@@ -45,7 +79,7 @@ class CardData:
     tier: str
     score: int
     offer: str
-    triggers: tuple[tuple[str, float, str], ...] = ()  # (code, confidence, when)
+    triggers: tuple[TriggerLine, ...] = ()
     evidence: tuple[tuple[str, str], ...] = ()  # (label, url)
     description: str = ""
     outreach_angle: str = ""
@@ -60,20 +94,59 @@ class CardData:
 
 
 def _fmt_triggers(data: CardData) -> str:
+    """One line per trigger: what it is, what it means, how we know, and when."""
     if not data.triggers:
         return "—"
-    return "\n".join(
-        f"`{code}` {confidence:.2f}" + (f" · {when}" if when else "")
-        for code, confidence, when in data.triggers
-    )
+    lines: list[str] = []
+    for line in data.triggers:
+        parts = [f"`{line.code}`"]
+        if line.means:
+            parts.append(line.means)
+        parts.append(provenance_of(line.confidence))
+        if line.when:
+            parts.append(line.when)
+        lines.append(f"{parts[0]} {' · '.join(parts[1:])}" if len(parts) > 1 else parts[0])
+    return "\n".join(lines)
+
+
+def _display_host(url: str) -> str:
+    """The host as the reader would see it in an address bar.
+
+    Deliberately **not** `canonical_domain`, which returns None for a platform host --
+    it is a rejection, and the hosts it rejects are exactly the ones the reader most
+    needs to see. `www.` is dropped because it is noise and nothing here compares the
+    result against anything.
+    """
+    try:
+        host = urlparse(url if "//" in url else f"https://{url}").hostname or ""
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
 
 
 def _fmt_evidence(data: CardData) -> str:
-    """Markdown links, deduplicated by URL.
+    """Markdown links, deduplicated by URL, labelled by host.
 
     Evidence is the one field that must survive truncation intact — a lead card whose
     links were trimmed to make room for prose is unverifiable, which is the same as
     having no evidence at all.
+
+    **The label was the `source_id`**, so the card read `company_site · dns_public` and
+    the reader could not see whose page they were about to open without clicking it.
+    That is the Findcheap defect on the card the human sees *first*: its worklist row
+    cited `chromewebstore.google.com/detail/findcheap/...` as proof of what findcheap.ai
+    had announced, and the fix there -- prefer their own domain, mark a borrowed page --
+    stopped at the call list. The Discord card had neither half.
+
+    Marked and not hidden, for the reason the worklist states: a platform link is
+    sometimes the only proof a trigger holds, and blanking it would leave the operator
+    telling a stranger "you published this" with nothing to check. Marked *inline*
+    rather than as a legend under the field, because a card cites several URLs and
+    usually only one of them is borrowed.
+
+    Only a platform host is marked. `crt.sh` and `dns.google` are not the prospect's
+    page either and are perfectly honest citations -- a public record, which is what the
+    trigger line says they are -- and a warning on every card is one nobody reads.
     """
     if not data.evidence:
         return "—"
@@ -83,7 +156,9 @@ def _fmt_evidence(data: CardData) -> str:
         if url in seen:
             continue
         seen.add(url)
-        parts.append(f"[{label}]({url})")
+        host = _display_host(url) or label
+        borrowed = " ⚠️ not their page" if is_platform_url(url) else ""
+        parts.append(f"[{host}]({url}){borrowed}")
     return " · ".join(parts)
 
 
@@ -188,11 +263,16 @@ def digest_row(data: CardData) -> dict[str, Any]:
     Title, score, top trigger, one evidence link. Roughly 450 characters, which is what
     makes eight of them fit where ten full cards cannot.
     """
-    top = data.triggers[0][0] if data.triggers else "—"
+    top = "—"
+    if data.triggers:
+        line = data.triggers[0]
+        top = f"`{line.code}`" + (f" {line.means}" if line.means else "")
     link = ""
     if data.evidence:
         label, url = data.evidence[0]
-        link = f" · [{label}]({url})"
+        host = _display_host(url) or label
+        borrowed = " ⚠️" if is_platform_url(url) else ""
+        link = f" · [{host}]({url}){borrowed}"
 
     embed: dict[str, Any] = {
         "color": TIER_COLORS.get(data.tier, TIER_COLORS["C"]),
@@ -200,7 +280,7 @@ def digest_row(data: CardData) -> dict[str, Any]:
             f"{TIER_MARK.get(data.tier, '•')} {data.score} · {data.display_name}", limits.TITLE
         ),
         "url": f"https://{data.canonical_domain}",
-        "description": limits.truncate(f"`{top}` · {data.offer}{link}\n{data.description}", 400),
+        "description": limits.truncate(f"{top} · {data.offer}{link}\n{data.description}", 400),
     }
     return _fit_total(embed)
 

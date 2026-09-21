@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import ast
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from cindraleads.models import (
+    PAGE_READING_CONFIDENCE,
+    PUBLIC_RECORD_CONFIDENCE,
     Company,
     ComplianceVerdict,
     Contact,
@@ -16,9 +20,12 @@ from cindraleads.models import (
     Trigger,
     from_iso,
     lead_id_for,
+    provenance_of,
     to_iso,
     utcnow,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _evidence(url: str = "https://example.io/post") -> Evidence:
@@ -304,3 +311,66 @@ def test_worst_case_output_fits_the_token_cap_and_the_timeout():
     assert worst_seconds < defaults["timeout"], (
         f"worst case is ~{worst_seconds:.0f}s but the timeout is {defaults['timeout']}s"
     )
+
+
+# ------------------------------------------------- trigger confidence provenance
+
+
+def _trigger_inserts(module: str) -> list[ast.Call]:
+    """Every `execute()` in `module` whose SQL writes the `triggers` table."""
+    source = (REPO_ROOT / "src" / "cindraleads" / module).read_text()
+    found: list[ast.Call] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call) or not node.args:
+            continue
+        func = node.func
+        if not isinstance(func, ast.Attribute) or func.attr != "execute":
+            continue
+        sql = node.args[0]
+        if isinstance(sql, ast.Constant) and isinstance(sql.value, str):
+            text = " ".join(sql.value.split())
+            if "INTO triggers" in text and "confidence" in text:
+                found.append(node)
+    return found
+
+
+@pytest.mark.parametrize(
+    "module", ["agents/resolver.py", "agents/enricher.py"], ids=["resolver", "enricher"]
+)
+def test_nothing_writes_a_trigger_confidence_as_a_bare_number(module: str) -> None:
+    """`triggers.confidence` is provenance, not probability, and it was three places.
+
+    The Resolver wrote `0.7` for what a 4B read off a page, the Enricher wrote `0.8`
+    for a public record it looked up itself, and the card formatted whichever arrived
+    as `0.70` -- a constant rendered as a measurement. One decision in three files with
+    nothing at runtime checking they agree, which is the shape this project has now
+    paid for with the prose bound against its token budget, `WatchdogSec` against the
+    lease, and `MAX_STAGE_SECONDS` against `TimeoutStopSec`.
+
+    A literal here is how a third value gets into the column with no phrase for it, so
+    the check is on the write site rather than on the constants.
+    """
+    calls = _trigger_inserts(module)
+    assert calls, f"no trigger INSERT found in {module}; this test has stopped testing"
+    for call in calls:
+        params = call.args[1] if len(call.args) > 1 else None
+        if not isinstance(params, ast.Tuple):
+            continue
+        floats = [
+            element.value
+            for element in params.elts
+            if isinstance(element, ast.Constant) and isinstance(element.value, float)
+        ]
+        assert not floats, (
+            f"{module}:{call.lineno} writes a bare {floats} into triggers; "
+            "use PAGE_READING_CONFIDENCE or PUBLIC_RECORD_CONFIDENCE"
+        )
+
+
+def test_every_confidence_a_writer_can_produce_has_a_phrase() -> None:
+    """The reader's half. `provenance_of` degrades to the number for an unknown value
+    rather than failing closed -- the same call `surfaces` makes against `offers` -- so
+    this is what says the two constants are actually covered."""
+    assert provenance_of(PAGE_READING_CONFIDENCE) == "read off their page"
+    assert provenance_of(PUBLIC_RECORD_CONFIDENCE) == "public record"
+    assert provenance_of(0.42) == "0.42", "an unknown value degrades, it does not raise"

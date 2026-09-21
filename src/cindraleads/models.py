@@ -17,6 +17,9 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, HttpUrl, field_validator
 
 __all__ = [
+    "CONFIDENCE_PROVENANCE",
+    "PAGE_READING_CONFIDENCE",
+    "PUBLIC_RECORD_CONFIDENCE",
     "Candidate",
     "Company",
     "CompanyExtraction",
@@ -41,6 +44,7 @@ __all__ = [
     "TriggerCode",
     "from_iso",
     "lead_id_for",
+    "provenance_of",
     "to_iso",
     "utcnow",
 ]
@@ -98,6 +102,45 @@ EmployeeBand = Literal["1-10", "11-50", "51-200", "201-1000", "1000+"]
 Tier = Literal["A", "B", "C", "REJECT"]
 Offer = Literal["snapshot_free", "watch", "ai_llm_assessment", "gig"]
 LegalityClass = Literal["public_record", "public_web", "licensed_api", "first_party"]
+
+# `triggers.confidence` is **provenance, not probability**, and it was two magic numbers
+# in two agents with a third place formatting them.
+#
+# The Resolver writes 0.7 for a trigger a 4B read off a page; the Enricher writes 0.8
+# for one derived from a public record it looked up itself, and its own comment says so:
+# "a public record read directly, not a model's reading of a page". Neither varies by
+# company -- there are exactly two values the column can ever hold.
+#
+# Rendered as `0.70` and `0.80` on a Discord card that is the difference between a
+# constant and a measurement, and it reads as the second: an operator seeing
+# `T1_AI_SHIP 0.70` reasonably takes it for "70% sure about *this* claim". It is not.
+# Named here so the two writers and the card cannot drift, and so the card can print
+# what the number means instead of the number.
+PAGE_READING_CONFIDENCE = 0.7
+PUBLIC_RECORD_CONFIDENCE = 0.8
+
+#: How we came to believe a trigger, keyed by the constant that records it.
+CONFIDENCE_PROVENANCE: dict[float, str] = {
+    PAGE_READING_CONFIDENCE: "read off their page",
+    PUBLIC_RECORD_CONFIDENCE: "public record",
+}
+
+
+def provenance_of(confidence: float) -> str:
+    """The phrase for a stored confidence, or the number when it is neither constant.
+
+    Falls back rather than failing closed, the same call as `surfaces` against `offers`:
+    a third value in the column is a bug, and dropping the trigger to report it would
+    hide a real signal from the operator. Compared with a tolerance because the value
+    makes a round trip through SQLite REAL, and an exact float key is the kind of thing
+    that works until the day it does not.
+    """
+    for value, phrase in CONFIDENCE_PROVENANCE.items():
+        if abs(confidence - value) < 1e-9:
+            return phrase
+    return f"{confidence:.2f}"
+
+
 JobStatus = Literal["pending", "in_flight", "done", "failed", "dead"]
 
 

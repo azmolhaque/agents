@@ -30,7 +30,14 @@ from dataclasses import dataclass, field
 from typing import Any, get_args
 
 from cindraleads.config import Settings, load_yaml, settings
-from cindraleads.discord import CardData, DiscordWebhook, digest_row, lead_card, limits
+from cindraleads.discord import (
+    CardData,
+    DiscordWebhook,
+    TriggerLine,
+    digest_row,
+    lead_card,
+    limits,
+)
 from cindraleads.errors import ConfigError
 from cindraleads.logging import get_logger
 from cindraleads.models import Job, Offer, StageResult, from_iso, to_iso, utcnow
@@ -318,13 +325,45 @@ def _any_offer_is_free(config: Any = None, offer: str = "") -> bool:
         return False
 
 
+def _trigger_means() -> dict[str, str]:
+    """`code -> means` from `scoring.yaml`, or empty when the config cannot be read.
+
+    Empty rather than raising, the same call `_any_offer_is_free` makes: a card must
+    still render if the config is broken, and a trigger line degrades to the bare code
+    it printed before. `means` is validated non-empty at load, so a missing phrase here
+    means the file did not open, not that a code was forgotten.
+    """
+    try:
+        return {code: rule.means for code, rule in ScoringConfig.load().triggers.items()}
+    except (ConfigError, OSError):
+        return {}
+
+
 def _card_data(lead: dict[str, Any]) -> CardData:
+    # Local, matching `worklist._top_trigger`: the scorer imports `TRIGGER_ORDER` from
+    # this module, so a module-level import back into it is a cycle.
+    from cindraleads.agents.scorer import DERIVED_TRIGGERS
+
     now = utcnow()
     allow_free = _any_offer_is_free(offer=str(lead["recommended_offer"] or ""))
-    triggers: list[tuple[str, float, str]] = []
+    means = _trigger_means()
+    triggers: list[TriggerLine] = []
     for trigger in lead["triggers"]:
+        code = str(trigger["code"])
         age = (now - from_iso(str(trigger["observed_at"]))).days
-        triggers.append((str(trigger["code"]), float(trigger["confidence"]), f"{age}d ago"))
+        # A derived trigger's `observed_at` is when *we* looked, and the card was
+        # printing it as when they acted -- `T8_HYGIENE_GAP · 0d ago` on a domain whose
+        # DMARC has read `p=none` for years. The prose learned this and the card did
+        # not; the provenance phrase ("public record") is the honest answer instead.
+        when = "" if code in DERIVED_TRIGGERS else f"{age}d ago"
+        triggers.append(
+            TriggerLine(
+                code=code,
+                confidence=float(trigger["confidence"]),
+                when=when,
+                means=means.get(code, ""),
+            )
+        )
 
     surface: list[str] = []
     for item in json.loads(lead["ai_surface"] or "[]"):

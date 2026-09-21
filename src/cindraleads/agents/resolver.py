@@ -31,7 +31,14 @@ from typing import Any, get_args
 
 from cindraleads.dedupe import canonical_domain, same_company
 from cindraleads.logging import get_logger
-from cindraleads.models import Job, StageResult, TriggerCode, to_iso, utcnow
+from cindraleads.models import (
+    PAGE_READING_CONFIDENCE,
+    Job,
+    StageResult,
+    TriggerCode,
+    to_iso,
+    utcnow,
+)
 from cindraleads.store import Store
 
 __all__ = ["ENRICH_KIND", "RESOLVE_KIND", "TRIGGER_DECAY_DAYS", "Resolver"]
@@ -329,7 +336,7 @@ class Resolver:
                         trigger_id,
                         domain,
                         code,
-                        0.7,
+                        PAGE_READING_CONFIDENCE,
                         to_iso(now),
                         to_iso(now + timedelta(days=decay_days)),
                         f"observed at {url}"[:280],

@@ -1781,6 +1781,42 @@ touched the code. Both dates are relative now. Confirmed independent by stashing
 change and watching it still fail -- after `test_crtsh_growth_separates_recent_from_total`
 and the health test that asserted a cool SoC.
 
+**The card is the first thing a human reads and it was written for the machine.** Three
+defects, all in what the Discord embed *says* rather than in what reached it:
+
+- **`triggers.confidence` is provenance, not probability, and the card printed it as a
+  number.** Exactly two values are ever written -- 0.7 by the Resolver for what a 4B
+  read off a page, 0.8 by the Enricher for a public record it looked up itself, whose
+  own comment said so. Neither varies by company. Rendered `T1_AI_SHIP 0.70`, that is a
+  constant wearing a measurement's clothes, and it reads as "70% sure about *this*
+  claim". **The same tell as `single_source` at 96% and `832 of 833`**, this time on the
+  face of a card. `PAGE_READING_CONFIDENCE`/`PUBLIC_RECORD_CONFIDENCE` name the two, and
+  the card prints "read off their page" or "public record".
+- **The evidence label was the `source_id`**, so the field read `company_site ·
+  dns_public` and the operator could not see whose page they were about to open. That is
+  the Findcheap defect on the card the human sees *first*: the worklist learned to
+  prefer their own domain and to mark a borrowed one, and **the fix stopped at the call
+  list.** The card labels by host now and marks a platform URL inline. Only a platform
+  URL -- `crt.sh` and `dns.google` are not their page either and are honest citations,
+  and a warning on every card is one nobody reads.
+- **A derived trigger was dated.** `T8_HYGIENE_GAP · 0d ago` on a domain whose DMARC has
+  read `p=none` for years, because `observed_at` is when *we* looked. `DERIVED_TRIGGERS`
+  has existed since the prose learned this; the card never asked.
+
+And `T10_VENDOR_PRESSURE` meant nothing to the person deciding whether to send. `means`
+was built for exactly that and reached only the prose prompt -- **the position the codes
+themselves were in before `means` existed.** A row now reads end to end:
+`` `T10_VENDOR_PRESSURE` a customer has asked them for a pentest report · read off their
+page · 3d ago ``.
+
+`CardData.triggers` was a bare `(code, confidence, when)` tuple, and the anonymity is
+most of why: a positional triple whose middle element is a constant about provenance is
+one nobody re-reads. It is a `TriggerLine` with named fields, and
+`test_nothing_writes_a_trigger_confidence_as_a_bare_number` parses both writers with
+`ast` and fails on a float literal in a `triggers` INSERT -- the write site, not the
+constants, because a literal is how a third value enters the column with no phrase for
+it. Every new test was checked against the old renderers first.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

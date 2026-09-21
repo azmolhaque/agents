@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -24,8 +25,15 @@ from cindraleads.agents.dispatcher import (
     digest_pages,
     idempotency_key,
 )
-from cindraleads.discord import CardData, DiscordWebhook, digest_row, lead_card, limits
-from cindraleads.models import Job, utcnow
+from cindraleads.discord import (
+    CardData,
+    DiscordWebhook,
+    TriggerLine,
+    digest_row,
+    lead_card,
+    limits,
+)
+from cindraleads.models import Job, to_iso, utcnow
 from cindraleads.store import Store
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -55,7 +63,7 @@ def card(**kwargs) -> CardData:  # type: ignore[no-untyped-def]
         "tier": "A",
         "score": 84,
         "offer": "ai_llm_assessment",
-        "triggers": (("T1_AI_SHIP", 0.91, "11d ago"),),
+        "triggers": (TriggerLine("T1_AI_SHIP", 0.7, "11d ago", "they announced an AI feature"),),
         "evidence": (("hn_algolia", "https://news.ycombinator.com/item?id=1"),),
         "description": "Seed-stage healthtech in Dhaka.",
         "outreach_angle": "You published an AI assistant last month.",
@@ -96,7 +104,7 @@ def test_no_input_can_produce_an_oversized_embed(
         description=description,
         outreach_angle=angle,
         bengali_angle=bengali,
-        triggers=tuple((f"T{i}_CODE", 0.5, f"{i}d ago") for i in range(n_triggers)),
+        triggers=tuple(TriggerLine(f"T{i}_CODE", 0.5, f"{i}d ago") for i in range(n_triggers)),
         evidence=tuple((f"src{i}", f"https://example.com/{i}") for i in range(n_evidence)),
     )
     for embed in (lead_card(data), digest_row(data)):
@@ -147,9 +155,9 @@ def realistic_card() -> CardData:
             "with no security role open."
         ),
         triggers=(
-            ("T1_AI_SHIP", 0.91, "11d ago"),
-            ("T4_HIRING_AI_ONLY", 0.78, "6d ago"),
-            ("T2_FUNDING", 0.85, "41d ago"),
+            TriggerLine("T1_AI_SHIP", 0.7, "11d ago", "they announced an AI feature"),
+            TriggerLine("T4_HIRING_AI_ONLY", 0.7, "6d ago", "they are hiring AI engineers"),
+            TriggerLine("T2_FUNDING", 0.7, "41d ago", "they raised money"),
         ),
         outreach_angle=(
             "You published an AI assistant handling patient data last month. I would "
@@ -962,14 +970,20 @@ def test_the_card_leads_with_the_heaviest_trigger():
     assert TRIGGER_ORDER["T1_AI_SHIP"] > TRIGGER_ORDER["T8_HYGIENE_GAP"]
 
     data = card(
-        triggers=(("T8_HYGIENE_GAP", 0.8, "0d ago"), ("T1_AI_SHIP", 0.7, "11d ago")),
+        triggers=(
+            TriggerLine("T8_HYGIENE_GAP", 0.8),
+            TriggerLine("T1_AI_SHIP", 0.7, "11d ago"),
+        ),
         tier="C",
     )
     # digest_row renders only the first, so the caller's order is what reaches Discord.
     assert "T8_HYGIENE_GAP" in digest_row(data)["description"]
 
     ordered = card(
-        triggers=(("T1_AI_SHIP", 0.7, "11d ago"), ("T8_HYGIENE_GAP", 0.8, "0d ago")),
+        triggers=(
+            TriggerLine("T1_AI_SHIP", 0.7, "11d ago"),
+            TriggerLine("T8_HYGIENE_GAP", 0.8),
+        ),
         tier="C",
     )
     assert "T1_AI_SHIP" in digest_row(ordered)["description"]
@@ -1449,3 +1463,149 @@ def test_the_reconcile_command_passes_the_bound(rig):
     for call in calls:
         limits = [k for k in call.keywords if k.arg == "limit"]
         assert limits, f"unbounded enqueue_stale_scores at cli.py:{call.lineno}"
+
+
+# ---------------------------------------------------- what the card actually says
+
+
+def _triggers_field(card: dict) -> str:  # type: ignore[type-arg]
+    return next(f["value"] for f in card["fields"] if "Triggers" in f["name"])
+
+
+def _evidence_field(card: dict) -> str:  # type: ignore[type-arg]
+    return next(f["value"] for f in card["fields"] if f["name"].startswith("📎"))
+
+
+def test_the_card_names_the_host_it_asks_you_to_open(rig):
+    """The Findcheap defect, on the card the human sees first.
+
+    The evidence label was the `source_id`, so the field read `company_site` and the
+    operator could not see whose page they were about to open without clicking it. The
+    worklist learned to prefer their own domain and to mark a borrowed one; the Discord
+    card, which is where the lead is first read, had neither half.
+    """
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE evidence SET url = 'https://chromewebstore.google.com/detail/acme/x' "
+            "WHERE evidence_id = 'e1'"
+        )
+
+    field = _evidence_field(build_card(_lead_row(store)))
+
+    assert "chromewebstore.google.com" in field, f"the host is not on the card: {field}"
+    assert "company_site" not in field, "the source_id told the reader nothing"
+    assert "not their page" in field, "a store listing is not the company's own word"
+
+
+def test_their_own_page_carries_no_warning(rig):
+    """A warning on every card is one nobody reads. The rig's evidence is `acme.io/`,
+    which is the company's own page and the case the marker must stay quiet for."""
+    build, _posts, store = rig
+    build(tier="A")
+
+    field = _evidence_field(build_card(_lead_row(store)))
+
+    assert "[acme.io](" in field, f"the link text is the host, not a source_id: {field}"
+    assert "not their page" not in field
+
+
+def test_a_public_record_is_not_marked_as_somebody_elses_page(rig):
+    """`dns.google` and `crt.sh` are not the prospect's page either, and are perfectly
+    honest citations -- the trigger line already says they are a public record. Marking
+    them would put the warning on most cards and spend it."""
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE evidence SET url = 'https://dns.google/query?name=acme.io&type=TXT' "
+            "WHERE evidence_id = 'e1'"
+        )
+
+    field = _evidence_field(build_card(_lead_row(store)))
+
+    assert "[dns.google](" in field, f"the link text is the host, not a source_id: {field}"
+    assert "not their page" not in field
+
+
+def test_the_card_says_how_we_know_rather_than_a_confidence_score(rig):
+    """`triggers.confidence` is provenance, not probability.
+
+    Exactly two values are ever written -- 0.7 by the Resolver for what a 4B read off a
+    page, 0.8 by the Enricher for a public record it looked up itself -- so `0.70` on a
+    card is a constant rendered as a measurement, and it reads as "70% sure about this
+    claim about this company". Nobody measured that.
+    """
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute("UPDATE triggers SET confidence = 0.7 WHERE trigger_id = 't1'")
+
+    field = _triggers_field(build_card(_lead_row(store)))
+
+    assert "read off their page" in field, field
+    assert "0.7" not in field, "a constant must not be printed as a confidence score"
+
+
+def test_a_public_record_trigger_says_so(rig):
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE triggers SET confidence = 0.8, code = 'T8_HYGIENE_GAP' WHERE trigger_id = 't1'"
+        )
+
+    field = _triggers_field(build_card(_lead_row(store)))
+
+    assert "public record" in field, field
+    assert "0.8" not in field
+
+
+def test_a_derived_trigger_is_not_dated_on_the_card(rig):
+    """`T8_HYGIENE_GAP`'s `observed_at` is when *we* looked, and the card printed it as
+    when they acted: `0d ago` on a domain whose DMARC has read `p=none` for years. The
+    prose learned this from `DERIVED_TRIGGERS` and the card never did."""
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE triggers SET code = 'T8_HYGIENE_GAP', confidence = 0.8, observed_at = ? "
+            "WHERE trigger_id = 't1'",
+            (to_iso(utcnow()),),
+        )
+
+    field = _triggers_field(build_card(_lead_row(store)))
+
+    assert "0d ago" not in field, f"a lookup we ran is not something they did today: {field}"
+    assert "public record" in field
+
+
+def test_a_dated_trigger_keeps_its_date(rig):
+    """The other direction. A company that announced something eleven days ago did, and
+    dropping the age would cost the operator the one fact that says whether to hurry."""
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE triggers SET observed_at = ? WHERE trigger_id = 't1'",
+            (to_iso(utcnow() - timedelta(days=11)),),
+        )
+
+    assert "11d ago" in _triggers_field(build_card(_lead_row(store)))
+
+
+def test_the_card_explains_its_own_trigger_codes(rig):
+    """`T10_VENDOR_PRESSURE` means nothing to the person deciding whether to send. The
+    `means` phrase exists in `scoring.yaml` for exactly this and reached only the prose
+    prompt -- the same position the codes themselves were in before `means` existed."""
+    from cindraleads.scoring import ScoringConfig
+
+    build, _posts, store = rig
+    build(tier="A")
+
+    field = _triggers_field(build_card(_lead_row(store)))
+    means = ScoringConfig.load().triggers["T1_AI_SHIP"].means
+
+    assert means, "scoring.yaml validates this non-empty; the fixture is wrong"
+    assert means in field, f"the card still speaks only taxonomy: {field}"
