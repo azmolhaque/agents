@@ -31,7 +31,7 @@ import sqlite3
 import ssl
 import uuid
 from dataclasses import dataclass
-from typing import Any, get_args
+from typing import Any
 
 import httpx
 
@@ -45,7 +45,6 @@ from cindraleads.models import (
     CompanyExtraction,
     Job,
     StageResult,
-    TriggerCode,
     to_iso,
     utcnow,
 )
@@ -394,14 +393,36 @@ class Extractor:
 
         # No verified snippet means no evidence, and a trigger without evidence is not
         # a trigger. The claims are kept for debugging but cannot become a lead.
-        # The Harvester's `targets` are what the query was *looking for*, so they are
-        # a fallback only, and validated against the taxonomy: a payload is data, and
-        # an unknown code must not reach a trigger row.
-        known = set(get_args(TriggerCode))
-        claimed: list[str] = [str(c) for c in extraction.trigger_codes] or [
-            t for t in outcome.targets if t in known
-        ]
+        #
+        # **The Harvester's `targets` used to stand in when the model named nothing, and
+        # that was a claim the page never made.** A template's targets are what the
+        # query was *looking for*, not what was found: `hn_pentest_pressure` searches
+        # "SOC 2" and declares `[T10_VENDOR_PRESSURE, T5_COMPLIANCE]`, so every page it
+        # surfaced that the model declined to label got both -- the highest-intent
+        # trigger in the taxonomy, asserted by a config row.
+        #
+        # It shipped. `CallFirst · callfirst.app` and `Gleamit · gleamit.app` reached
+        # Tier B at 55 with byte-identical trigger sets -- T10 0.70, T5 0.70, both 0d
+        # ago -- on two unrelated consumer phone apps. Neither page says a customer
+        # asked them for a pentest report; the template did.
+        #
+        # The gate did not catch it because `evidence_ids` asks whether *any* snippet
+        # verified, not whether a snippet supports *this* trigger. For a model-named
+        # trigger that is tolerable: it read the page and named both. For a fallback it
+        # is indefensible, because nothing read the page at all.
+        #
+        # So a page the model could not label has no trigger, and the lead is dropped
+        # downstream by "no evidence, no lead" -- which is the correct outcome and what
+        # the fallback was quietly preventing.
+        claimed: list[str] = [str(c) for c in extraction.trigger_codes]
         trigger_codes = claimed if evidence_ids else []
+        if not claimed and outcome.targets:
+            log.info(
+                "extract_no_trigger_named",
+                candidate_id=outcome.candidate_id,
+                why="the model labelled nothing; the query's targets are not evidence",
+                query_wanted=list(outcome.targets),
+            )
         if claimed and not evidence_ids:
             log.info(
                 "extract_triggers_dropped",

@@ -1741,6 +1741,46 @@ perhaps fifty angles is the wrong trade, and there is no flag for "re-score with
 re-prosing". Recommending `--force` after a veto change was a mistake for that reason,
 not because the rescore was unnecessary.
 
+**The queue drained and nothing was lost.** 2026-09-21, two days after
+`DEFAULT_RESCORE_LIMIT` shipped: `pending` 2947 -> **28**, `done` +2839, `in_flight` 0,
+and **`dead` unchanged at 32** across the whole run. The bound was the fix -- reconcile
+had been re-queuing the corpus every 30 minutes faster than the worker could drain it.
+
+**And the cards it produced showed a worse defect than the backlog.**
+`CallFirst · callfirst.app` and `Gleamit · gleamit.app`, two unrelated consumer phone
+apps, both reached Tier B at 55 with **byte-identical trigger sets**: T10_VENDOR_PRESSURE
+0.70, T5_COMPLIANCE 0.70, T8_HYGIENE_GAP 0.80, all "0d ago". Two different companies
+cannot honestly produce the same three triggers at the same three confidences.
+
+`extractor.py` explained it in one line: when the model named no trigger, **the
+Harvester's `targets` stood in.** `hn_pentest_pressure` searches "SOC 2" and declares
+`[T10_VENDOR_PRESSURE, T5_COMPLIANCE]`, so every page it surfaced that the model declined
+to label got both -- **the highest-intent trigger in the taxonomy, asserted by a config
+row.** A card would have told CallFirst "you have been asked by a customer for a pentest
+report" on the strength of a page about blocking social media apps.
+
+**The evidence gate did not catch it, and the reason generalises.** `trigger_codes =
+claimed if evidence_ids else []` asks whether *any* snippet verified, never whether a
+snippet supports *this* trigger -- evidence and claims are two lists joined many-to-many,
+so the literal-match rule proves only that the quote is real. For a model-named trigger
+that is tolerable: it read the page and named both. For a fallback **nothing read the
+page at all**, so the one check standing between a template's intent and a claim about a
+stranger was structurally incapable of noticing.
+
+The fallback is gone. A page the model cannot label now has no trigger and the lead is
+dropped by "no evidence, no lead" -- the correct outcome, and what the fallback was
+quietly preventing. `0.7` confidence is hardcoded in the Resolver for every trigger, so
+the matching `0.70`s were a constant, not a coincidence: **the same tell as `832 of 833`
+and `single_source` at 96%, this time visible on the face of a card.**
+
+**A test dated by a literal failed again, for the third time, and not from this change.**
+`test_re_reading_a_page_does_not_re_date_what_the_company_did` pinned `decays_at =
+2026-09-20` as "comfortably in the future"; on 2026-09-21 the seeded trigger was
+*expired*, the Resolver took its other branch, and the suite went red on a day nobody
+touched the code. Both dates are relative now. Confirmed independent by stashing the
+change and watching it still fail -- after `test_crtsh_growth_separates_recent_from_total`
+and the health test that asserted a cool SoC.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

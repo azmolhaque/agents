@@ -9,6 +9,7 @@ model's.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -18,7 +19,7 @@ from cindraleads.agents import EXTRACT_KIND, RESOLVE_KIND, Extractor, Resolver
 from cindraleads.cli import _work_loop
 from cindraleads.config import settings
 from cindraleads.llm import LLMRequest, LLMResponse, StructuredLLM
-from cindraleads.models import Job
+from cindraleads.models import Job, to_iso, utcnow
 from cindraleads.queue import JobQueue
 from cindraleads.sources import DocumentCache, EgressClient, SourceBreakers, SourceRegistry
 from cindraleads.store import Store
@@ -1071,18 +1072,24 @@ async def test_re_reading_a_page_does_not_re_date_what_the_company_did(rig):
 
     # Backdate the row to stand in for "we saw this four days ago", then re-read the
     # same page exactly as the backfill does.
+    #
+    # Relative, not literal. This read `2026-08-29` and `2026-09-20`, and the second was
+    # picked as a date comfortably in the future -- so on 2026-09-21 the seeded trigger
+    # was *expired*, the Resolver took its other branch, and the test failed on a day
+    # nobody touched the code. Third time, after
+    # `test_crtsh_growth_separates_recent_from_total` and the health test that asserted
+    # a cool SoC: **a test that fails without a cause is how a suite gets ignored.**
+    seen_at = to_iso(utcnow() - timedelta(days=4))
+    expires_at = to_iso(utcnow() + timedelta(days=30))
     with store.tx() as conn:
-        conn.execute(
-            "UPDATE triggers SET observed_at = ?, decays_at = ?",
-            ("2026-08-29T00:00:00+00:00", "2026-09-20T00:00:00+00:00"),
-        )
+        conn.execute("UPDATE triggers SET observed_at = ?, decays_at = ?", (seen_at, expires_at))
     await run_once("2")
 
     second = rows(store, "SELECT observed_at, decays_at FROM triggers")[0]
-    assert second["observed_at"] == "2026-08-29T00:00:00+00:00", (
+    assert second["observed_at"] == seen_at, (
         "re-reading the same page moved the date the company acted"
     )
-    assert second["decays_at"] > "2026-09-20T00:00:00+00:00", "the trigger is still live"
+    assert second["decays_at"] > expires_at, "the trigger is still live"
     assert len(rows(store, "SELECT 1 FROM triggers")) == 1, "and it is still one row"
     assert first is not None
 
@@ -1215,3 +1222,78 @@ async def test_a_timeout_is_still_an_error_worth_retrying(tmp_path: Path) -> Non
     assert outcome.skipped is None
     assert outcome.error is not None and "Timeout" in outcome.error
     store.close()
+
+
+async def test_the_query_targets_never_become_triggers(rig):
+    """A template's targets are what the query was *looking for*, not what was found.
+
+    `hn_pentest_pressure` searches "SOC 2" and declares
+    `[T10_VENDOR_PRESSURE, T5_COMPLIANCE]`, so when the model declined to label a page
+    those two were written as live triggers -- **the highest-intent signal in the
+    taxonomy, asserted by a config row**. It shipped: `CallFirst · callfirst.app` and
+    `Gleamit · gleamit.app` reached Tier B at 55 with byte-identical trigger sets, T10
+    0.70 and T5 0.70 both "0d ago", on two unrelated consumer phone apps. Neither page
+    says a customer asked them for a pentest report.
+
+    The evidence gate did not catch it because `evidence_ids` asks whether *any*
+    snippet verified, never whether a snippet supports *this* trigger. For a
+    model-named trigger that is tolerable -- it read the page and named both. For a
+    fallback nothing read the page at all.
+    """
+    labelled_nothing = {**EXTRACTION, "trigger_codes": []}
+    extractor, resolver, _backend, store = rig(payload=labelled_nothing)
+    seed_candidate(store, "c1", "https://callfirst.app/")
+
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE candidates SET raw_payload = ? WHERE candidate_id = 'c1'",
+            (
+                json.dumps(
+                    {
+                        "url": "https://callfirst.app/",
+                        "targets": ["T10_VENDOR_PRESSURE", "T5_COMPLIANCE"],
+                        "template_id": "hn_pentest_pressure",
+                    }
+                ),
+            ),
+        )
+
+    await extractor.run(
+        Job(
+            job_id="e1",
+            kind=EXTRACT_KIND,
+            payload={
+                "candidate_id": "c1",
+                "url": "https://callfirst.app/",
+                "targets": ["T10_VENDOR_PRESSURE", "T5_COMPLIANCE"],
+            },
+        )
+    )
+    await resolver.run(Job(job_id="r1", kind=RESOLVE_KIND, payload={"candidate_id": "c1"}))
+
+    codes = [r["code"] for r in rows(store, "SELECT code FROM triggers")]
+    assert codes == [], f"the query's targets became claims about the page: {codes}"
+
+
+async def test_a_trigger_the_model_did_name_still_lands(rig):
+    """The bound. Dropping the fallback must not stop the Extractor recording what the
+    model actually read off the page -- otherwise no lead would ever have a trigger."""
+    extractor, resolver, _backend, store = rig()
+    seed_candidate(store, "c1", "https://acme.io/")
+
+    await extractor.run(
+        Job(
+            job_id="e1",
+            kind=EXTRACT_KIND,
+            payload={
+                "candidate_id": "c1",
+                "url": "https://acme.io/",
+                "targets": ["T10_VENDOR_PRESSURE"],
+            },
+        )
+    )
+    await resolver.run(Job(job_id="r1", kind=RESOLVE_KIND, payload={"candidate_id": "c1"}))
+
+    codes = [r["code"] for r in rows(store, "SELECT code FROM triggers")]
+    assert codes == ["T1_AI_SHIP"], codes
+    assert "T10_VENDOR_PRESSURE" not in codes, "the target tagged along anyway"
