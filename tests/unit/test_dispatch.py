@@ -12,6 +12,7 @@ import json
 import sys
 from datetime import timedelta
 from pathlib import Path
+from typing import get_args
 
 import httpx
 import pytest
@@ -1963,3 +1964,117 @@ def test_the_backlog_and_the_selection_cannot_disagree():
         f"a third reader of this predicate, or a lost one: {sorted(callers)}"
     )
     assert source.count("HAVING l.lead_id IS NULL") == 1, "the predicate was duplicated"
+
+
+# ------------------------------------------- the guard that silenced the corpus
+
+# Tavus's stored angle, 2026-09-22, copied out of the Pi's database unaltered. The
+# config phrase reproduced faithfully, price intact, nothing given away -- and the old
+# guard withheld it for containing the word "free".
+REAL_ANGLE = (
+    "You announced an AI feature: 'Sparrow-2 is here: Next-gen turn-taking for "
+    "real-time voice and video AI.' You published code using an LLM agent framework. "
+    "I'd like to run a free first attack-surface Snapshot, and an AI/LLM security "
+    "assessment after it covering prompt injection, data leakage, agent tool abuse "
+    "and the MCP tool surface ($2,000-8,000, 2-5 days)"
+)
+
+
+def test_the_real_angle_from_the_corpus_is_publishable(rig):
+    """275 of 280 paid-offer leads -- 98% -- were silenced by this.
+
+    Two commits did it to each other and each was right alone: `offers` names the free
+    first Snapshot inside the *paid* phrase so the ask stays small, and the dispatch
+    guard keys on the lead's own offer. Together the config put "free" in the text and
+    the guard withheld the text for containing it. 98% incidence is the shape of a
+    constant, not a discriminator.
+    """
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET recommended_offer = 'ai_llm_assessment', outreach_angle = ?",
+            (REAL_ANGLE,),
+        )
+
+    card = build_card(_lead_row(store))
+
+    angle = next((f["value"] for f in card["fields"] if f["name"].endswith("Angle")), "")
+    assert angle, "the angle the config was rewritten to produce was withheld"
+    assert "$2,000-8,000" in angle
+
+
+def test_a_paid_engagement_offered_for_nothing_is_still_withheld(rig):
+    """The bound, and the defect this guard exists for. The danger was never the word
+    "free" -- it is claiming free and dropping the price, which is what
+    `I'd like to run an ai_llm_assessment for you, free` did on every card in the
+    corpus. The price is the discriminator."""
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET recommended_offer = 'ai_llm_assessment', outreach_angle = ?",
+            ("I'd like to run an AI/LLM security assessment for you, free, under a signed RoE.",),
+        )
+
+    card = build_card(_lead_row(store))
+
+    assert not any(f["name"].endswith("Angle") for f in card["fields"]), (
+        "a paid engagement was offered at no charge and the card kept it"
+    )
+
+
+def test_the_free_offer_needs_no_price(rig):
+    """`snapshot_free` is genuinely free and carries no price at all, so requiring one
+    would withhold the one offer we can honestly give away."""
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET recommended_offer = 'snapshot_free', outreach_angle = ?",
+            ("I'd like to run your first attack-surface Snapshot free, under a signed RoE.",),
+        )
+
+    card = build_card(_lead_row(store))
+
+    assert any(f["name"].endswith("Angle") for f in card["fields"])
+
+
+def test_a_free_claim_the_config_never_made_is_withheld():
+    """Fails closed. If the running config's phrase for this offer promises nothing
+    free, a "free" in the angle is invented -- and an invented one has no excuse, price
+    or no price."""
+    import copy
+
+    from cindraleads.agents.dispatcher import _free_claim_is_backed
+    from cindraleads.scoring import ScoringConfig
+
+    cfg = ScoringConfig.load()
+    priced_without_free = copy.deepcopy(cfg)
+    priced_without_free.offers["ai_llm_assessment"]["means"] = (
+        "an AI/LLM security assessment ($2,000-8,000, 2-5 days)"
+    )
+
+    assert not _free_claim_is_backed(REAL_ANGLE, "ai_llm_assessment", None, priced_without_free)
+    assert _free_claim_is_backed(REAL_ANGLE, "ai_llm_assessment", None, cfg), (
+        "the shipping config does name the free Snapshot in that phrase"
+    )
+
+
+def test_every_paid_offer_names_a_price_the_guard_can_find():
+    """The whole mechanism rests on it. A paid phrase that named no price would make
+    every angle for that offer unpublishable -- silently, and exactly the way the corpus
+    just went quiet."""
+    from cindraleads.agents.dispatcher import _PRICE
+    from cindraleads.models import Offer
+    from cindraleads.scoring import ScoringConfig
+
+    cfg = ScoringConfig.load()
+    for slug in get_args(Offer):
+        if cfg.offer_is_free(slug):
+            continue
+        for country in (None, "BD"):
+            phrase = cfg.offer_phrase(slug, country)
+            assert _PRICE.search(phrase), (
+                f"{slug} ({country or 'default'}) names no price: {phrase}"
+            )

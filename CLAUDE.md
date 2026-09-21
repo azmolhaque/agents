@@ -1973,6 +1973,59 @@ confident wrong number is how `832 of 833` was read as a finding about the corpu
 `test_the_backlog_and_the_selection_cannot_disagree` asserts the predicate has exactly
 two readers, by name, out of the source.
 
+**The guard withheld the text the config was rewritten to produce, and it silenced
+98% of the corpus.** Measured 2026-09-22 on the Pi:
+
+| offer | leads | angle says "free" |
+| --- | --- | --- |
+| `ai_llm_assessment` | 242 | **238** |
+| `watch` | 38 | **37** |
+| `snapshot_free` | 119 | 47 (allowed) |
+
+**275 of 280 paid-offer leads**, and not one of them a real defect. Tavus's stored
+angle, read out of the database rather than guessed at:
+
+> I'd like to run **a free first attack-surface Snapshot**, and an AI/LLM security
+> assessment after it covering prompt injection, data leakage, agent tool abuse and
+> the MCP tool surface **($2,000-8,000, 2-5 days)**
+
+That is the config phrase reproduced faithfully, price intact, nothing given away.
+
+**Two commits did this to each other and each was right alone.** `offers` deliberately
+names the free first Snapshot *inside* the paid phrase, so the ask stays small without
+giving the engagement away. The dispatch guard was deliberately narrowed to key on the
+lead's own `recommended_offer`, because "is anything free anywhere" stopped
+discriminating the moment one genuinely free offer existed. Together: the config puts
+"free" in the text and the guard withholds the text for containing it. **98% incidence
+is the shape of a constant, not a discriminator** -- the fifth time that tell appears
+here, after `single_source` at 96%, "no escalation backend" at 100%, `832 of 833`, and
+the trigger confidences on the face of a card.
+
+**The price is the discriminator.** Allowing every "free" on a paid offer hands the
+original defect back -- *"I'd like to run an AI/LLM assessment for you, free"* is
+exactly what this guard exists to stop. What separates the two is not the word: it is
+whether the price survived. A paid phrase always names one, the honest angle carries
+it, the dangerous angle drops it. `_free_claim_is_backed` asks the config for the
+phrase it actually handed the model and then requires a currency amount in the output;
+it fails closed when the phrase promises nothing free, because a "free" there is
+invented and an invented one has no excuse.
+`test_every_paid_offer_names_a_price_the_guard_can_find` is the load-bearing check --
+a paid phrase with no price would make every angle for that offer unpublishable,
+silently, exactly the way the corpus just went quiet.
+
+`test_the_real_angle_from_the_corpus_is_publishable` uses Tavus's stored text verbatim
+and fails against the old guard with the production log line,
+`card_prose_withheld_free_claim matched=['free']`.
+
+**And the backlog was never real, so `--reprose` was the wrong prescription twice.**
+The angles were already correct; re-prosing ~900 leads would have spent ~4.5 hours of
+decode rewriting correct text into identical correct text and watching it be withheld
+again. The observation that settled it was cheap and I nearly skipped it: the 42 jobs
+ran, `done` climbed by 193, and the warning was byte-identical on all five cards. **A
+repair that changes nothing visible is evidence about the diagnosis**, not a reason to
+run it again -- and the previous note in this file, recommending exactly that, is the
+mistake it should be read as.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

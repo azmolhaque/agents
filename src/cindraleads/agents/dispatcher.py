@@ -368,6 +368,53 @@ def _any_offer_is_free(config: Any = None, offer: str = "") -> bool:
         return False
 
 
+# A price the prospect can read: `$2,000-8,000`, `$150`, `BDT 5,000-12,000`, `৳7,000`.
+# Loose on formatting on purpose -- the question is only whether a number with a
+# currency on it survived into the angle, not whether the model reproduced the
+# punctuation. An exact-string match would withhold a correct card for writing
+# "$2,000-$8,000".
+_PRICE = re.compile(r"(?:\$|BDT\s*|\u09f3\s*)\s*\d[\d,]*", re.IGNORECASE)
+
+
+def _free_claim_is_backed(text: str, offer: str, country: str | None, config: Any = None) -> bool:
+    """Whether a "free" in this angle is the one the config put there.
+
+    **The guard was withholding the text the config was rewritten to produce**, and it
+    silenced 275 of 280 paid-offer leads -- 98%, which is the shape of a constant rather
+    than a discriminator, the same tell as `single_source` at 96%.
+
+    Two commits did this to each other and each was right alone. `offers` deliberately
+    names the free Snapshot inside a *paid* phrase, so the ask stays small without
+    giving the engagement away -- `ai_llm_assessment` reads "a free first attack-surface
+    Snapshot, and an AI/LLM security assessment after it ... ($2,000-8,000, 2-5 days)".
+    And the dispatch guard was deliberately narrowed to key on the lead's own offer.
+    Together: the config puts "free" in the text and the guard withholds the text for
+    containing it.
+
+    Allowing every "free" on a paid offer would give the original defect back -- an
+    angle reading "I'd like to run an AI/LLM assessment for you, free" is exactly what
+    this exists to stop. **The price is the discriminator.** A paid phrase always names
+    one, the honest angle carries it, and the dangerous angle is the one that claims
+    free and drops it. Sampled against the real corpus, both leads reproduce the price
+    verbatim.
+
+    Fails closed on a config that promises nothing free: a "free" there is invented, and
+    an invented one is the case with no excuse.
+    """
+    try:
+        cfg = config or ScoringConfig.load()
+        if cfg.offer_is_free(offer):
+            return True
+        phrase = cfg.offer_phrase(offer, country)
+    except (ConfigError, OSError, KeyError):
+        # A card must still render if the config is broken, but nothing here may be
+        # read as permission: an unverifiable claim about money is withheld.
+        return False
+    if not _FREE_CLAIM.search(phrase):
+        return False
+    return bool(_PRICE.search(text))
+
+
 def _trigger_means() -> dict[str, str]:
     """`code -> means` from `scoring.yaml`, or empty when the config cannot be read.
 
@@ -388,7 +435,8 @@ def _card_data(lead: dict[str, Any]) -> CardData:
     from cindraleads.agents.scorer import DERIVED_TRIGGERS
 
     now = utcnow()
-    allow_free = _any_offer_is_free(offer=str(lead["recommended_offer"] or ""))
+    offer_slug = str(lead["recommended_offer"] or "")
+    country = str(lead["country"] or "") or None
     means = _trigger_means()
     triggers: list[TriggerLine] = []
     for trigger in lead["triggers"]:
@@ -431,9 +479,17 @@ def _card_data(lead: dict[str, Any]) -> CardData:
         # current, so the reconciler sees nothing stale. This is the last point before
         # Discord and the only one that catches prose written under an older rule.
         outreach_angle=_publishable(
-            str(lead["outreach_angle"] or ""), lead["lead_id"], allow_free=allow_free
+            str(lead["outreach_angle"] or ""),
+            lead["lead_id"],
+            allow_free=_free_claim_is_backed(
+                str(lead["outreach_angle"] or ""), offer_slug, country
+            ),
         ),
-        bengali_angle=_bengali(lead["bengali_angle"], lead["lead_id"], allow_free=allow_free),
+        bengali_angle=_bengali(
+            lead["bengali_angle"],
+            lead["lead_id"],
+            allow_free=_free_claim_is_backed(str(lead["bengali_angle"] or ""), offer_slug, country),
+        ),
         surface_notes=tuple(surface),
         compliance_basis=str(compliance.get("basis", "legitimate_interest_b2b")),
         compliance_passed=bool(compliance.get("passed", True)),
@@ -614,6 +670,9 @@ def _publishable(text: str | None, lead_id: Any = "", *, allow_free: bool = Fals
             codes=sorted(set(_INTERNAL_CODE.findall(str(text)))),
         )
         return ""
+    # `allow_free` is now "the config says a free claim belongs in this angle" rather
+    # than "this lead's offer is free" -- because a *paid* phrase deliberately names the
+    # free first Snapshot, and keying on the offer alone withheld 98% of paid leads.
     if not allow_free and _FREE_CLAIM.search(str(text)):
         log.warning(
             "card_prose_withheld_free_claim",
