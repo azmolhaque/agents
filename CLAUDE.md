@@ -1905,6 +1905,54 @@ Against the old code that test reports `digest_sent pages=1 sent=1` for a vetoed
 and the four defects all live in `_card_data` and `prepare`. 968 tests passed over a
 card that was shipping a free $2k-8k engagement in Bengali.
 
+**`cindra reconcile --reprose` reported `queued 0` and would have done so forever.**
+I recommended it as the repair for the angle backlog; it could not see a single one of
+the leads it exists for.
+
+`_upsert_lead` writes `prompt_version=excluded.prompt_version` **unconditionally**,
+while `outreach_angle` is preserved when the incoming one is empty. Both halves are
+deliberate and both are right: the angle survives a run where the model was
+unavailable, and the stamp moves so a lead whose prose *fails* stops asking rather
+than being re-queued on every reconcile forever. Together they mean a row can hold an
+angle from one build and a stamp from another -- so **`prompt_version` records the
+build that last touched the row, not the build that wrote the angle**, and there is no
+way to recover the second fact from the first.
+
+`--reprose`'s entire predicate was `prompt_version != prose_version()`. The 2947-job
+rescore that drained on 2026-09-21 stamped every lead current while keeping its old
+angle, so the override matched nothing -- permanently, until `prose_version()` itself
+changes. **One column answering two questions, and the unconditional write destroyed
+the one the override needed.**
+
+Nothing else could reach them either, which is the part worth remembering: the offer
+wording that made those angles wrong moves **neither** hash. `offers` is outside
+`ScoringConfig.fingerprint` on purpose ("it changes prose, never a number") and
+`prose_version()` hashes prompt files and the token constants. Three mechanisms, none
+of which moved -- the same shape as `single_source` inspecting only the top trigger,
+where every part worked and nothing owned the question.
+
+`leads.angle_version` (migration 0009) is stamped by the **same `CASE` as the angle
+itself**, so it moves exactly when the angle does. `prompt_version` keeps its meaning
+and the loop prevention built on it is untouched. NULL on every existing row is what
+makes the backlog reachable on the first pass and what makes successive passes walk
+forward: a rewritten angle carries the current version and drops out of the next
+selection.
+
+`test_the_stamp_that_reprose_reads_moves_only_with_the_angle` drives the real Scorer
+twice -- once with a model, once without -- and reads the columns back. Against the old
+code it fails with `assert '97545c08d79b25a1' == 'older'`, which is the production
+defect exactly. **Its predecessor hand-wrote `prompt_version=prose_version()` into a
+seeded row**, a pair the pipeline produces only by the bug, so it passed against broken
+code. Sixth instance, after `discovered_by`, `enqueue_stale_extractions`, the HN mock,
+the free-offer flag and `test_a_rescored_corpus_reports_current`.
+
+**And the preview showed an unsendable card as though it were sendable.** `arxiv.org`
+renders a complete Tier A card at 74 with `Compliance: VETO` in a field that looks like
+every other field; the Dispatcher now refuses it and nothing told the reader that.
+`preview_card.py` prints `### WOULD NOT BE DISPATCHED -- compliance veto` above the
+card, because an instrument for deciding what to send has to answer the question it is
+being asked.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

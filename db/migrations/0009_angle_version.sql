@@ -1,0 +1,38 @@
+-- `prompt_version` answers two different questions and the second one is destroyed.
+--
+-- `_upsert_lead` writes `prompt_version=excluded.prompt_version` unconditionally, while
+-- `outreach_angle` is kept when the incoming one is empty. That asymmetry is deliberate
+-- on both sides:
+--
+--   * The angle is preserved because prose is expensive and its absence is not new
+--     information -- a run where the model was unavailable must not blank a good angle.
+--   * The stamp moves unconditionally so a lead whose prose *fails* stops asking. The
+--     reconciler's automatic predicate is "angle-less AND written by an older build",
+--     and without the unconditional stamp a lead the model can never write an angle for
+--     -- one whose prose leaks trigger codes, discarded on purpose -- is re-queued on
+--     every reconcile forever.
+--
+-- Both are right. Together they mean a row can hold an angle from one build and a stamp
+-- from another, and **`prompt_version` records the build that last *touched the row*,
+-- not the build that wrote the angle.** There is no way to recover the second fact from
+-- the first.
+--
+-- That killed `cindra reconcile --reprose`, whose entire predicate is
+-- `prompt_version != prose_version()`. After the 2947-job rescore drained on
+-- 2026-09-21, every lead in the corpus carried the current stamp beside its *old*
+-- angle, so the override reported `queued 0` on every run -- permanently, until
+-- `prose_version()` itself changes. The one command built to repair a wrong-but-present
+-- angle could not see a single one of them.
+--
+-- Worse, nothing else could either: the offer-wording change that made those angles
+-- wrong moves neither hash. `offers` is outside `ScoringConfig.fingerprint` on purpose
+-- ("it changes prose, never a number") and `prose_version()` hashes prompt files and the
+-- token constants. Three mechanisms, none of which moved.
+--
+-- So the two questions get two columns. `angle_version` is stamped in the same CASE as
+-- the angle itself, so it moves exactly when the angle does and never otherwise;
+-- `prompt_version` keeps its meaning and the loop prevention built on it is untouched.
+-- NULL on every existing row, which is what makes the whole backlog reachable on the
+-- first pass, and what makes successive passes walk forward: a rewritten angle carries
+-- the current version and drops out of the next selection.
+ALTER TABLE leads ADD COLUMN angle_version TEXT;

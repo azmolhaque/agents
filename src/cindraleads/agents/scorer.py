@@ -689,8 +689,8 @@ def _upsert_lead(
     conn.execute(
         "INSERT INTO leads (lead_id, canonical_domain, score, score_breakdown, tier, "
         "recommended_offer, outreach_angle, bengali_angle, compliance, first_seen_at, "
-        "last_updated_at, pipeline_version, prompt_version, scoring_version) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "last_updated_at, pipeline_version, prompt_version, scoring_version, angle_version) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(lead_id) DO UPDATE SET score=excluded.score, "
         "score_breakdown=excluded.score_breakdown, tier=excluded.tier, "
         "recommended_offer=excluded.recommended_offer, "
@@ -698,6 +698,13 @@ def _upsert_lead(
         # was available. Prose is expensive and its absence is not new information.
         "outreach_angle=CASE WHEN excluded.outreach_angle != '' "
         "THEN excluded.outreach_angle ELSE leads.outreach_angle END, "
+        # Stamped by the *same* condition as the angle, which is the whole point:
+        # `prompt_version` moves unconditionally so a failed prose call stops asking,
+        # and that is exactly why it cannot also answer "which build wrote this
+        # angle". One column was carrying both facts and the unconditional write
+        # destroyed the second, which left `--reprose` selecting nothing at all.
+        "angle_version=CASE WHEN excluded.outreach_angle != '' "
+        "THEN excluded.angle_version ELSE leads.angle_version END, "
         "bengali_angle=COALESCE(excluded.bengali_angle, leads.bengali_angle), "
         "compliance=excluded.compliance, last_updated_at=excluded.last_updated_at, "
         "pipeline_version=excluded.pipeline_version, prompt_version=excluded.prompt_version, "
@@ -717,6 +724,8 @@ def _upsert_lead(
             PIPELINE_VERSION,
             prompt_ver,
             scoring_ver,
+            # The same value as `prompt_version`; what differs is *when it sticks*.
+            prompt_ver,
         ),
     )
 
@@ -814,8 +823,15 @@ def enqueue_stale_scores(
         #
         # `reprose` drops the first half. That is what makes a lead with a *wrong*
         # angle reachable at all -- see the docstring.
+        # `reprose` drops the first half **and reads a different column**, which is the
+        # part that was wrong. It asked `prompt_version`, which `_upsert_lead` writes
+        # unconditionally while preserving a non-empty angle -- so a rescore that never
+        # called the model still stamped the row current, and after the 2947-job drain
+        # the whole corpus matched. `queued 0` on every run, permanently. `angle_version`
+        # moves only when an angle is actually written, so it answers the question this
+        # override is asking.
         + (
-            "MIN(COALESCE(l.prompt_version, '') = ?) AS prosed "
+            "MIN(COALESCE(l.angle_version, '') = ?) AS prosed "
             if reprose
             else "MIN(COALESCE(l.outreach_angle, '') != '' "
             "    OR COALESCE(l.prompt_version, '') = ?) AS prosed "

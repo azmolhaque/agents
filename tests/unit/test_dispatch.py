@@ -1302,7 +1302,13 @@ def test_the_guard_asks_about_this_leads_own_offer():
 
 
 def _lead_with_angle(store, *, angle: str, prompt_version: str):  # type: ignore[no-untyped-def]
-    """A scored lead carrying an angle, stamped by whichever prose build wrote it."""
+    """A scored lead carrying an angle, stamped by whichever prose build wrote it.
+
+    `angle_version` is set to the same value, because that is the pair the Scorer
+    produces when it writes an angle -- and keeping them equal here is what makes
+    `test_the_stamp_that_reprose_reads_moves_only_with_the_angle` a real check rather
+    than a restatement: that one drives the Scorer instead of seeding a row.
+    """
     from cindraleads.agents.scorer import calibration_version, lead_id_for
     from cindraleads.compliance import ComplianceGate
     from cindraleads.models import to_iso, utcnow
@@ -1324,13 +1330,14 @@ def _lead_with_angle(store, *, angle: str, prompt_version: str):  # type: ignore
         conn.execute(
             "INSERT OR REPLACE INTO leads (lead_id, canonical_domain, score, "
             "score_breakdown, tier, recommended_offer, outreach_angle, scoring_version, "
-            "prompt_version, first_seen_at, last_updated_at, pipeline_version) "
-            "VALUES (?,?,66,'{}','B','snapshot_free',?,?,?,?,?,'v1')",
+            "prompt_version, angle_version, first_seen_at, last_updated_at, pipeline_version) "
+            "VALUES (?,?,66,'{}','B','snapshot_free',?,?,?,?,?,?,'v1')",
             (
                 lead_id_for(domain),
                 domain,
                 angle,
                 calibration_version(ScoringConfig.load(), ComplianceGate.from_config()),
+                prompt_version,
                 prompt_version,
                 now,
                 now,
@@ -1797,3 +1804,104 @@ async def test_the_digest_asks_the_same_question(rig):
     assert report.pending == 0, "a vetoed lead was batched into the digest"
     assert posts == []
     await dispatcher.webhook.client.aclose()
+
+
+def test_the_stamp_that_reprose_reads_moves_only_with_the_angle(rig):
+    """Drives the real Scorer twice, because seeding the stamp proves nothing.
+
+    `_upsert_lead` writes `prompt_version` unconditionally while *preserving* a
+    non-empty angle, and both halves are deliberate: the angle survives a run where the
+    model was unavailable, and the stamp moves so a lead whose prose fails stops asking.
+    Together they mean the row can hold an angle from one build and a stamp from
+    another -- so `prompt_version` records the build that last touched the row, and
+    `--reprose` was asking it which build wrote the angle.
+
+    After the 2947-job rescore drained, every lead carried the current stamp beside its
+    old angle and the override reported `queued 0` forever. `angle_version` moves only
+    when an angle is actually written, which is the question being asked.
+    """
+    from cindraleads.agents.scorer import SCORE_KIND, Scorer, prose_version
+    from cindraleads.config import settings as real_settings
+
+    _build, _posts, store = rig
+
+    class _Prose:
+        async def generate(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            from cindraleads.llm import StructuredResult
+            from cindraleads.models import LeadProse
+
+            return StructuredResult(
+                value=LeadProse(outreach_angle="You shipped an assistant last month."),
+                model="stub",
+                backend="stub",
+                attempts=1,
+                escalated=False,
+                latency_ms=1,
+            )
+
+    _seed_company_for_prose(store)
+    cfg = real_settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+
+    job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
+
+    # 1. A run that writes an angle stamps both columns.
+    writer = Scorer(store=store, llm=_Prose(), config=cfg)
+    outcome = asyncio.run(writer.prepare(job))
+    with store.tx() as conn:
+        writer.commit(job, outcome, conn)
+    row = store.conn.execute("SELECT outreach_angle, angle_version FROM leads").fetchone()
+    assert row["outreach_angle"], "the fixture's stub did not produce an angle"
+    assert row["angle_version"] == prose_version()
+
+    # 2. A rescore with no model keeps the angle and must not re-stamp it. This is the
+    #    2839-job drain in miniature, and the old code marked the row current here.
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET angle_version = 'older', prompt_version = 'older'")
+    quiet = Scorer(store=store, llm=None, config=cfg)
+    outcome = asyncio.run(quiet.prepare(job))
+    with store.tx() as conn:
+        quiet.commit(job, outcome, conn)
+
+    row = store.conn.execute(
+        "SELECT outreach_angle, prompt_version, angle_version FROM leads"
+    ).fetchone()
+    assert row["outreach_angle"], "the angle must survive a run with no model"
+    assert row["prompt_version"] == prose_version(), "the loop guard still moves"
+    assert row["angle_version"] == "older", (
+        "a rescore that wrote no angle re-stamped the angle's build; "
+        "this is what made --reprose select nothing"
+    )
+
+
+def test_the_preview_says_when_a_card_could_never_be_sent(rig, monkeypatch, capsys):
+    """`arxiv.org` renders a complete Tier A card at 74 with `Compliance: VETO` in a
+    field that looks like any other. The preview is the instrument for reading cards
+    before sending them, so it has to say which ones are not sendable."""
+    import importlib.util
+
+    from cindraleads.config import settings as real_settings
+
+    build, _posts, store = rig
+    build(tier="A")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET compliance = '{\"passed\": false}'")
+
+    spec = importlib.util.spec_from_file_location(
+        "preview_card_veto", REPO_ROOT / "scripts" / "preview_card.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    cfg = real_settings().model_copy(update={"db_file": store.db_path})
+    monkeypatch.setattr(module, "settings", lambda: cfg)
+    monkeypatch.setattr(module, "Store", lambda *_a, **_k: store)
+    monkeypatch.setattr(sys, "argv", ["preview_card.py", "acme.io"])
+
+    assert module.main() == 0
+
+    printed = capsys.readouterr().out
+    assert "WOULD NOT BE DISPATCHED" in printed
+    assert "compliance veto" in printed

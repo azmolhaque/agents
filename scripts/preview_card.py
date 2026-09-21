@@ -122,6 +122,15 @@ def main() -> int:
                 lead = reader.read_lead(lead_id)
                 if lead is None:
                     continue
+                # Said out loud, because the card does not say it. `arxiv.org` renders
+                # a complete Tier A card at score 74 with `Compliance: VETO` in a field
+                # that looks like every other field, and nothing tells the reader the
+                # Dispatcher will refuse it. A preview that shows an unsendable card as
+                # though it were sendable answers a different question from the one
+                # being asked of it.
+                blocked = reader._blocked(lead)
+                if blocked:
+                    print(f"### WOULD NOT BE DISPATCHED -- {blocked}")
                 print(_render(build_card(lead)))
                 print()
         finally:

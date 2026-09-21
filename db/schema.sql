@@ -161,7 +161,7 @@ CREATE TABLE leads (
     pipeline_version   TEXT NOT NULL,
     prompt_version     TEXT NOT NULL DEFAULT '',
     archived           INTEGER NOT NULL DEFAULT 0
-, scoring_version TEXT);
+, scoring_version TEXT, angle_version TEXT);
 CREATE TABLE metrics (
     metric_id  INTEGER PRIMARY KEY AUTOINCREMENT,
     name       TEXT NOT NULL,
