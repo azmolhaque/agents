@@ -21,6 +21,7 @@ from hypothesis import settings as hyp_settings
 from hypothesis import strategies as st
 
 from cindraleads.agents.dispatcher import (
+    _FREE_CLAIM,
     DISPATCH_KIND,
     Dispatcher,
     build_card,
@@ -2078,3 +2079,50 @@ def test_every_paid_offer_names_a_price_the_guard_can_find():
             assert _PRICE.search(phrase), (
                 f"{slug} ({country or 'default'}) names no price: {phrase}"
             )
+
+
+def test_the_prompt_does_not_forbid_what_the_offer_text_contains():
+    """Rule 3 has been got wrong three times, each time as the repair for the last.
+
+    The third was the quietest: the config was corrected to record that the first
+    Snapshot genuinely is free, and rule 3 kept reading "every Cindrasec service is
+    paid" while the offer text handed to the model *began* with "a free first
+    attack-surface Snapshot". Two contradictory orders -- reproduce this exactly, never
+    write that word -- and 117 of 280 paid-offer leads resolved the conflict by dropping
+    the price, which is the defect the rule exists to prevent, produced by omission.
+
+    So: a blanket prohibition on free claims may not coexist with a config that makes
+    one. Checked against the running config rather than a literal, because the flag is
+    a founding-cohort promotion and turning it off must relax this, not break it.
+    """
+    from pathlib import Path
+
+    from cindraleads.models import Offer
+    from cindraleads.scoring import ScoringConfig
+
+    cfg = ScoringConfig.load()
+    prompt = (Path(__file__).resolve().parents[2] / "prompts/outreach_angle.md").read_text()
+
+    anything_free = any(cfg.offer_is_free(slug) for slug in get_args(Offer)) or any(
+        _FREE_CLAIM.search(cfg.offer_phrase(slug, None)) for slug in get_args(Offer)
+    )
+    if not anything_free:
+        return  # nothing is free; an absolute prohibition is then correct
+
+    for forbidden in ("Every Cindrasec service is paid", 'Never write "free"'):
+        assert forbidden not in prompt, (
+            f"the prompt says {forbidden!r} while the offer text it is handed names "
+            "something free -- the model cannot obey both"
+        )
+
+
+def test_the_prompt_requires_the_price_the_dispatcher_checks_for():
+    """The other direction, and the half that is easy to lose. The guard refuses an
+    angle that claims free without a price; if the prompt stopped asking for the price
+    the guard would silently withhold the corpus again, which is exactly what it just
+    did for a day."""
+    from pathlib import Path
+
+    prompt = (Path(__file__).resolve().parents[2] / "prompts/outreach_angle.md").read_text()
+
+    assert "never drop the price" in prompt.lower()

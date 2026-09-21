@@ -2026,6 +2026,64 @@ repair that changes nothing visible is evidence about the diagnosis**, not a rea
 run it again -- and the previous note in this file, recommending exactly that, is the
 mistake it should be read as.
 
+**The guard fix half-worked, and the remaining half was rule 3 of the prompt --
+wrong for the third time, each time as the repair for the last.** Two of five cards
+came back with an angle, three did not. The two that passed reproduce the offer text
+verbatim, price intact; the three that failed dropped the price:
+
+> I'd like to run an AI/LLM security assessment covering prompt injection, data
+> leakage, agent tool abuse and the MCP tool surface, and a free attack-surface
+> Snapshot first **if they would rather start small**.
+
+No price anywhere, the paid engagement named *first*, "free" trailing after it. Anyone
+scanning that reads the assessment as free -- which is the original defect, produced by
+omission rather than by assertion. **The guard was right to withhold it.** (Also
+second person to third in one sentence, the Pamir defect again, and an invented clause
+the offer text does not contain -- both artifacts of paraphrasing instead of quoting.)
+
+Rule 3 said **"Use the offer text exactly as given. Never write 'free' ... Every
+Cindrasec service is paid."** while the offer text it hands the model *begins* with "a
+free first attack-surface Snapshot". Two contradictory orders, and the corpus split on
+which one it obeyed:
+
+| the model obeyed | outcome | leads |
+| --- | --- | --- |
+| "use the offer text as given" | price survives, card publishes | **158** |
+| "never write free / all paid" | restructured, price dropped, withheld | **117** |
+
+That is not a model being sloppy, it is a coin flip between two instructions that
+cannot both be followed. And the cause is the one this file keeps naming: the config
+was corrected to record that the first Snapshot genuinely is free, and **the prompt was
+never updated to match it.** One decision in two files, with the two halves shipped a
+week apart.
+
+Rule 3 now says: reproduce the offer text exactly, its price *and* any free step it
+names; add no claim about money the text does not make and remove none that it does.
+`test_the_prompt_does_not_forbid_what_the_offer_text_contains` asserts a blanket
+prohibition on free claims cannot coexist with a config that makes one -- checked
+against the running config rather than a literal, because the flag is a founding-cohort
+promotion and closing the cohort must *relax* the rule rather than break the test. The
+reverse check is the quieter half and the one that would be lost first:
+`test_the_prompt_requires_the_price_the_dispatcher_checks_for`, because a prompt that
+stopped asking for the price would silently withhold the corpus again.
+
+**A test was holding the prompt at the corrected conclusion, and that is worse than a
+stale test.** `test_the_prompt_no_longer_hardcodes_free_around_the_offer` asserted
+`'Never write "free"' in prompt`. It was written while the author believed nothing
+Cindrasec offers is free; the config was then corrected, the offer text began naming a
+free Snapshot, and **this assertion kept rule 3 forbidding the word**. Anyone who tried
+to resolve the contradiction would have gone red here and assumed they were wrong.
+Second instance of a test encoding a belief that later turned out false, after
+`test_only_the_snapshot_is_free` encoded the author's memory -- and the first where the
+encoded belief actively prevented the repair. What it uniquely guards, that the
+*hardcoded* free wrapper is gone, is kept; the question it had no business restating is
+now asked against the running config in one place.
+
+**The blast radius was measured before anything was built**, which is the only reason
+the prompt was fixed rather than the guard loosened: 158 of 275 paid leads already
+publish, so the product was never blocked -- the top cards work today, and 117 angles
+need re-prosing at leisure rather than 900 in a panic.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

@@ -844,7 +844,27 @@ def test_an_offer_with_no_phrase_fails_closed(tmp_path: Path):
 
 def test_the_prompt_no_longer_hardcodes_free_around_the_offer():
     """The prompt is the other half. A correct `offers` map cannot save a card if the
-    instruction wrapping it still says the word."""
+    instruction wrapping it still says the word.
+
+    **This test used to assert `'Never write "free"' in prompt`, and that assertion was
+    worse than stale -- it held the prompt at a conclusion that had already been
+    corrected.** It was written while the author believed nothing Cindrasec offers is
+    free; the config was then fixed to record that the first Snapshot genuinely is, and
+    the offer text handed to the model began with "a free first attack-surface
+    Snapshot". Rule 3 still forbade the word. Anyone who tried to resolve that
+    contradiction would have gone red here and assumed *they* were wrong.
+
+    117 of 280 paid-offer leads dropped the price to obey the prohibition, and every one
+    of those cards was withheld. Second instance of a test encoding a belief that later
+    turned out to be false, after `test_only_the_snapshot_is_free` encoded the author's
+    memory -- and the first where the encoded belief actively prevented the repair.
+
+    What is left here is what this test uniquely guards: the *hardcoded* free wrapper is
+    gone. Whether a blanket prohibition may coexist with a config that makes a free
+    offer is asked against the running config, in
+    `test_the_prompt_does_not_forbid_what_the_offer_text_contains`, rather than restated
+    as a literal in a second place.
+    """
     from cindraleads.config import load_prompt
 
     prompt = load_prompt("outreach_angle", base=REPO_ROOT / "prompts")
@@ -853,7 +873,6 @@ def test_the_prompt_no_longer_hardcodes_free_around_the_offer():
     # What must be gone is the *instruction*, not every mention of it.
     assert "Write \"I'd like to run X for you, free" not in prompt
     assert "under a\n   signed RoE" in prompt
-    assert 'Never write "free"' in prompt
 
 
 def test_the_prompt_asks_for_nothing_the_scorer_does_not_supply():

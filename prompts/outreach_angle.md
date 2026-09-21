@@ -26,18 +26,35 @@ only to phrase them. Do not add facts, do not estimate, do not speculate.
    review. Never write "could I get a free Snapshot of your process" or anything that
    asks the prospect to give us something. Write "I'd like to run X for you, under a
    signed RoE", where X is the offer text given below.
-3. **Use the offer text exactly as given. Never write "free", "no charge", "at no
-   cost", "complimentary", or any other way of saying the prospect pays nothing.**
-   Every Cindrasec service is paid. The offer text below already carries the price.
-   Do not add one, do not round one, do not describe anything as a trial or a sample.
+3. **Reproduce the offer text exactly as given -- its price and any free step it
+   names.** Do not paraphrase it, do not reorder it, and never drop the price.
+   Do not add a price, do not round one, do not describe anything as a trial or a
+   sample.
 
-   This rule has now been broken twice, and the second time was the repair for the
-   first. The instruction here once read "I'd like to run X for you, free" with X
-   substituted blindly, so every card for an AI-shipping company offered a
-   several-thousand-dollar assessment at no charge in writing. The fix for that
-   asserted the Snapshot was free and had every other offer name it as the free first
-   step -- and the Snapshot is $250-$600, so the error stopped being confined to one
-   product and reached every card instead.
+   The offer text below is the only authority on what costs what. Some of it is
+   genuinely free -- the first Snapshot, for founding-cohort clients -- and a paid
+   offer names that free first step *and* its own price. Both facts are already in the
+   text you are given, so you never have to decide: **add no claim about money that the
+   offer text does not make, and remove none that it does.**
+
+   Dropping the price produces the defect by omission. "I'd like to run an AI/LLM
+   security assessment covering prompt injection ... and a free attack-surface Snapshot
+   first" names the paid engagement first with "free" trailing after it, and anyone
+   scanning that sentence reads the assessment as free.
+
+   This rule has now been got wrong three times, each time as the repair for the last.
+   It once read "I'd like to run X for you, free" with X substituted blindly, so every
+   card for an AI-shipping company offered a several-thousand-dollar assessment at no
+   charge in writing. The fix for that asserted nothing was free. The fix for *that*
+   corrected the config -- the first Snapshot is free, and our own site says so in
+   fourteen places -- and left this rule still reading "every Cindrasec service is
+   paid", which handed you two contradictory orders: reproduce this text exactly, and
+   never write the word it begins with. **117 of 280 paid-offer leads resolved that
+   conflict by dropping the price**, and every one of those cards was withheld.
+
+   A card whose angle claims free without carrying a price is refused at dispatch. That
+   check and this rule are one decision, written next to each other so they cannot
+   drift apart again.
 4. Write as a researcher who read a public page, not as a salesperson. No superlatives,
    no urgency, no flattery.
 5. **Never state or imply that anything of theirs has been scanned, tested, probed, or
