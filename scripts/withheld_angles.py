@@ -22,12 +22,20 @@ Reads the database and writes nothing.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 from collections import Counter
 
-from cindraleads.agents.dispatcher import _free_claim_is_backed, angle_withheld_reason
+import httpx
+
+from cindraleads.agents.dispatcher import (
+    Dispatcher,
+    _free_claim_is_backed,
+    angle_withheld_reason,
+)
 from cindraleads.agents.scorer import prose_version
 from cindraleads.config import settings
+from cindraleads.discord import DiscordWebhook
 from cindraleads.scoring import ScoringConfig
 from cindraleads.store import Store
 
@@ -39,8 +47,12 @@ def main() -> int:
     parser.add_argument("--examples", type=int, default=6, help="rows to print per reason")
     args = parser.parse_args()
 
+    def _refuse(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"withheld_angles must never post: {request.url}")
+
     cfg = settings()
     store = Store(cfg.db_file, migrations_dir=cfg.migrations_path)
+    client = httpx.AsyncClient(transport=httpx.MockTransport(_refuse))
     try:
         # Read once. `_free_claim_is_backed` loads this when it is not handed one, and
         # over a thousand rows that is a thousand YAML parses.
@@ -49,35 +61,51 @@ def main() -> int:
         rows = [
             dict(r)
             for r in store.conn.execute(
-                "SELECT l.canonical_domain AS domain, l.tier, l.score, "
+                "SELECT l.lead_id AS lead_id, l.canonical_domain AS canonical_domain, "
+                "       l.tier, l.score, "
                 "       l.recommended_offer AS offer, l.outreach_angle AS angle, "
-                "       COALESCE(l.angle_version, '') AS stamp, c.country AS country "
+                "       COALESCE(l.angle_version, '') AS stamp, "
+                "       l.compliance AS compliance, c.country AS country "
                 "FROM leads l JOIN companies c ON c.canonical_domain = l.canonical_domain "
                 "WHERE l.archived = 0 AND COALESCE(l.outreach_angle, '') <> '' "
                 "ORDER BY l.score DESC"
             ).fetchall()
         ]
+
+        # The real `_blocked`, borrowed the way `preview_card.py` borrows `read_lead`:
+        # a transport that raises on any request and a non-empty `webhooks` so
+        # `__post_init__` does not read the configured secrets. It needs only
+        # `compliance` and `canonical_domain` off the row, so `read_lead` -- which
+        # assembles triggers and evidence per lead -- is not worth paying for a
+        # thousand times.
+        reader = Dispatcher(
+            store=store,
+            webhook=DiscordWebhook(client=client),
+            config=cfg,
+            webhooks={"_report_never_posts": ""},
+        )
+        for row in rows:
+            row["reason"] = (
+                angle_withheld_reason(
+                    str(row["angle"]),
+                    allow_free=_free_claim_is_backed(
+                        str(row["angle"]),
+                        str(row["offer"] or ""),
+                        str(row["country"] or "") or None,
+                        scoring,
+                    ),
+                )
+                or SENDABLE
+            )
+            row["stale"] = row["stamp"] != current
+            row["blocked"] = reader._blocked(row)
     finally:
+        asyncio.run(client.aclose())
         store.close()
 
     if not rows:
         print("no stored angles")
         return 1
-
-    for row in rows:
-        row["reason"] = (
-            angle_withheld_reason(
-                str(row["angle"]),
-                allow_free=_free_claim_is_backed(
-                    str(row["angle"]),
-                    str(row["offer"] or ""),
-                    str(row["country"] or "") or None,
-                    scoring,
-                ),
-            )
-            or SENDABLE
-        )
-        row["stale"] = row["stamp"] != current
 
     by_reason: Counter[str] = Counter(str(row["reason"]) for row in rows)
     print(f"{len(rows)} lead(s) carry an angle\n")
@@ -99,7 +127,22 @@ def main() -> int:
         "  backlog one.\n"
     )
 
-    print(f"{'':<20} {'offer':<22} {'reason'}")
+    # Decode spent on a lead that can never reach a card is decode spent twice over:
+    # `--reprose` puts unsendable angles at the front, and `arxiv.org` -- compliance
+    # VETO, refused by the Dispatcher since the guard shipped -- sits at the top of
+    # this very report at Tier A 74. Rewriting its angle costs ~18 s and produces
+    # nothing. Counted rather than assumed, because one such lead is noise and fifty
+    # is a wasted pass.
+    doomed = [row for row in rows if row["reason"] != SENDABLE and row["blocked"]]
+    if doomed:
+        print(f"\n  of the withheld angles, {len(doomed)} belong to a lead the Dispatcher")
+        print("  refuses anyway -- re-prosing them buys nothing:")
+        for reason, count in Counter(str(row["blocked"]) for row in doomed).most_common():
+            print(f"    {count:>5}  {reason}")
+    else:
+        print("\n  every withheld angle belongs to a lead that could be dispatched")
+
+    print(f"\n{'':<20} {'offer':<22} {'reason'}")
     for (offer, reason), count in Counter(
         (str(row["offer"] or ""), str(row["reason"])) for row in rows if row["reason"] != SENDABLE
     ).most_common():
@@ -112,7 +155,8 @@ def main() -> int:
         print(f"\n--- {reason} ({len(group)}), highest scoring first ---")
         for row in group[: args.examples]:
             stamp = "stale" if row["stale"] else "CURRENT BUILD"
-            print(f"\n  {row['tier']}{row['score']:>3}  {row['domain']}  [{stamp}]")
+            flags = f"{stamp}, {row['blocked']}" if row["blocked"] else stamp
+            print(f"\n  {row['tier']}{row['score']:>3}  {row['canonical_domain']}  [{flags}]")
             print(f"       {str(row['angle'])[:260]}")
     return 0
 

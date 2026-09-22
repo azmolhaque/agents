@@ -2406,6 +2406,49 @@ the function is correct and its default is deliberate, so a caller that stops pa
 the argument breaks nothing visible and no assertion would otherwise notice. **It only
 gets slower, which is the kind of regression this project has no other detector for.**
 
+**Read 2026-09-22, 1019 leads with an angle, and the shape is good news:**
+
+| | leads | share |
+| --- | --- | --- |
+| sendable | 803 | 78.8% |
+| promises free without naming the price | 201 | 19.7% |
+| names our internal taxonomy | 15 | 1.5% |
+
+**Of 19 angles written by the current build, 18 publish and 1 does not.** Against 785
+of 1000 on the old builds, so the rewritten rule 3 is producing publishable prose at
+~95% and the withheld population is almost entirely legacy. That is the first time
+`--reprose` has been the right prescription: **215 of the 216 withheld angles carry an
+older stamp and are reachable**, and the one that does not is a single decode, not a
+prompt problem.
+
+The 15 taxonomy leaks are the pre-`means` regime and read worse than their codes
+suggest -- `rosebud.ai` says *"You published T1_AI_SHIP, T8_HYGIENE_GAP, and
+T3_HIRING_SEC on your careers page. I'd like to share your AI LLM assessment research
+pipeline"*, and `deerflow.tech` says *"I'd like to share your careers page lists."*
+**Nothing leaked**: `jetbrains.com` still stores the original hardcoded defect verbatim
+-- *"I'd like to run an AI/LLM assessment for you, free, under a signed RoE"* -- and
+both routes refuse it. The worst text in the corpus is exactly what the guard catches.
+
+**The earlier 117 is not comparable and is not explained here.** It was measured over
+275 paid leads on a corpus of 833; this is 201 over 1019. Whether the *rate* moved
+needs the denominator, and guessing at it is the mistake this file already records
+twice.
+
+**Decode spent on a lead that can never reach a card is spent twice over.**
+`arxiv.org` sits at the top of that report at Tier A 74 -- compliance VETO, refused by
+the Dispatcher since `_blocked` shipped -- and `--reprose` sorts unsendable angles to
+the front, so it is first in line for ~18 s that produces nothing. The report counts
+them with the real `_blocked` rather than a second copy of the predicate, borrowed the
+way `preview_card.py` borrows `read_lead`. **Counted rather than assumed: one such lead
+is noise and fifty is a wasted pass**, and which it is decides whether the ranking
+needs a third key.
+
+Its test found two defects the script would have carried to the Pi: `_blocked` reads
+`lead_id` for the quarantine lookup and the SELECT did not have it, and the first
+version nested double quotes inside a double-quoted f-string -- **3.12+ grammar, which
+runs on the Pi's 3.13 and is a `SyntaxError` on the 3.11 floor.** The dev box is the
+one that catches that, which is the inverse of the usual direction and worth knowing.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

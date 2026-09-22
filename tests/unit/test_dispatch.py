@@ -2255,3 +2255,53 @@ def test_every_caller_hands_the_unsendable_check_a_config():  # type: ignore[no-
             f"_is_unsendable at line {call.lineno} is not handed a config, so it will "
             "re-read scoring.yaml for every row it is asked about"
         )
+
+
+def test_the_withheld_report_reads_the_real_guard(store, monkeypatch, capsys):  # type: ignore[no-untyped-def]
+    """The instrument for diagnosing a count, driven against a real database.
+
+    `preview_angle.py` stopped rendering at all the day a fact was added and that was
+    found by running it rather than by a test. This one is a report an operator reads
+    before spending hours of decode, so the failure mode is worse: a script that
+    crashes is obvious, and one that silently miscounts is the `832 of 833` shape.
+
+    It also pins the f-string quoting. The first version nested double quotes inside a
+    double-quoted f-string, which is a 3.12+ grammar -- it ran on the Pi's 3.13 and
+    would have been a `SyntaxError` on the 3.11 floor this project supports.
+    """
+    import importlib.util
+
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+    _stale_lead(store, "fine.io", angle=_SENDABLE, offer="ai_llm_assessment")
+    _stale_lead(store, "vetoed.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET compliance = ? WHERE canonical_domain = 'vetoed.io'",
+            (json.dumps({"passed": False, "basis": "legitimate_interest_b2b"}),),
+        )
+
+    spec = importlib.util.spec_from_file_location(
+        "withheld_angles", REPO_ROOT / "scripts" / "withheld_angles.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    from cindraleads.config import settings as real_settings
+
+    cfg = real_settings().model_copy(update={"db_file": store.db_path})
+    monkeypatch.setattr(module, "settings", lambda: cfg)
+    monkeypatch.setattr(module, "Store", lambda *_a, **_k: store)
+    monkeypatch.setattr(sys, "argv", ["withheld_angles.py"])
+
+    assert module.main() == 0
+
+    printed = capsys.readouterr().out
+    assert "3 lead(s) carry an angle" in printed
+    assert "promises free without naming the price" in printed
+    assert "broken.io" in printed
+    assert "1 belong to a lead the Dispatcher" in printed, (
+        "a withheld angle on a vetoed lead is decode that can never reach a card, and "
+        "--reprose sorts it to the front"
+    )
+    assert "compliance veto" in printed
