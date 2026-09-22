@@ -838,14 +838,20 @@ def reconcile(
         # -- indistinguishable from "nothing to do", which is the exact reading that
         # made a real defect invisible for a week. The backlog says which it is, and
         # at ~18 s of decode each it is also the size of the job.
-        remaining = reprose_backlog(store) if reprose else 0
+        # And the unsendable subset beside it, because only that number is urgent:
+        # 871 reads as a corpus-wide rewrite worth hours of decode and gets put off,
+        # while the repair that matters is a fraction of it and the ordering puts it
+        # at the front of the first pass.
+        remaining, unsendable = reprose_backlog(store) if reprose else (0, 0)
         typer.echo(
             f"queued {stranded} for extraction, {superseded} for re-extraction, "
             f"{fresh} for enrichment, {stale} for (re)scoring"
             + (" (forced past dedupe)" if force else "")
             + (
-                f" (reprose, max {REPROSE_LIMIT} a pass; {remaining} lead(s) still carry "
-                "an angle from an older build -- re-run once the queue drains)"
+                f" (reprose, max {REPROSE_LIMIT} a pass, unsendable angles first; "
+                f"{remaining} lead(s) still carry an angle from an older build, "
+                f"{unsendable} of them unsendable as written "
+                "-- re-run once the queue drains)"
                 if reprose
                 else ""
             )

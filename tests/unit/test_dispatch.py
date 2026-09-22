@@ -1926,9 +1926,11 @@ def test_a_second_reprose_pass_reports_the_backlog_not_a_zero(store):
 
     assert enqueue_stale_scores(store, queue, reprose=True) == 1
     assert enqueue_stale_scores(store, queue, reprose=True) == 0, "already queued"
-    assert reprose_backlog(store) == 1, (
+    assert reprose_backlog(store) == (1, 0), (
         "the backlog must still show the work; 0 queued and 0 remaining are different "
-        "answers and only one of them means 'done'"
+        "answers and only one of them means 'done'. This angle names a price and "
+        "promises nothing free, so it is stale but sendable -- the second number is "
+        "the urgent one and it is not this."
     )
 
 
@@ -1939,7 +1941,7 @@ def test_the_backlog_empties_when_the_angle_is_rewritten(store):
 
     _lead_with_angle(store, angle="A current angle.", prompt_version=prose_version())
 
-    assert reprose_backlog(store) == 0
+    assert reprose_backlog(store) == (0, 0)
 
 
 def test_the_backlog_and_the_selection_cannot_disagree():
@@ -2126,3 +2128,96 @@ def test_the_prompt_requires_the_price_the_dispatcher_checks_for():
     prompt = (Path(__file__).resolve().parents[2] / "prompts/outreach_angle.md").read_text()
 
     assert "never drop the price" in prompt.lower()
+
+
+def _stale_lead(  # type: ignore[no-untyped-def]
+    store, domain: str, *, angle: str, offer: str, age_days: int = 0
+) -> None:
+    """A scored lead carrying an angle from an older prose build.
+
+    `age_days` sets the trigger date, which is what the SQL ordering falls back to
+    once the staleness flags tie. The ordering test needs the *sendable* lead to
+    sort first under the old rules, or it passes by insertion order and proves
+    nothing -- which is how its first version passed against the deployed code.
+    """
+    from cindraleads.agents.scorer import calibration_version, lead_id_for
+    from cindraleads.compliance import ComplianceGate
+    from cindraleads.models import to_iso, utcnow
+    from cindraleads.scoring import ScoringConfig
+
+    now = to_iso(utcnow())
+    observed = to_iso(utcnow() - timedelta(days=age_days))
+    calibration = calibration_version(ScoringConfig.load(), ComplianceGate.from_config())
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO companies (canonical_domain, display_name, "
+            "first_seen_at, last_updated_at) VALUES (?,?,?,?)",
+            (domain, domain.split(".")[0].title(), now, now),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO triggers (trigger_id, canonical_domain, code, "
+            "confidence, observed_at, decays_at) VALUES (?,?,'T1_AI_SHIP',0.9,?,?)",
+            (f"t-{domain}", domain, observed, "2099-01-01T00:00:00Z"),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO leads (lead_id, canonical_domain, score, "
+            "score_breakdown, tier, recommended_offer, outreach_angle, scoring_version, "
+            "prompt_version, angle_version, first_seen_at, last_updated_at, "
+            "pipeline_version) VALUES (?,?,66,'{}','B',?,?,?,'older','older',?,?,'v1')",
+            (lead_id_for(domain), domain, offer, angle, calibration, now, now),
+        )
+
+
+_UNSENDABLE = (
+    "You announced an AI feature. I'd like to run an AI/LLM security assessment "
+    "covering prompt injection, and a free attack-surface Snapshot first if they "
+    "would rather start small."
+)
+_SENDABLE = (
+    "You announced an AI feature. I'd like to run a free first attack-surface "
+    "Snapshot, and an AI/LLM security assessment after it ($2,000-8,000, 2-5 days)."
+)
+
+
+def test_reprose_repairs_the_unsendable_angles_first(store):  # type: ignore[no-untyped-def]
+    """An ORDER BY only means anything with a limit -- the `enqueue_stale_scores`
+    lesson, restated one override over.
+
+    Measured on the Pi on 2026-09-22: **871 leads carry an angle from an older build
+    and ~117 of them are unsendable.** The selection was ordered by how the *score*
+    went stale, so a 50-row pass rewrote roughly 43 correct angles and 7 broken ones,
+    and the operator's call list kept its `NOT SENDABLE` rows for a week. The limit
+    existed; the ordering that would make it useful did not.
+
+    SQL cannot judge an angle -- that needs the dispatch guard and the running config
+    -- so the text comes back and `_is_unsendable` ranks it.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    # fine.io is the newer sighting, so the old `newest DESC` tiebreak puts it first.
+    _stale_lead(store, "fine.io", angle=_SENDABLE, offer="ai_llm_assessment", age_days=0)
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment", age_days=9)
+
+    assert enqueue_stale_scores(store, JobQueue(store), reprose=True, limit=1) == 1
+
+    queued = [
+        json.loads(row["payload"])["canonical_domain"]
+        for row in store.conn.execute("SELECT payload FROM jobs WHERE kind = 'score.company'")
+    ]
+    assert queued == ["broken.io"], (
+        "a bounded pass must spend its decode on the angle the Dispatcher refuses, "
+        "not on one that is merely worded by an older build"
+    )
+
+
+def test_a_stale_but_sendable_angle_is_still_in_the_backlog(store):  # type: ignore[no-untyped-def]
+    """Ranked, never filtered. An angle from an older build that is only worded
+    differently is still worth refreshing eventually, and a predicate that dropped it
+    would make the backlog count stop describing the backlog."""
+    from cindraleads.agents.scorer import reprose_backlog
+
+    _stale_lead(store, "fine.io", angle=_SENDABLE, offer="ai_llm_assessment")
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+
+    assert reprose_backlog(store) == (2, 1)

@@ -779,6 +779,11 @@ def _stale_rows(
     return conn.execute(
         "SELECT c.canonical_domain AS domain, "
         "MAX(t.observed_at) AS newest, "
+        # Carried so `--reprose` can put the *unsendable* angles first. SQL cannot
+        # judge one -- that needs the dispatch guard and the running config -- so the
+        # text comes back and `_is_unsendable` ranks it. At most one lead row per
+        # domain, so the bare columns under GROUP BY are unambiguous.
+        "l.outreach_angle AS angle, l.recommended_offer AS offer, c.country AS country, "
         "MIN(COALESCE(l.scoring_version, '') = ?) AS calibrated, "
         # Angle-less *and* written by an older prose build. Both halves are load
         # bearing: without the first this re-decodes angles that are already fine,
@@ -824,6 +829,36 @@ def _stale_rows(
         "         calibrated DESC, prosed DESC, newest DESC" + (" LIMIT ?" if limit else ""),
         (fingerprint, prose_ver, now, *([limit] if limit else [])),
     ).fetchall()
+
+
+def _is_unsendable(row: sqlite3.Row) -> bool:
+    """Whether this lead's stored angle is one the Dispatcher would refuse.
+
+    The same predicate the card and the call list ask, asked a third time by the
+    command that repairs them -- so a bounded `--reprose` pass spends its decode on
+    the angles that are actually broken.
+
+    Measured on the Pi on 2026-09-22: **871 leads carry an angle from an older build
+    and ~117 of them are unsendable.** Without an ordering, a 50-row pass rewrites
+    roughly 43 correct angles and 7 broken ones, and the operator's call list keeps
+    its `NOT SENDABLE` rows for a week. That is the `enqueue_stale_scores` lesson
+    restated: **an ORDER BY only means anything with a limit**, and here the limit
+    existed while the ordering that would make it useful did not.
+
+    Never a *filter*. An angle from an older build that is merely worded differently
+    is still worth refreshing eventually, and a predicate that dropped it would make
+    the backlog count stop describing the backlog.
+    """
+    from cindraleads.agents.dispatcher import _free_claim_is_backed, angle_withheld_reason
+
+    angle = str(row["angle"] or "")
+    if not angle:
+        return False
+    offer = str(row["offer"] or "")
+    country = str(row["country"] or "") or None
+    return bool(
+        angle_withheld_reason(angle, allow_free=_free_claim_is_backed(angle, offer, country))
+    )
 
 
 def enqueue_stale_scores(
@@ -887,8 +922,16 @@ def enqueue_stale_scores(
         prose_ver=prose_ver,
         now=now,
         reprose=reprose,
-        limit=limit,
+        # Reprose takes the whole candidate set and slices *after* ranking, because
+        # what makes a row urgent here is the angle text and SQL cannot read it.
+        # Cheap: this is the same full fetch `reprose_backlog` already does, and the
+        # rows are four short columns.
+        limit=0 if reprose else limit,
     )
+    if reprose:
+        rows = sorted(rows, key=lambda row: not _is_unsendable(row))
+        if limit:
+            rows = rows[:limit]
 
     queued = 0
     with store.tx() as conn:
@@ -932,8 +975,16 @@ def reprose_backlog(
     *,
     config: ScoringConfig | None = None,
     gate: ComplianceGate | None = None,
-) -> int:
-    """How many leads still carry an angle from an older prose build.
+) -> tuple[int, int]:
+    """How many leads carry an angle from an older prose build, and how many of those
+    the Dispatcher would refuse to send today.
+
+    Two numbers because they answer different questions and only the second is urgent.
+    Measured on the Pi on 2026-09-22: **871 and ~117.** An operator told only the 871
+    reads a corpus-wide rewrite with hours of decode behind it and puts it off; told
+    both, they know the repair that matters is a fraction of that and the first
+    bounded pass reaches it -- which is true only because `_is_unsendable` now orders
+    the selection.
 
     `queued` counts what this pass *newly* enqueued, and that is not the same number:
     run `--reprose` twice before the worker drains and the same rows are selected, every
@@ -950,18 +1001,17 @@ def reprose_backlog(
     backfill is hours on this box, and that is a decision the operator should get to
     make with the number in front of them rather than after the eighth pass.
     """
-    return len(
-        _stale_rows(
-            store.conn,
-            fingerprint=calibration_version(
-                config or ScoringConfig.load(), gate or ComplianceGate.from_config()
-            ),
-            prose_ver=prose_version(),
-            now=to_iso(utcnow()),
-            reprose=True,
-            limit=0,
-        )
+    rows = _stale_rows(
+        store.conn,
+        fingerprint=calibration_version(
+            config or ScoringConfig.load(), gate or ComplianceGate.from_config()
+        ),
+        prose_ver=prose_version(),
+        now=to_iso(utcnow()),
+        reprose=True,
+        limit=0,
     )
+    return len(rows), sum(1 for row in rows if _is_unsendable(row))
 
 
 # Failures that will plausibly answer differently later. A schema violation from the

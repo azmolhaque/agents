@@ -2350,6 +2350,36 @@ Shown rather than blanked, under `[!] NOT SENDABLE AS WRITTEN -- <reason>`: the
 operator may want to rewrite it by hand, and a blank line would read as "no angle
 written" and hide that there is one and it is wrong.
 
+**`--reprose` had a limit and no ordering worth having, which is the
+`enqueue_stale_scores` lesson one override over.** Measured 2026-09-22: **871 leads
+carry an angle from an older build and ~117 of them are unsendable** -- and three of
+the operator's top eight were among them. The selection was ordered by how the
+*score* went stale, so a 50-row pass rewrote roughly 43 correct angles and 7 broken
+ones and the call list kept its `NOT SENDABLE` rows for a week. **An ORDER BY only
+means anything with a limit**, and here the limit existed while the ordering that
+would make it useful did not.
+
+SQL cannot judge an angle -- that needs the dispatch guard and the running config --
+so the reprose path fetches the whole candidate set, `_is_unsendable` ranks it, and
+the limit is applied after. Cheap: it is the same full fetch `reprose_backlog`
+already does, over four short columns. **Ranked, never filtered:** an angle that is
+only worded by an older build is still worth refreshing eventually, and a predicate
+that dropped it would make the backlog count stop describing the backlog.
+
+`reprose_backlog` returns both numbers now, for the same reason `no_job_lost` prints
+the unreachable count beside the lost one. **871 alone reads as a corpus-wide rewrite
+with hours of decode behind it and gets put off**; 871 with 117 beside it says the
+repair that matters is a seventh of that and the first pass reaches it.
+
+**The ordering test passed against the deployed code on its first run**, because the
+two seeded leads tied on every flag and SQLite returned them in insertion order -- it
+proved nothing and would have shipped looking like a check. It fails now with
+`assert ['fine.io'] == ['broken.io']`, and it does so because the *sendable* lead is
+seeded with the newer trigger so the old `newest DESC` tiebreak puts it first.
+**Seventh instance of a test that supplies the input the code expects**, after
+`discovered_by`, `enqueue_stale_extractions`, the HN mock, the free-offer flag,
+`test_a_rescored_corpus_reports_current` and `test_the_stamp_that_reprose_reads...`.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
