@@ -17,6 +17,7 @@ even though nothing was scanned.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -285,24 +286,41 @@ def digest_row(data: CardData) -> dict[str, Any]:
     return _fit_total(embed)
 
 
-def digest_summary(stats: dict[str, Any]) -> str:
+def digest_summary(values: Mapping[str, float]) -> str:
     """The run's numbers, under the digest.
 
-    Deliberately includes the rejections and the spend. A digest that only reports
+    Deliberately includes the rejections and the spend. **A digest that only reports
     what was dispatched cannot tell you the day the pipeline started rejecting
-    everything.
+    everything** -- a morning with no Tier C rows reads identically whether nothing
+    scored, the credits ran out at 09:00, or the worker has been down since Tuesday.
+
+    Built, documented with that rationale, and then never called: the digest posted its
+    pages and nothing else for the life of the project. Tenth instance of
+    built-wired-never-connected, after `digest_pages` in this same module.
+
+    Takes the `metrics.snapshot()` mapping rather than a dict assembled for it, because
+    a hand-passed dict is a second place to compute "how many leads are live" -- which
+    is the exact thing `snapshot` says in its own docstring that it exists to prevent.
+    A key it does not carry is not printed; there is no number here that is not read
+    from the same place `/metrics` and `/healthz` read theirs.
     """
+
+    def n(key: str) -> int:
+        return int(values.get(key, 0))
+
+    tiers = " · ".join(f"{t} {n(f'leads_tier_{t.lower()}')}" for t in ("A", "B", "C"))
     parts = [
-        f"harvested {stats.get('harvested', 0)}",
-        f"candidates {stats.get('candidates', 0)}",
-        f"companies {stats.get('companies', 0)}",
-        f"dispatched {stats.get('dispatched', 0)}",
-        f"vetoed {stats.get('vetoed', 0)}",
-        f"credits {stats.get('credits', 0)}",
-        f"cloud ${float(stats.get('usd', 0)):.2f}",
+        f"companies {n('companies_total')}",
+        f"leads {n('leads_total')} ({tiers})",
+        f"rejected {n('leads_tier_reject')}",
+        f"dispatched {n('dispatches_24h')}/24h",
+        f"queue {n('queue_ready')} ready",
+        f"cloud ${float(values.get('cloud_usd_24h', 0.0)):.2f}/24h",
     ]
-    if stats.get("peak_temp_c"):
-        parts.append(f"peak {stats['peak_temp_c']}°C")
+    # Printed only when it is not zero, because a `dead 0` on every digest is a line
+    # nobody reads and a `dead 4` under a thin digest is the answer to why it is thin.
+    if n("dead_letter_recent"):
+        parts.append(f"**dead {n('dead_letter_recent')}/24h**")
     return " · ".join(parts)
 
 

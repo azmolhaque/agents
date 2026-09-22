@@ -2230,6 +2230,35 @@ The line also printed the bare code. `why: T3_HIRING_SEC` is a slug shown to the
 deciding whether to send -- the position every trigger code was in before `means`
 existed, and the Discord card was taught this two days ago while the call list was not.
 
+**`digest_summary` is the tenth built-wired-never-connected, and it was sitting in the
+same module as the first.** `digest_pages` existed and was tested while nothing called
+it; `digest_summary` was written directly beneath it, with its rationale in its own
+docstring -- *"a digest that only reports what was dispatched cannot tell you the day
+the pipeline started rejecting everything"* -- and never called by anything, not even a
+test. A morning with no Tier C rows reads identically whether nothing scored, the
+credits ran out at 09:00, or the worker has been down since Tuesday.
+
+Found by asking the whole package a mechanical question -- which functions are defined
+and never referenced anywhere in `src/`, `tests/` or `scripts/` -- rather than by
+reading code. Forty-two names came back and almost all were Typer commands and event
+handlers registered by decorator; this was the one with a reason to exist.
+
+It now reads `metrics.snapshot()` rather than a dict assembled for it, because a
+hand-passed dict is a second place to compute "how many leads are live", which is the
+exact thing `snapshot`'s own docstring says it exists to prevent. Posted as `content`
+on the **last** page only: no extra message, cannot be mistaken for a lead, and a
+footer under every page of a long digest is one nobody reads.
+
+**The rationed resources were not on `/metrics` at all.** Absolute rule 3 gives cloud
+spend a hard daily cap persisted in SQLite, and nothing exported it -- so the endpoint
+could tell you the queue was empty and not that it was empty because the credits ran
+out at 09:00. `cloud_usd_24h` and `api_units_24h` are gauges now, on the same rolling
+window `BudgetGuard.used` asks about rather than a calendar day.
+
+The summary is read once *before* the first POST. Each page's rows are logged only
+after that page is sent, so a late read would count part of its own digest and not the
+rest; the line describes the corpus the digest was assembled from.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

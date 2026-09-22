@@ -36,11 +36,13 @@ from cindraleads.discord import (
     DiscordWebhook,
     TriggerLine,
     digest_row,
+    digest_summary,
     lead_card,
     limits,
 )
 from cindraleads.errors import ConfigError
 from cindraleads.logging import get_logger
+from cindraleads.metrics import snapshot
 from cindraleads.models import Job, Offer, StageResult, from_iso, to_iso, utcnow
 from cindraleads.scoring import ScoringConfig
 from cindraleads.store import Store
@@ -567,13 +569,27 @@ async def send_digest(
         report.pages = len(digest_pages([card for _, _, _, card in cards]))
         return report
 
+    # Read once, before the first POST, so every page of one digest describes the same
+    # moment. Recomputing per page would have the summary disagree with itself when a
+    # worker commits between two posts -- and these rows are logged *after* each page
+    # is sent, so a late read would count some of this digest and not the rest.
+    # The line therefore describes the corpus the digest was assembled from, this
+    # run's own rows excluded.
+    summary = digest_summary(snapshot(dispatcher.store))
+
     index = 0
-    for page in digest_pages([card for _, _, _, card in cards]):
+    pages = digest_pages([card for _, _, _, card in cards])
+    for number, page in enumerate(pages, 1):
         batch = cards[index : index + len(page)]
         index += len(page)
-        result = await dispatcher.webhook.post(
-            url, {"embeds": page, "username": "CindraLeads digest"}
-        )
+        payload: dict[str, Any] = {"embeds": page, "username": "CindraLeads digest"}
+        # Under the last page, and as `content` rather than an embed of its own, so it
+        # costs no extra message and cannot be mistaken for a lead. A thin digest is the
+        # moment someone asks why, and "queue 0 ready · cloud $0.50/24h" answers it
+        # where the question is asked.
+        if number == len(pages):
+            payload["content"] = summary
+        result = await dispatcher.webhook.post(url, payload)
         if not result.ok:
             # Stop, do not continue to the next page. The pages already sent are
             # logged and will not repeat; the rest stay pending and go out tomorrow,

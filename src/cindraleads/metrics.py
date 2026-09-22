@@ -333,6 +333,18 @@ def snapshot(store: Store, *, now: datetime | None = None) -> dict[str, float]:
         "SELECT COUNT(*) FROM dispatch_log WHERE dispatched_at > ? AND tier IN ('A','B')",
         day_ago,
     )
+
+    # The rationed resources, which absolute rule 3 gives a hard daily cap and a SQLite
+    # row that survives restart -- and which nothing exported. `/metrics` could tell you
+    # the queue was empty but not that it was empty because the credits ran out at 09:00.
+    # `api_budget.day` is an ISO stamp compared with `>=` against a rolling window start,
+    # not a calendar day, so this matches what `BudgetGuard.used` asks.
+    values["cloud_usd_24h"] = count(
+        "SELECT COALESCE(SUM(usd_spent), 0) FROM api_budget WHERE day >= ?", day_ago
+    )
+    values["api_units_24h"] = count(
+        "SELECT COALESCE(SUM(units_used), 0) FROM api_budget WHERE day >= ?", day_ago
+    )
     return values
 
 

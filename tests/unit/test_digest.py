@@ -260,3 +260,70 @@ async def test_a_rescored_lead_digests_again(store: Any) -> None:
 def test_the_key_ignores_drift_within_a_bucket() -> None:
     assert idempotency_key("l1", ["T1_AI_SHIP"], 41) == idempotency_key("l1", ["T1_AI_SHIP"], 49)
     assert idempotency_key("l1", ["T1_AI_SHIP"], 41) != idempotency_key("l1", ["T1_AI_SHIP"], 51)
+
+
+# --------------------------------------------------------- the numbers under it
+
+
+async def test_the_digest_carries_the_run_numbers(store: Any) -> None:
+    """`digest_summary` was written with its own rationale in its own docstring --
+    "a digest that only reports what was dispatched cannot tell you the day the
+    pipeline started rejecting everything" -- and then nothing called it, for the life
+    of the project. Tenth instance of built-wired-never-connected, and in the same
+    module as `digest_pages`, which was the first.
+
+    A morning with no Tier C rows reads identically whether nothing scored, the
+    credits ran out at 09:00, or the worker has been down since Tuesday. The rejected
+    count and the spend are what separate those, and they belong where the question
+    gets asked.
+    """
+    for n in range(3):
+        _lead(store, f"c{n}.io", tier="C", score=45 - n)
+    _lead(store, "no.io", tier="REJECT", score=12)
+    webhook = _Webhook()
+
+    await send_digest(_dispatcher(store, webhook))
+
+    content = webhook.posts[-1]["content"]
+    assert "rejected 1" in content
+    assert "cloud $" in content
+    assert "companies 4" in content
+
+
+async def test_only_the_last_page_carries_the_summary(store: Any) -> None:
+    """`content` rather than an embed of its own, on the final page only: it costs no
+    extra message, it cannot be mistaken for a lead, and a footer repeated under every
+    page of a long digest is one nobody reads."""
+    for n in range(12):
+        _lead(store, f"c{n}.io", tier="C", score=45)
+    webhook = _Webhook()
+
+    report = await send_digest(_dispatcher(store, webhook), limit=12)
+
+    assert report.pages == len(webhook.posts) >= 2
+    assert all("content" not in post for post in webhook.posts[:-1])
+    assert webhook.posts[-1]["content"]
+
+
+async def test_the_summary_reads_the_same_numbers_the_endpoint_does(store: Any) -> None:
+    """Every value comes from `metrics.snapshot()`, never from a dict assembled for
+    the digest. A second place to compute "how many leads are live" is exactly what
+    `snapshot` says in its own docstring that it exists to prevent, and a digest that
+    disagreed with `/metrics` would be worse than one that printed nothing.
+
+    Read before the send, because that is when the digest reads it: a page's rows are
+    logged only after that page is posted, so a summary taken at the end would count
+    part of its own digest and not the rest. The line describes the corpus the digest
+    was assembled from.
+    """
+    from cindraleads.discord import digest_summary
+    from cindraleads.metrics import snapshot
+
+    for n in range(3):
+        _lead(store, f"c{n}.io", tier="C", score=45 - n)
+    webhook = _Webhook()
+    expected = digest_summary(snapshot(store))
+
+    await send_digest(_dispatcher(store, webhook))
+
+    assert webhook.posts[-1]["content"] == expected
