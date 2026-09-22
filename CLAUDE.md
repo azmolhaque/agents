@@ -2525,6 +2525,41 @@ printed the row back -- and it showed the row still sitting in the stale set wit
 `prosed = 0`, which is the actual defect. **Reading the row cost one command; the test
 would have shipped a conclusion that was backwards.**
 
+**54 of 55 prose failures in one day were thermal pauses, and the backlog stopped
+moving because of it.** Read 2026-09-22 after the queue drained: 73 `lead_scored`, 55
+`scorer_prose_failed`, of which **54 are `LLM inference is paused by the thermal
+governor`, every one at `pauses: 1`, `will_retry: true`, `gave_up: false`.** Nothing was
+lost and nothing is broken -- that is the governor doing its job, and `cindra health`
+read 56.5 C nominal an hour later. What it costs is the repair rate: a 50-row
+`--reprose` pass wrote about six angles, because three jobs in four were deferred rather
+than decoded.
+
+**A prose failure is not a stage failure, so `dead` stayed 33 and `failed` stayed 0 --
+the counter shape this file already records** ("a retry that completes successfully is
+invisible to everything built to catch a loop"). The only place the rate is visible is
+the JSONL log, and `grep` calls that file **binary** because two unclean shutdowns put
+13k NUL bytes in it; `grep -a` is the workaround and is worth knowing before concluding
+a log is empty.
+
+**Then `--reprose` queued 2 rows out of a 50-row selection, which has two readings the
+command cannot tell apart.** Either 48 jobs are still in the queue -- wait -- or 48
+dedupe keys belong to jobs that **already ran and wrote no angle**, in which case those
+rows sort to the front of every pass for ever and this command will never queue them
+again. `enqueue` matches `dedupe_key` across completed jobs, which is exactly what makes
+a rescore idempotent and exactly what makes the second case permanent. **Same slot-leak
+shape as the vetoed leads one commit earlier, arriving by a different route.**
+
+`scripts/reprose_selection.py` is the read: the real selection, the real key, and the
+state of whatever job holds it. `score_dedupe_key` and `stale_selection` exist because
+the report has to build the *same* key and the *same* ranking as the command -- a key
+computed in two places is the defect this project keeps paying for, and its test drives
+the real `enqueue_stale_scores` and then the script's own `main()`.
+
+**The test caught a column that does not exist before the Pi did.** The script read
+`jobs.state`; the column is `status`. Same class as `withheld_angles.py` reading a
+`lead_id` its SELECT did not have -- an instrument that crashes on the box is one you
+stop reaching for, and both were caught by driving the script rather than by reading it.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

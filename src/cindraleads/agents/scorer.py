@@ -942,6 +942,72 @@ def _needs_repair(
     return not block_reason(row, suppressed, quarantined)
 
 
+def score_dedupe_key(
+    domain: str, newest: Any, fingerprint: str, prose_ver: str, nonce: str = ""
+) -> str:
+    """The key that decides whether a rescore is new work or a job that already ran.
+
+    Extracted because a second reader appeared: an instrument that asks *why* a
+    `--reprose` pass queued 2 rows out of 50 has to build the same key the enqueue
+    builds, and a key computed in two places is the defect this project keeps paying
+    for -- `calibration_version` against `ScoringConfig.fingerprint`, the prose bound
+    against its token budget, `preview_angle.py` against `angle_kwargs`.
+
+    The fingerprint and the prose version are in it deliberately: a recalibration moves
+    neither `newest` nor anything else the key would otherwise carry, so without them
+    the new job collides with the completed one and the mechanism reports success
+    having changed nothing.
+    """
+    shape = f"{domain}|{newest}|{fingerprint}|{prose_ver}"
+    if nonce:
+        shape += f"|force:{nonce}"
+    return f"score:{hashlib.sha256(shape.encode()).hexdigest()[:16]}"
+
+
+def stale_selection(
+    store: Store,
+    *,
+    reprose: bool,
+    limit: int,
+    config: ScoringConfig | None = None,
+    gate: ComplianceGate | None = None,
+) -> tuple[list[sqlite3.Row], str, str]:
+    """The rows a pass would work on, ranked and sliced, with the two stamps in the key.
+
+    One function because `enqueue_stale_scores` and any report about what it selected
+    must agree -- the same reason `_stale_rows` has exactly two readers. A report that
+    re-implemented the ranking would describe a selection the command does not make,
+    which is how `832 of 833` was read as a finding about the corpus.
+    """
+    scoring = config or ScoringConfig.load()
+    fingerprint = calibration_version(scoring, gate or ComplianceGate.from_config())
+    prose_ver = prose_version()
+    rows = _stale_rows(
+        store.conn,
+        fingerprint=fingerprint,
+        prose_ver=prose_ver,
+        now=to_iso(utcnow()),
+        reprose=reprose,
+        # Reprose takes the whole candidate set and slices *after* ranking, because
+        # what makes a row urgent here is the angle text and SQL cannot read it.
+        # Cheap: this is the same full fetch `reprose_backlog` already does, and the
+        # rows are four short columns.
+        limit=0 if reprose else limit,
+    )
+    if reprose:
+        # Local for the same reason `_is_unsendable`'s import is: the Dispatcher reads
+        # `DERIVED_TRIGGERS` out of this module.
+        from cindraleads.agents.dispatcher import blocked_subjects
+
+        suppressed, quarantined = blocked_subjects(store.conn)
+        rows = sorted(
+            rows, key=lambda row: not _needs_repair(row, scoring, suppressed, quarantined)
+        )
+        if limit:
+            rows = rows[:limit]
+    return list(rows), fingerprint, prose_ver
+
+
 def enqueue_stale_scores(
     store: Store,
     queue: Any,
@@ -992,33 +1058,9 @@ def enqueue_stale_scores(
     inference, and a backfill nobody is waiting on must never be what a new lead waits
     behind.
     """
-    scoring = config or ScoringConfig.load()
-    fingerprint = calibration_version(scoring, gate or ComplianceGate.from_config())
-    prose_ver = prose_version()
-    now = to_iso(utcnow())
-    rows = _stale_rows(
-        store.conn,
-        fingerprint=fingerprint,
-        prose_ver=prose_ver,
-        now=now,
-        reprose=reprose,
-        # Reprose takes the whole candidate set and slices *after* ranking, because
-        # what makes a row urgent here is the angle text and SQL cannot read it.
-        # Cheap: this is the same full fetch `reprose_backlog` already does, and the
-        # rows are four short columns.
-        limit=0 if reprose else limit,
+    rows, fingerprint, prose_ver = stale_selection(
+        store, reprose=reprose, limit=limit, config=config, gate=gate
     )
-    if reprose:
-        # Local for the same reason `_is_unsendable`'s import is: the Dispatcher reads
-        # `DERIVED_TRIGGERS` out of this module.
-        from cindraleads.agents.dispatcher import blocked_subjects
-
-        suppressed, quarantined = blocked_subjects(store.conn)
-        rows = sorted(
-            rows, key=lambda row: not _needs_repair(row, scoring, suppressed, quarantined)
-        )
-        if limit:
-            rows = rows[:limit]
 
     queued = 0
     with store.tx() as conn:
@@ -1035,21 +1077,23 @@ def enqueue_stale_scores(
             # an angle repair moves neither `newest` nor the calibration, so without it
             # the job collides with the completed one that produced the blank angle and
             # is silently dropped -- the mechanism reporting success having done nothing.
-            shape = f"{domain}|{row['newest']}|{fingerprint}|{prose_ver}"
-            if force:
-                # A uuid, not `now`. `to_iso` has millisecond resolution, so two forced
-                # runs in the same millisecond produced the same key and the second was
-                # swallowed by the first -- the precise failure `--force` exists to
-                # escape.
-                shape += f"|force:{uuid.uuid4().hex}"
-            digest = hashlib.sha256(shape.encode()).hexdigest()[:16]
+            # A uuid, not `now`. `to_iso` has millisecond resolution, so two forced runs
+            # in the same millisecond produced the same key and the second was swallowed
+            # by the first -- the precise failure `--force` exists to escape.
+            key = score_dedupe_key(
+                domain,
+                row["newest"],
+                fingerprint,
+                prose_ver,
+                uuid.uuid4().hex if force else "",
+            )
             existing = conn.execute(
-                "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (f"score:{digest}",)
+                "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (key,)
             ).fetchone()
             queue.enqueue(
                 SCORE_KIND,
                 {"canonical_domain": domain},
-                dedupe_key=f"score:{digest}",
+                dedupe_key=key,
                 conn=conn,
             )
             if existing is None:

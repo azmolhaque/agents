@@ -1947,7 +1947,13 @@ def test_the_backlog_empties_when_the_angle_is_rewritten(store):
 def test_the_backlog_and_the_selection_cannot_disagree():
     """One query, two callers. A count that stopped describing the work the command
     queues would be worse than no count -- it would be a confident wrong number, which
-    is how `832 of 833` was read as a finding about the corpus for a week."""
+    is how `832 of 833` was read as a finding about the corpus for a week.
+
+    `stale_selection` is the selecting half now -- the query plus the ranking -- because
+    a report about what a pass would queue has to build the same selection and the same
+    dedupe keys. `reprose_backlog` stays on the bare query: it counts, so the ranking
+    would be a second `_needs_repair` pass over a thousand rows for an order nobody
+    reads."""
     import ast
     from pathlib import Path
 
@@ -1963,7 +1969,7 @@ def test_the_backlog_and_the_selection_cannot_disagree():
             for inner in ast.walk(node)
         )
     }
-    assert callers == {"enqueue_stale_scores", "reprose_backlog"}, (
+    assert callers == {"stale_selection", "reprose_backlog"}, (
         f"a third reader of this predicate, or a lost one: {sorted(callers)}"
     )
     assert source.count("HAVING l.lead_id IS NULL") == 1, "the predicate was duplicated"
@@ -2492,3 +2498,50 @@ def test_a_suppressed_domain_leaves_the_repair_queue_too(store):  # type: ignore
         )
 
     assert reprose_backlog(store) == (1, 0)
+
+
+def test_the_reprose_report_reads_the_keys_the_command_builds(store, monkeypatch, capsys):  # type: ignore[no-untyped-def]
+    """`queued 2` out of 50 has two readings and the command cannot tell them apart.
+
+    Either the other 48 jobs are still in the queue from the last pass -- wait -- or
+    their dedupe keys belong to jobs that already ran and wrote no angle, in which case
+    those rows sort to the front of every pass for ever and this command will never
+    queue them again. `enqueue` matches `dedupe_key` across completed jobs, which is
+    what makes a rescore idempotent and what makes the second case permanent.
+
+    The report is only worth anything if it builds the *same* key, so `score_dedupe_key`
+    has one definition and this drives both sides: enqueue a real pass, then read it
+    back through the script's own `main()`.
+    """
+    import importlib.util
+
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+    queue = JobQueue(store)
+    assert enqueue_stale_scores(store, queue, reprose=True, limit=1) == 1
+    job = store.conn.execute("SELECT job_id FROM jobs WHERE kind = 'score.company'").fetchone()
+    with store.tx() as conn:
+        conn.execute("UPDATE jobs SET status = 'done' WHERE job_id = ?", (job["job_id"],))
+
+    spec = importlib.util.spec_from_file_location(
+        "reprose_selection", REPO_ROOT / "scripts" / "reprose_selection.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    from cindraleads.config import settings as real_settings
+
+    cfg = real_settings().model_copy(update={"db_file": store.db_path})
+    monkeypatch.setattr(module, "settings", lambda: cfg)
+    monkeypatch.setattr(module, "Store", lambda *_a, **_k: store)
+    monkeypatch.setattr(sys, "argv", ["reprose_selection.py"])
+
+    assert module.main() == 0
+
+    printed = capsys.readouterr().out
+    assert "1 of 1 are held by a job that already ran" in printed, (
+        "the report built a key the command does not build, so it cannot explain it"
+    )
