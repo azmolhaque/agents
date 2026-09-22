@@ -2280,6 +2280,31 @@ and a card would open by addressing them as a casino -- but the string is well-f
 text in one script, indistinguishable by shape from any invented brand. That needs the
 domain's history or a reputation source, not a string rule.
 
+**Built-wired-never-connected now has a detector, because ten instances were all found
+the expensive way.** `digest_pages`, `extend_lease`, `open_roles`, `discovered_by`,
+`full_name`, the heartbeat `exiting` flag, `_facts`, `GITHUB_TOKEN`, the
+`enqueue_stale_scores` limit and `digest_summary` -- every one surfaced through a card
+that reached a prospect, a column that was NULL for months, or a report reading
+`(unknown) 201`. The question they all answer is mechanical: *which functions are
+defined in `src/cindraleads` and named nowhere in `src/`, `tests/` or `scripts/`?*
+
+Decorated definitions are excluded or the signal drowns -- a Typer command, a Pydantic
+validator and a discord.py handler are each registered by their decorator and
+referenced by nothing, correctly. That leaves thirteen, six of them stdlib overrides.
+The other seven are in `_KNOWN_UNCONNECTED` with a reason each, and **a new orphan
+fails the suite**. It is not necessarily a bug; it is a question that has to be
+answered the day it appears, while the author still knows the answer.
+
+The second half is the one that rots: a name that gets wired up or deleted must leave
+the list, or the list becomes another thing claiming something untrue about the
+repository -- the file map defect, one directory over.
+
+`missing_trigger_weights` was in that scan's output and turned out not to be dead at
+all: `test_every_taxonomy_trigger_has_a_weight` **restated its one line instead of
+calling it**, so the guard read as unused to every scan and the predicate existed
+twice. The seventh duplicate-inside-the-detector, after `preview_angle.py` carrying its
+own copy of the `format()` kwargs the `ast` check had just been written to protect.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

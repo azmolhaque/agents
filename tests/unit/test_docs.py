@@ -143,3 +143,107 @@ def test_every_command_is_documented_and_every_documented_command_exists() -> No
         f"{sorted(registered - documented)}. The block is where anyone looks for the "
         "list, so a command missing from it is one nobody runs."
     )
+
+
+# --------------------------------------------------- the defect that recurs most
+
+# Overrides a framework calls by name. Nothing in this repository references them and
+# nothing should: the stdlib's HTTP server and HTML parser, and Pydantic, do the
+# calling. Permanently exempt.
+_CALLED_BY_A_FRAMEWORK = frozenset(
+    {
+        "do_GET",
+        "log_message",
+        "handle_starttag",
+        "handle_endtag",
+        "handle_data",
+        "model_post_init",
+    }
+)
+
+# Built, exported, and connected to nothing -- the standing inventory of the defect
+# this project has now paid for ten times: `digest_pages`, `extend_lease`,
+# `open_roles`, `discovered_by`, `full_name`, the heartbeat `exiting` flag, `_facts`,
+# `GITHUB_TOKEN`, the `enqueue_stale_scores` limit, and `digest_summary`.
+#
+# Every entry here is a decision someone owes: wire it or delete it. The list exists so
+# the eleventh instance is visible on the day it is written rather than found months
+# later on a card that reached a prospect.
+_KNOWN_UNCONNECTED: dict[str, str] = {
+    "by_role": "SourceRegistry accessor; `free_sources` and `by_class` are used",
+    "enqueue_many": "a loop over `enqueue`; every caller writes the loop itself",
+    "known_codes": "`set(cfg.triggers)`, which every caller writes inline",
+    "notify_status": "sd_notify STATUS=; the worker sends READY and WATCHDOG only",
+    "rapidfuzz_available": "`name_similarity` degrades on its own; nothing asks",
+    "score_stamp": "`to_iso(when)` under another name",
+    "templates_for": "`coverage()` answers the same question and is used",
+}
+
+
+def _never_referenced() -> set[str]:
+    """Functions defined in `src/cindraleads` and named nowhere in the repository.
+
+    Decorated definitions are excluded: a Typer command, a Pydantic validator and a
+    discord.py event handler are all registered by their decorator and referenced by
+    nothing, which is correct and would otherwise bury the signal.
+    """
+    import ast
+    from collections import Counter
+
+    defined: dict[str, str] = {}
+    decorated: set[str] = set()
+    for path in (REPO / "src" / "cindraleads").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                defined.setdefault(node.name, str(path))
+                if node.decorator_list:
+                    decorated.add(node.name)
+
+    used: Counter[str] = Counter()
+    for root in ("src", "tests", "scripts"):
+        for path in (REPO / root).rglob("*.py"):
+            for node in ast.walk(ast.parse(path.read_text())):
+                if isinstance(node, ast.Name):
+                    used[node.id] += 1
+                elif isinstance(node, ast.Attribute):
+                    used[node.attr] += 1
+
+    return {
+        name
+        for name in defined
+        if not used[name] and not name.startswith("__") and name not in decorated
+    }
+
+
+def test_nothing_new_is_built_and_connected_to_nothing() -> None:
+    """The defect this project keeps paying for, asked mechanically.
+
+    Ten instances so far, and every one was found by a card reaching a prospect, a
+    column that was NULL for months, or a report reading `(unknown) 201`.
+    `digest_summary` was the tenth and it was found by exactly this scan -- written
+    with its rationale in its own docstring, sitting directly beneath `digest_pages`,
+    which was the first.
+
+    A new orphan is not necessarily a bug. It is a question that has to be answered
+    the day it appears, while the author still knows the answer.
+    """
+    unexplained = _never_referenced() - _CALLED_BY_A_FRAMEWORK - set(_KNOWN_UNCONNECTED)
+    assert not unexplained, (
+        f"defined and referenced nowhere: {sorted(unexplained)}. Wire it, delete it, "
+        "or add it to _KNOWN_UNCONNECTED with the reason -- built-wired-never-connected "
+        "is the defect this project has shipped ten times."
+    )
+
+
+def test_the_unconnected_list_does_not_outlive_what_it_records() -> None:
+    """The quieter half, and the one that rots first.
+
+    A name that gets wired up or deleted has to leave the list, or the list stops
+    describing the repository and becomes another thing that claims something untrue
+    about it -- which is the file map defect above, one directory over.
+    """
+    stale = set(_KNOWN_UNCONNECTED) - _never_referenced()
+    assert not stale, (
+        f"{sorted(stale)} are referenced now (or gone), so _KNOWN_UNCONNECTED is "
+        "describing a repository that no longer exists"
+    )

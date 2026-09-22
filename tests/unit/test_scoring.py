@@ -51,10 +51,20 @@ def make(**kwargs) -> ScoreInput:  # type: ignore[no-untyped-def]
 
 def test_every_taxonomy_trigger_has_a_weight(cfg: ScoringConfig):
     """A code with no row scores zero, which looks exactly like a trigger that never
-    fires. Adding a trigger to the taxonomy without a weight is a silent no-op."""
+    fires. Adding a trigger to the taxonomy without a weight is a silent no-op.
+
+    Calls `missing_trigger_weights` rather than restating its one line. The function
+    was written with that docstring and this test then wrote the predicate out again,
+    so the guard read as dead code to every scan -- and a second copy of a predicate is
+    what this project has paid for from `calibration_version` against
+    `ScoringConfig.fingerprint` to `preview_angle.py` carrying its own `format()`
+    kwargs inside the detector built to catch a missing one.
+    """
     import typing
 
-    missing = [c for c in typing.get_args(TriggerCode) if c not in cfg.triggers]
+    from cindraleads.scoring import missing_trigger_weights
+
+    missing = missing_trigger_weights(cfg, typing.get_args(TriggerCode))
     assert not missing, f"scoring.yaml has no weight for {missing}"
 
 
