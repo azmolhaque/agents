@@ -2560,6 +2560,26 @@ the real `enqueue_stale_scores` and then the script's own `main()`.
 `lead_id` its SELECT did not have -- an instrument that crashes on the box is one you
 stop reaching for, and both were caught by driving the script rather than by reading it.
 
+**It read `48 done, 2 would be queued` on the first run, so the second reading was the
+true one.** `--reprose` was queuing 2 a pass and would have queued 2 for ever: those 48
+rows keep their angle, sort to the front of the next pass, and collide with the same
+completed key again. Nothing in the system could have said so -- `queued 2` is also what
+"the worker is busy" looks like, which is why the read was built rather than argued.
+
+**`--force` is the escape only because "a job ran but achieved nothing" is normally
+undetectable. On this path it is detectable.** The row was returned by the reprose
+predicate, which states exactly that the lead still carries an angle from an older
+build; the selection *is* the evidence `--force` otherwise needs a human to supply. So
+`--reprose` now nonces past a key held by a **finished** job -- `done` or `dead` -- and
+the operator does not reach for a flag that also re-enriches the corpus.
+
+**Narrow on purpose: `pending` and `in_flight` still dedupe.** That is the other reading
+of a low `queued`, and noncing past it would put a second copy of an ~18 s decode into
+the queue that is already the bottleneck -- turning "re-run once the queue drains",
+which this command's own message invites, into a way to multiply the backlog.
+`test_work_already_waiting_is_not_queued_twice` is that bound, and it passes against the
+old code as well, because it pins behaviour that must *not* change.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

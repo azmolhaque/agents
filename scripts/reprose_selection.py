@@ -22,9 +22,20 @@ import argparse
 import sys
 from collections import Counter
 
-from cindraleads.agents.scorer import DEFAULT_RESCORE_LIMIT, score_dedupe_key, stale_selection
+from cindraleads.agents.scorer import (
+    _SPENT,
+    DEFAULT_RESCORE_LIMIT,
+    score_dedupe_key,
+    stale_selection,
+)
 from cindraleads.config import settings
 from cindraleads.store import Store
+
+#: The statuses the command itself treats as spent, borrowed rather than restated --
+#: a report that split the rows differently from the code would explain a pass nobody
+#: runs.
+SPENT = _SPENT
+NEW = "would be queued"
 
 
 def main() -> int:
@@ -45,7 +56,7 @@ def main() -> int:
                 "SELECT status, attempts, created_at FROM jobs WHERE dedupe_key = ? LIMIT 1",
                 (key,),
             ).fetchone()
-            held.append((domain, str(job["status"]) if job else "would be queued"))
+            held.append((domain, str(job["status"]) if job else NEW))
     finally:
         store.close()
 
@@ -57,17 +68,24 @@ def main() -> int:
     for state, count in Counter(state for _domain, state in held).most_common():
         print(f"  {count:>5}  {state}")
 
-    spent = sum(1 for _domain, state in held if state == "done")
+    spent = sum(1 for _domain, state in held if state in SPENT)
+    waiting = sum(1 for _domain, state in held if state not in SPENT and state != NEW)
     if spent:
         print(
-            f"\n  {spent} of {len(rows)} are held by a job that already ran to completion.\n"
-            "  Those rows keep their angle, so they sort to the front of every pass and\n"
-            "  this command will queue none of them again. `cindra reconcile --force\n"
-            "  --reprose` is the escape -- it adds a nonce to the key -- and it also\n"
-            "  re-queues enrichment, so read that cost before reaching for it."
+            f"\n  {spent} of {len(rows)} are held by a job that already finished and wrote\n"
+            "  no angle. `--reprose` re-queues those under a fresh key: the row being in\n"
+            "  this selection *is* the evidence that the finished job achieved nothing,\n"
+            "  which is the one thing `--force` normally has to be told by a human.\n"
+            "  They are real work, so expect `queued` to be about this number."
         )
-    else:
-        print("\n  nothing is held by a completed job; a low `queued` means the queue is busy")
+    if waiting:
+        print(
+            f"\n  {waiting} are held by a job still pending or in flight. Those are not\n"
+            "  re-queued -- that is the other reading of a low `queued`, and it means\n"
+            "  wait rather than run it again."
+        )
+    if not spent and not waiting:
+        print("\n  nothing is held; every row in this selection is new work")
 
     print(f"\n{'':<4} {'domain':<34} holder")
     for domain, state in held[: args.examples]:

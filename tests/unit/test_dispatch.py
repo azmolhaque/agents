@@ -2542,6 +2542,67 @@ def test_the_reprose_report_reads_the_keys_the_command_builds(store, monkeypatch
     assert module.main() == 0
 
     printed = capsys.readouterr().out
-    assert "1 of 1 are held by a job that already ran" in printed, (
+    assert "1 of 1 are held by a job that already finished" in printed, (
         "the report built a key the command does not build, so it cannot explain it"
+    )
+
+
+def test_a_finished_job_does_not_hold_the_repair_hostage(store):  # type: ignore[no-untyped-def]
+    """`--reprose` queued 2 of 50 on the Pi and would have queued 2 for ever.
+
+    Measured 2026-09-22 by `scripts/reprose_selection.py`: **48 of the 50 selected rows
+    were held by a job in `done`**. A score job completes having written nothing on any
+    thermal pause -- 54 of them in one day -- and the lead keeps its old angle, so it
+    sorts to the front of the next pass and collides with the same key again.
+
+    `--force` is the documented escape for "a job ran but achieved nothing" because in
+    general nothing can detect that. **Here the selection is the detector**: the row was
+    returned by the reprose predicate, which says exactly that the lead still carries an
+    angle from an older build. So this path may re-queue on its own, and the operator
+    does not have to reach for a flag that also re-enriches the corpus.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+    queue = JobQueue(store)
+    assert enqueue_stale_scores(store, queue, reprose=True, limit=1) == 1
+
+    # The job ran. It wrote no angle -- a thermal pause, the commonest outcome on this
+    # box -- so the lead is still exactly as stale as it was.
+    with store.tx() as conn:
+        conn.execute("UPDATE jobs SET status = 'done' WHERE kind = 'score.company'")
+
+    assert enqueue_stale_scores(store, queue, reprose=True, limit=1) == 1, (
+        "the repair is held hostage by the job that failed to perform it"
+    )
+    assert (
+        store.conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'score.company'"
+        ).fetchone()["n"]
+        == 2
+    )
+
+
+def test_work_already_waiting_is_not_queued_twice(store):  # type: ignore[no-untyped-def]
+    """The bound on the rule above, and the other reading of a low `queued`.
+
+    A `pending` job holding the key means the worker has not reached it yet. Noncing
+    past that would put a second copy of the same ~18 s decode in a queue that is
+    already the bottleneck -- and would turn "run it again while you wait", which this
+    command's own message invites, into a way to multiply the backlog.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+    queue = JobQueue(store)
+    assert enqueue_stale_scores(store, queue, reprose=True, limit=1) == 1
+    assert enqueue_stale_scores(store, queue, reprose=True, limit=1) == 0
+
+    assert (
+        store.conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = 'score.company'"
+        ).fetchone()["n"]
+        == 1
     )

@@ -942,6 +942,11 @@ def _needs_repair(
     return not block_reason(row, suppressed, quarantined)
 
 
+#: A job in one of these holds its dedupe key and will never run again. `pending` and
+#: `in_flight` are the opposite: the work is waiting, and a second copy of it is waste.
+_SPENT = frozenset({"done", "dead"})
+
+
 def score_dedupe_key(
     domain: str, newest: Any, fingerprint: str, prose_ver: str, nonce: str = ""
 ) -> str:
@@ -1088,8 +1093,29 @@ def enqueue_stale_scores(
                 uuid.uuid4().hex if force else "",
             )
             existing = conn.execute(
-                "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (key,)
+                "SELECT status FROM jobs WHERE dedupe_key = ? LIMIT 1", (key,)
             ).fetchone()
+            # **A finished job holding the key is what `--reprose` could not survive.**
+            # Measured on the Pi on 2026-09-22: 48 of a 50-row selection were held by a
+            # job in `done`, so the pass queued 2 and would have queued 2 for ever --
+            # those rows keep their angle, so they sort to the front of the next pass
+            # and collide with the same key again. 54 thermal pauses in one day is how
+            # a score job completes having written nothing.
+            #
+            # `--force` is the documented escape for "a job ran but achieved nothing",
+            # because in general that is undetectable. **Here it is not**: the row was
+            # selected by the reprose predicate, which is precisely the statement that
+            # the lead still carries an angle from an older build. The selection is the
+            # detector, so this path does not need a human to say "anyway".
+            #
+            # Narrow deliberately. A `pending` or `in_flight` job holding the key is the
+            # *other* reading of a low `queued` -- work already waiting -- and noncing
+            # past that would queue a second copy of a job the worker is about to run.
+            if reprose and existing is not None and str(existing["status"]) in _SPENT:
+                key = score_dedupe_key(
+                    domain, row["newest"], fingerprint, prose_ver, uuid.uuid4().hex
+                )
+                existing = None
             queue.enqueue(
                 SCORE_KIND,
                 {"canonical_domain": domain},
