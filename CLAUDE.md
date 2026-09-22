@@ -2487,6 +2487,44 @@ dedupe keys, and the backlog printed beside it moved 214 -> 211. That is precise
 "`queued 0` has a second way to mean nothing is wrong" case the two-number line was
 added for: **the pair says "waiting", where either number alone reads as "stuck".**
 
+**Skipping the model for a vetoed lead left it camped at the head of every repair
+pass.** The fix one commit earlier is right -- `prepare` must not spend ~18 s writing
+prospect-facing copy for a company the gate refuses -- but it means no angle is ever
+written, so the `CASE` preserves `angle_version`, and `--reprose` selects that row on
+every pass **for ever** while ranking its broken angle *first*. 13 such leads is a
+quarter of a 50-row pass, permanently, with real repairs behind them.
+
+The earlier measurement said those 13 were "about four minutes of decode, therefore
+noise", and that arithmetic was answering the wrong question. **The cost is not decode,
+it is slots in a bounded pass, and it does not end.** Worse, `reprose_backlog` reported
+them as unsendable after every pass with no command in the system able to reduce the
+number -- the `dead_letter` shape exactly, where an append-only count held `/healthz`
+degraded over four jobs buried by bugs already fixed. **A number that can never fall is
+one the operator learns to skip.**
+
+`_needs_repair` is "the guard refuses this angle **and** the Dispatcher would send the
+lead". Ranked last rather than filtered out of the stale set, because "carries an angle
+from an older build" stays true of them and the first number is meant to describe the
+corpus.
+
+`_blocked` was a method on the Dispatcher, so the third reader had to build a
+Dispatcher it had no use for -- `withheld_angles.py` did exactly that, with a transport
+that raises on any request. `block_reason` and `blocked_subjects` are module-level now,
+the sets read once per scan rather than per row (the `_is_unsendable` 759x lesson), and
+the report no longer constructs a sender to ask a question.
+
+**The test that found this first proved nothing, and passed.** It asserted the blocked
+lead *left* the backlog; it did, because `commit` recomputes `recommended_offer`, so
+the hand-set `ai_llm_assessment` came back `snapshot_free` and the same angle stopped
+being a free claim the guard refuses. **The fixture was overwritten by the pipeline,
+which is the eighth instance of a test whose input the pipeline does not produce**,
+after `discovered_by`, `enqueue_stale_extractions`, the HN mock, the free-offer flag,
+`test_a_rescored_corpus_reports_current`, the `angle_version` stamp and the reprose
+ordering. What settled it was a twenty-line probe that ran the real Scorer twice and
+printed the row back -- and it showed the row still sitting in the stale set with
+`prosed = 0`, which is the actual defect. **Reading the row cost one command; the test
+would have shipped a conclusion that was backwards.**
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

@@ -825,6 +825,10 @@ def _stale_rows(
         # text comes back and `_is_unsendable` ranks it. At most one lead row per
         # domain, so the bare columns under GROUP BY are unambiguous.
         "l.outreach_angle AS angle, l.recommended_offer AS offer, c.country AS country, "
+        # Everything `block_reason` needs, so the ranking can tell a broken angle that
+        # is worth eighteen seconds from one on a lead the Dispatcher refuses outright.
+        "l.lead_id AS lead_id, l.compliance AS compliance, "
+        "c.canonical_domain AS canonical_domain, "
         "MIN(COALESCE(l.scoring_version, '') = ?) AS calibrated, "
         # Angle-less *and* written by an older prose build. Both halves are load
         # bearing: without the first this re-decodes angles that are already fine,
@@ -910,6 +914,34 @@ def _is_unsendable(row: sqlite3.Row, config: ScoringConfig | None = None) -> boo
     )
 
 
+def _needs_repair(
+    row: sqlite3.Row,
+    config: ScoringConfig | None,
+    suppressed: frozenset[str],
+    quarantined: frozenset[str],
+) -> bool:
+    """An angle the guard refuses, on a lead that could actually be sent.
+
+    The second half is not a refinement, it is what stops a slot leak. A vetoed lead
+    never gets an angle written -- `prepare` skips the model for it, correctly -- so
+    `angle_version` never moves and the row stays in the reprose candidate set for
+    ever. Ranked as unsendable it then sorts to the *front* of every bounded pass from
+    now until the end: 13 such leads is a quarter of a 50-row pass, permanently, while
+    real repairs wait behind them.
+
+    It is also a number that can never fall. `reprose_backlog` would report those 13 as
+    unsendable after every pass, and no command in the system could reduce it -- the
+    `dead_letter` defect exactly, where an append-only count held `/healthz` degraded
+    over four jobs buried by bugs that were already fixed. **A probe that stays red
+    after the fault is gone is one you learn to ignore.**
+    """
+    from cindraleads.agents.dispatcher import block_reason
+
+    if not _is_unsendable(row, config):
+        return False
+    return not block_reason(row, suppressed, quarantined)
+
+
 def enqueue_stale_scores(
     store: Store,
     queue: Any,
@@ -977,7 +1009,14 @@ def enqueue_stale_scores(
         limit=0 if reprose else limit,
     )
     if reprose:
-        rows = sorted(rows, key=lambda row: not _is_unsendable(row, scoring))
+        # Local for the same reason `_is_unsendable`'s import is: the Dispatcher reads
+        # `DERIVED_TRIGGERS` out of this module.
+        from cindraleads.agents.dispatcher import blocked_subjects
+
+        suppressed, quarantined = blocked_subjects(store.conn)
+        rows = sorted(
+            rows, key=lambda row: not _needs_repair(row, scoring, suppressed, quarantined)
+        )
         if limit:
             rows = rows[:limit]
 
@@ -1058,7 +1097,11 @@ def reprose_backlog(
         reprose=True,
         limit=0,
     )
-    return len(rows), sum(1 for row in rows if _is_unsendable(row, scoring))
+    from cindraleads.agents.dispatcher import blocked_subjects
+
+    suppressed, quarantined = blocked_subjects(store.conn)
+    repairs = sum(1 for row in rows if _needs_repair(row, scoring, suppressed, quarantined))
+    return len(rows), repairs
 
 
 # Failures that will plausibly answer differently later. A schema violation from the

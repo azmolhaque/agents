@@ -22,20 +22,17 @@ Reads the database and writes nothing.
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
 from collections import Counter
 
-import httpx
-
 from cindraleads.agents.dispatcher import (
-    Dispatcher,
     _free_claim_is_backed,
     angle_withheld_reason,
+    block_reason,
+    blocked_subjects,
 )
 from cindraleads.agents.scorer import prose_version
 from cindraleads.config import settings
-from cindraleads.discord import DiscordWebhook
 from cindraleads.scoring import ScoringConfig
 from cindraleads.store import Store
 
@@ -47,12 +44,8 @@ def main() -> int:
     parser.add_argument("--examples", type=int, default=6, help="rows to print per reason")
     args = parser.parse_args()
 
-    def _refuse(request: httpx.Request) -> httpx.Response:
-        raise AssertionError(f"withheld_angles must never post: {request.url}")
-
     cfg = settings()
     store = Store(cfg.db_file, migrations_dir=cfg.migrations_path)
-    client = httpx.AsyncClient(transport=httpx.MockTransport(_refuse))
     try:
         # Read once. `_free_claim_is_backed` loads this when it is not handed one, and
         # over a thousand rows that is a thousand YAML parses.
@@ -72,18 +65,11 @@ def main() -> int:
             ).fetchall()
         ]
 
-        # The real `_blocked`, borrowed the way `preview_card.py` borrows `read_lead`:
-        # a transport that raises on any request and a non-empty `webhooks` so
-        # `__post_init__` does not read the configured secrets. It needs only
-        # `compliance` and `canonical_domain` off the row, so `read_lead` -- which
-        # assembles triggers and evidence per lead -- is not worth paying for a
-        # thousand times.
-        reader = Dispatcher(
-            store=store,
-            webhook=DiscordWebhook(client=client),
-            config=cfg,
-            webhooks={"_report_never_posts": ""},
-        )
+        # The real dispatch predicate, read once rather than per row -- it was a method
+        # on the Dispatcher, so this report used to build one with a transport that
+        # raises on any request just to borrow it. A reporting tool that has to
+        # construct a sender to ask a question is one keystroke from being a sender.
+        suppressed, quarantined = blocked_subjects(store.conn)
         for row in rows:
             row["reason"] = (
                 angle_withheld_reason(
@@ -98,9 +84,8 @@ def main() -> int:
                 or SENDABLE
             )
             row["stale"] = row["stamp"] != current
-            row["blocked"] = reader._blocked(row)
+            row["blocked"] = block_reason(row, suppressed, quarantined)
     finally:
-        asyncio.run(client.aclose())
         store.close()
 
     if not rows:
@@ -127,16 +112,16 @@ def main() -> int:
         "  backlog one.\n"
     )
 
-    # Decode spent on a lead that can never reach a card is decode spent twice over:
-    # `--reprose` puts unsendable angles at the front, and `arxiv.org` -- compliance
-    # VETO, refused by the Dispatcher since the guard shipped -- sits at the top of
-    # this very report at Tier A 74. Rewriting its angle costs ~18 s and produces
-    # nothing. Counted rather than assumed, because one such lead is noise and fifty
-    # is a wasted pass.
+    # The count that argued for `_needs_repair`. These sat at the head of every
+    # `--reprose` pass and could never leave it: a vetoed lead skips the model, so no
+    # angle is written, so `angle_version` never moves. 13 of them was read as four
+    # minutes of decode and dismissed -- but the cost is not decode, it is 13 of every
+    # 50 slots, for ever, and a backlog number that can never fall. `--reprose` now
+    # ranks them last and the backlog no longer counts them; this line is what says so.
     doomed = [row for row in rows if row["reason"] != SENDABLE and row["blocked"]]
     if doomed:
         print(f"\n  of the withheld angles, {len(doomed)} belong to a lead the Dispatcher")
-        print("  refuses anyway -- re-prosing them buys nothing:")
+        print("  refuses anyway -- `--reprose` ranks these last and does not count them:")
         for reason, count in Counter(str(row["blocked"]) for row in doomed).most_common():
             print(f"    {count:>5}  {reason}")
     else:

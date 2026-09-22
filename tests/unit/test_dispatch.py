@@ -2236,6 +2236,12 @@ def test_every_caller_hands_the_unsendable_check_a_config():  # type: ignore[no-
     `DEFAULT_RESCORE_LIMIT`'s test reads `cli.py`: the function is correct and the
     default is deliberate, so a caller that quietly stops passing the argument breaks
     nothing visible and no test would otherwise notice. It only gets slower.
+
+    `_needs_repair` wraps it and is what the two row loops call now, so the config has
+    to be threaded one level further. The check follows the wrapper rather than pinning
+    a count on the inner name -- which is what a hand-maintained list of callers would
+    have done, and is how `test_the_prompt_asks_for_nothing_the_scorer_does_not_supply`
+    restated the code from the same memory as the code.
     """
     import ast
     from pathlib import Path
@@ -2246,14 +2252,14 @@ def test_every_caller_hands_the_unsendable_check_a_config():  # type: ignore[no-
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "_is_unsendable"
+        and node.func.id in {"_is_unsendable", "_needs_repair"}
     ]
 
-    assert len(calls) == 2, f"expected the two known callers, found {len(calls)}"
+    assert len(calls) == 3, f"expected the wrapper and its two callers, found {len(calls)}"
     for call in calls:
-        assert len(call.args) == 2, (
-            f"_is_unsendable at line {call.lineno} is not handed a config, so it will "
-            "re-read scoring.yaml for every row it is asked about"
+        assert len(call.args) >= 2, (
+            f"{getattr(call.func, 'id', '?')} at line {call.lineno} is not handed a "
+            "config, so it will re-read scoring.yaml for every row it is asked about"
         )
 
 
@@ -2415,3 +2421,74 @@ def test_an_allowed_lead_still_reaches_the_model(rig):  # type: ignore[no-untype
 
     assert llm.calls == 1
     assert store.conn.execute("SELECT outreach_angle FROM leads").fetchone()["outreach_angle"]
+
+
+def test_a_lead_nothing_can_send_never_reaches_the_front_of_a_pass(store):  # type: ignore[no-untyped-def]
+    """A vetoed lead's broken angle must not hold a slot at the head of every pass.
+
+    It cannot leave on its own. `prepare` skips the model for a lead the gate vetoes
+    -- correctly, that was the point of moving compliance ahead of prose -- so
+    `_upsert_lead` writes an empty angle, the `CASE` preserves `angle_version`, and the
+    row stays in the reprose candidate set for ever. Ranked by the stored angle alone
+    it then sorts *first* on every bounded pass from now until the end. Measured on the
+    Pi on 2026-09-22: 13 such leads, which is a quarter of a 50-row pass, permanently,
+    while real repairs wait behind them.
+
+    And `reprose_backlog` would report those 13 as unsendable after every pass, with no
+    command in the system able to reduce the number -- the `dead_letter` shape, where
+    an append-only count held `/healthz` degraded over jobs buried by bugs that were
+    already fixed.
+
+    The first version of this test asserted the lead *left* the backlog and passed
+    against the deployed code, which was the fixture being overwritten rather than the
+    claim being true: `commit` re-computes `recommended_offer`, so a hand-set
+    `ai_llm_assessment` came back as `snapshot_free` and the same angle stopped being
+    a free claim the guard refuses. **Eighth instance of a test whose input the
+    pipeline does not produce.** The probe that settled it read the row back.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores, reprose_backlog
+    from cindraleads.queue import JobQueue
+
+    # The vetoed lead is the newer sighting, so under the old ranking -- where both are
+    # simply "unsendable" and the SQL tiebreak decides -- it sorts first.
+    _stale_lead(store, "vetoed.io", angle=_UNSENDABLE, offer="ai_llm_assessment", age_days=0)
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment", age_days=9)
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET compliance = ? WHERE canonical_domain = 'vetoed.io'",
+            (json.dumps({"passed": False, "basis": "legitimate_interest_b2b"}),),
+        )
+
+    assert reprose_backlog(store) == (2, 1), (
+        "a lead the Dispatcher refuses is still stale, and is not work anyone can do"
+    )
+
+    assert enqueue_stale_scores(store, JobQueue(store), reprose=True, limit=1) == 1
+    queued = [
+        json.loads(row["payload"])["canonical_domain"]
+        for row in store.conn.execute("SELECT payload FROM jobs WHERE kind = 'score.company'")
+    ]
+    assert queued == ["broken.io"], (
+        "the bounded pass spent its one slot on a lead that can never be dispatched"
+    )
+
+
+def test_a_suppressed_domain_leaves_the_repair_queue_too(store):  # type: ignore[no-untyped-def]
+    """The other two questions `block_reason` asks, and the reason it asks all three.
+
+    A stored verdict answers "was this allowed when we scored it". Suppression and
+    quarantine answer "may I write to them *now*" and change without moving a lead row
+    -- `suppressed_domains` is deliberately outside `calibration_version` -- so a
+    suppressed company keeps its tier, its angle and its place in this backlog for
+    ever unless the repair path asks the table live.
+    """
+    from cindraleads.agents.scorer import reprose_backlog
+
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT INTO suppression_list (entry_id, kind, value, reason, created_at) "
+            "VALUES ('s1','domain','broken.io','not a prospect','2026-09-22T00:00:00Z')"
+        )
+
+    assert reprose_backlog(store) == (1, 0)

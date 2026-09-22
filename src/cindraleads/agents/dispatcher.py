@@ -53,6 +53,8 @@ __all__ = [
     "DigestReport",
     "DispatchOutcome",
     "Dispatcher",
+    "block_reason",
+    "blocked_subjects",
     "build_card",
     "idempotency_key",
     "send_digest",
@@ -265,44 +267,8 @@ class Dispatcher:
         return row is not None
 
     def _blocked(self, lead: dict[str, Any]) -> str:
-        """Why this lead may not be dispatched, or "" if it may.
-
-        **`arxiv.org` rendered `⚖️ Compliance: VETO` on a Tier A card at score 74 and
-        nothing refused to send it.** `compliance_passed` was read, printed, and never
-        acted on: the gate quarantines a vetoed lead while `_upsert_lead` still stores
-        the tier the arithmetic computed, so the row keeps Tier A and every dispatch
-        predicate here is about tier. The card said the right thing in a field nothing
-        read.
-
-        Three questions, and they are genuinely different, which is why all three are
-        asked. The stored verdict answers "was this allowed when we scored it"; the
-        quarantine and suppression tables answer "may I write to them *now*" and change
-        without moving a single lead row -- `suppressed_domains` is deliberately outside
-        `calibration_version` for exactly that reason, so a suppressed company keeps its
-        tier forever and no rescore will ever come.
-
-        `worklist` already joins both tables live and says why in its own comment. The
-        Dispatcher is the other reader of the same question and it joined neither --
-        which is how a suppression added after a lead was scored stopped the operator's
-        call list and not the Discord card.
-        """
-        compliance = json.loads(lead["compliance"] or "{}")
-        if not bool(compliance.get("passed", True)):
-            return "compliance veto"
-        domain = str(lead["canonical_domain"])
-        row = self.store.conn.execute(
-            "SELECT "
-            "  (SELECT 1 FROM suppression_list "
-            "     WHERE kind = 'domain' AND value = ?) AS suppressed, "
-            "  (SELECT 1 FROM quarantine "
-            "     WHERE subject_kind = 'lead' AND subject_id = ?) AS quarantined",
-            (domain, str(lead["lead_id"])),
-        ).fetchone()
-        if row and row["suppressed"]:
-            return "domain suppressed"
-        if row and row["quarantined"]:
-            return "lead quarantined"
-        return ""
+        """Why this lead may not be dispatched, or "" if it may."""
+        return block_reason(lead, *blocked_subjects(self.store.conn))
 
     def read_lead(self, lead_id: str) -> dict[str, Any] | None:
         row = self.store.conn.execute(
@@ -662,6 +628,61 @@ _FREE_CLAIM = re.compile(
     r"|বিনামূল্যে|মুক্ত|ফ্রি|নিখরচায়|বিনা খরচে|বিনা মূল্যে",
     re.IGNORECASE,
 )
+
+
+def blocked_subjects(conn: sqlite3.Connection) -> tuple[frozenset[str], frozenset[str]]:
+    """The suppressed domains and quarantined lead ids, read once.
+
+    Two small tables, and both are read per lead by the Dispatcher because it handles
+    one lead at a time. The Scorer's reprose ranking walks a thousand rows, so it reads
+    them once and asks `block_reason` per row -- the `_is_unsendable` lesson exactly,
+    where loading `scoring.yaml` inside the row loop cost 759x.
+    """
+    suppressed = frozenset(
+        str(r["value"]).strip().lower()
+        for r in conn.execute("SELECT value FROM suppression_list WHERE kind = 'domain'")
+    )
+    quarantined = frozenset(
+        str(r["subject_id"])
+        for r in conn.execute("SELECT subject_id FROM quarantine WHERE subject_kind = 'lead'")
+    )
+    return suppressed, quarantined
+
+
+def block_reason(
+    lead: Any,
+    suppressed: frozenset[str],
+    quarantined: frozenset[str],
+) -> str:
+    """Why this lead may not be dispatched, or "" if it may.
+
+    **`arxiv.org` rendered `⚖️ Compliance: VETO` on a Tier A card at score 74 and
+    nothing refused to send it.** `compliance_passed` was read, printed, and never
+    acted on: the gate quarantines a vetoed lead while `_upsert_lead` still stores the
+    tier the arithmetic computed, so the row keeps Tier A and every dispatch predicate
+    was about tier. The card said the right thing in a field nothing read.
+
+    Three questions, and they are genuinely different, which is why all three are
+    asked. The stored verdict answers "was this allowed when we scored it"; the
+    quarantine and suppression tables answer "may I write to them *now*" and change
+    without moving a single lead row -- `suppressed_domains` is deliberately outside
+    `calibration_version` for exactly that reason, so a suppressed company keeps its
+    tier forever and no rescore will ever come.
+
+    Module-level because it now has three readers: the Dispatcher, the withheld-angles
+    report, and the reprose ranking that must not spend a bounded pass repairing copy
+    for a lead nothing will ever send. A method on the Dispatcher meant the third
+    reader either built a Dispatcher it had no use for or wrote its own copy, and this
+    project has paid for the second of those seven times.
+    """
+    compliance = json.loads(lead["compliance"] or "{}")
+    if not bool(compliance.get("passed", True)):
+        return "compliance veto"
+    if str(lead["canonical_domain"]).strip().lower() in suppressed:
+        return "domain suppressed"
+    if str(lead["lead_id"]) in quarantined:
+        return "lead quarantined"
+    return ""
 
 
 #: Why an angle must not reach a prospect. Phrased for a human, because the call list
