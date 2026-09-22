@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 __all__ = [
     "DuplicateMatch",
     "canonical_domain",
+    "display_name_or_domain",
     "is_platform_url",
     "name_similarity",
     "rapidfuzz_available",
@@ -468,6 +469,44 @@ def is_platform_url(url: str) -> bool:
     except ValueError:
         return False
     return bool(host) and _is_platform(host.split("@")[-1].split(":")[0])
+
+
+# Strings a model writes when it found no name, which are *not* absent and so survive
+# every `IS NOT NULL AND <> ''` filter in the system. `null · bopbook.com` reached a
+# near-miss list as the literal four characters, and a card built from that row greets
+# a stranger as "null".
+#
+# Deliberately short and unambiguous. The temptation is to add "test" and "company";
+# both are real company names, and this project has already killed two rules for
+# exactly that -- bare "media" would veto a social-media platform, bare "foundation" a
+# "Foundation Health". A placeholder here has to be a word no one would trade under.
+_PLACEHOLDER_NAMES = frozenset(
+    {"null", "none", "nil", "n/a", "na", "nan", "undefined", "unknown", "untitled"}
+)
+
+
+def display_name_or_domain(name: str | None, domain: str) -> str:
+    """The name to show a human, or the domain when what we stored is a placeholder.
+
+    Derived at read time rather than repaired in the column, the same choice as
+    `band_from_open_roles` and `country_from_domain`: editing the list then applies to
+    the whole corpus at once instead of leaving rows written under the old rule for
+    `RETIREMENT_RULES` to chase.
+
+    Three readers -- the worklist, the card, and the prose prompt -- and the prompt is
+    the one that matters, because `display_name` is handed to the model and an opening
+    line of "null published a mail-authentication policy with gaps" is a card nobody
+    can send.
+    """
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return domain
+    if cleaned.strip(".-_ \u2013\u2014").lower() in _PLACEHOLDER_NAMES:
+        return domain
+    # A name made only of punctuation is the same failure wearing different bytes.
+    if not any(ch.isalnum() for ch in cleaned):
+        return domain
+    return cleaned
 
 
 def normalize_name(name: str) -> str:

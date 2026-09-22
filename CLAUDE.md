@@ -27,7 +27,7 @@ make schema      # regenerate db/schema.sql from db/migrations/
 make fixtures    # gather tests/fixtures/html/ (needs open outbound HTTPS)
 make bench       # Phase 1 benchmark -> docs/BENCHMARKS.md (RUN ON THE PI)
 
-cindra db migrate | db status | db backup <path>
+cindra db migrate | db status | db schema-dump | db backup <path>
 cindra queue status | queue reclaim | queue enqueue --kind K
 cindra harvest [--dry-run] [--limit N]   # Scout -> durable harvest jobs
 cindra pipeline                          # harvest -> extract -> resolve -> enrich -> score -> dispatch
@@ -37,16 +37,25 @@ cindra health                            # what the thermal governor sees
 cindra queue release [--kind K]          # pull deferred jobs forward
 cindra status                            # candidates, companies, live triggers
 cindra maintain [--dry-run] [--no-network]  # nightly: retire, decay, resample, purge
-cindra reconcile                         # enqueue-only: lost/superseded extracts, unenriched, stale scores
+cindra reconcile [--force] [--reprose]   # enqueue-only: lost/superseded extracts, unenriched, stale scores
 cindra explain [--near-misses N]         # scores, penalties, and yield per query template
 cindra digest [--dry-run] [--limit N]    # batch the Tier C backlog to Discord
 cindra serve [--port 9109]               # /healthz, /metrics, HTML view (localhost)
+cindra worklist [--limit N] [--tier A,B] # the call list: who to email, and what to say
+cindra suppress <domain> [--reason R] [--remove] [--list]  # never contact them again
 cindra feedback <lead_id> good|bad        # manual verdict, same write path as the bot
 cindra feedback-bot                       # Discord gateway client (optional unit)
 cindra precision-report [--write]         # of what we sent, how much was worth sending
 cindra critic [--write]                   # proposals. Applies none of them.
 cindra acceptance [--hours 72] [--write]  # what the unattended run actually proved
+cindra selftest prepare | selftest verify # what `make gate` drives
+cindra version                            # build and pipeline version
 ```
+
+`test_every_command_is_documented_and_every_documented_command_exists` reads this block
+against the real Typer app, in both directions and with no exemption list. The reverse
+half is the one that was failing: `suppress` and `worklist` were named repeatedly in the
+prose below while this block -- the place anyone looks for the list -- omitted them.
 
 ## Conventions
 
@@ -77,13 +86,29 @@ These are decided; do not "fix" them back. Rationale in `PLAN.md` Part 2.
 ```
 config/*.yaml   behaviour - edit these, not code       prompts/        all LLM prompts
 db/migrations/  schema source of truth                 db/schema.sql   generated, do not edit
-src/cindraleads/  pipeline                             mcp_servers/    tools (library + MCP wrapper)
-tests/golden/   regression fixtures for prompt changes docs/RUNBOOK.md what to do at 3am
+src/cindraleads/  pipeline                             docs/RUNBOOK.md what to do at 3am
+scripts/        instruments: render the real thing     tests/          unit, integration, chaos
 ```
+
+**Not built, and listed here because this map used to claim they were:** `tests/golden/`
+and `mcp_servers/`. The map is the first thing anyone reads to orient, and it pointed at
+two directories that do not exist -- one of them backing a testing rule below that
+therefore could not be followed, and was not, when `outreach_angle.md` changed on
+2026-09-22. `test_every_path_in_the_file_map_exists` is the check; it reads this block.
 
 ## Testing rules
 
-- Never change a prompt without re-running the golden fixtures.
+- **A prompt change is guarded structurally, not by output fixtures.** There are no
+  golden fixtures. What exists: the placeholder check in both directions
+  (`test_the_prompt_asks_for_nothing_the_scorer_does_not_supply`, read out of the source
+  with `ast`), the single-call-site check (`test_nothing_else_builds_the_outreach_prompt_itself`),
+  the prompt-against-config checks (`test_the_prompt_does_not_forbid_what_the_offer_text_contains`,
+  `test_the_prompt_requires_the_price_the_dispatcher_checks_for`), the overstatement ban
+  on `proof`, and the rule that every optional free-text field in `CompanyExtraction` is
+  named in its prompt. **None of them looks at what a real model returns** -- that is the
+  Phase 3 accuracy gate, still unmeasured. Render the change with
+  `scripts/preview_angle.py` and `scripts/preview_card.py` before shipping it; every
+  prose defect this project has shipped was visible there and invisible in the code.
 - Every rule in the compliance section gets its own test. CI fails on a missing one.
 - The durability drill (`make gate`) spawns real processes and sends real SIGKILLs.
   If you make it pass by weakening it, you have deleted the reason the queue exists.
@@ -2122,6 +2147,59 @@ was deferred twelve times before the ladder ended -- the documented "past that t
 governor is not having a spell, it is the steady state". Worth writing down because a
 `dead` counter ticking 32 -> 33 reads as a fault, and `cindra status` now prints the
 date and state beside it precisely so the answer takes one command.
+
+**The best contact was chosen by the alphabet, and the docstring above it said
+otherwise.** `_best_contact` broke ties among role accounts with `ORDER BY ... email`,
+so `abuse@ < billing@ < hello@ < legal@ < security@` -- while the docstring two lines
+up singles out `security@` as the one role account that is *good*, because RFC 9116
+makes it the mailbox the company nominated for exactly this conversation. **The comment
+named the principle and the SQL encoded the alphabet.** That is how ThunderPhone's best
+contact came out `legal@`, noted on the first call list and left unfixed.
+
+The bottom of that ordering is not merely a worse hit rate. `legal@`, `abuse@` and
+`dmca@` are complaint desks: an unsolicited commercial mail there is the fastest route
+to a hostile reply, and at a company with a real abuse desk it may be filed as precisely
+the thing that desk exists to log. `support@` and `careers@` are the milder version --
+read by someone who cannot act on it.
+
+`mailbox_rank` is a lookup on the local part, ranked in Python because a `CASE` over
+forty of them in SQL is a lookup table written in the wrong language and a domain has a
+handful of contacts. **Ranked, never filtered:** a company that publishes only `legal@`
+is still reachable, and the worklist marks it `[!] complaints/wrong desk` rather than
+dropping the lead -- the same call as showing a borrowed evidence URL and marking it.
+Unlisted sorts *between* the good desks and the wrong ones, because unknown beats a desk
+we know is wrong and loses to one we know is right.
+
+**`null` is a name that survives every `IS NOT NULL` filter in the system.** The literal
+four-character string reached a near-miss list as `null · bopbook.com`, and
+`row["display_name"] or row["canonical_domain"]` passes it straight through because it
+is truthy. Three readers -- the worklist, the card and the prose prompt -- and the
+prompt is the one that matters: `display_name` is handed to the model, so the opening
+line becomes "null published a mail-authentication policy with gaps in it".
+
+`display_name_or_domain` is derived at read time rather than repaired in the column, the
+`band_from_open_roles` and `country_from_domain` shape, so editing the list applies to
+the whole corpus at once. The list is deliberately short: "test" and "company" are both
+real company names, and this project has already killed bare "media" (a social-media
+platform is a prospect) and bare "foundation" (so is a "Foundation Health"). **A
+placeholder here has to be a word nobody would trade under.**
+
+**`tests/golden/` and `mcp_servers/` never existed, and a testing rule depended on one
+of them.** The file map above -- the first thing anyone reads to orient -- listed both
+for the life of the project, and "Never change a prompt without re-running the golden
+fixtures" was therefore an instruction that could not be followed, and was not, when
+`outreach_angle.md` changed the day before. The rule now describes what actually guards
+a prompt change, which is a set of structural checks and two preview scripts, **none of
+which looks at what a real model returns.**
+
+The command block had the same drift in the reverse direction: `cindra suppress` and
+`cindra worklist` are named repeatedly in the prose here while the block anyone reads
+for the list of commands had neither. Both blocks are now read by tests against the
+repository and the real Typer app, in both directions and with no exemption list --
+because an exemption list is a second place to register a command and therefore a second
+place to forget one, which `auth_tokens_for` already settled by resolving tokens by
+convention. **A map nobody checks is a map that describes the project as it was
+imagined.**
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already

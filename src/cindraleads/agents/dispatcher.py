@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from typing import Any, get_args
 
 from cindraleads.config import Settings, load_yaml, settings
+from cindraleads.dedupe import display_name_or_domain
 from cindraleads.discord import (
     CardData,
     DiscordWebhook,
@@ -466,7 +467,7 @@ def _card_data(lead: dict[str, Any]) -> CardData:
     return CardData(
         lead_id=str(lead["lead_id"]),
         canonical_domain=str(lead["canonical_domain"]),
-        display_name=str(lead["display_name"]),
+        display_name=display_name_or_domain(lead["display_name"], str(lead["canonical_domain"])),
         tier=str(lead["tier"]),
         score=int(lead["score"]),
         offer=str(lead["recommended_offer"]),

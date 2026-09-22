@@ -343,3 +343,89 @@ def test_their_own_page_carries_no_warning(store: Any) -> None:
 
     assert "https://traccia.ai/" in rendered
     assert "not their page" not in rendered
+
+
+# ------------------------------------------------- which desk we are writing to
+
+
+def test_security_beats_legal_even_though_the_alphabet_disagrees(store: Any) -> None:
+    """The tiebreak among role accounts used to be `ORDER BY email`.
+
+    `abuse@` < `hello@` < `legal@` < `security@`, so the one role account this
+    function's own docstring calls *good* -- RFC 9116 makes it the mailbox the company
+    nominated for exactly this conversation -- sorted last. ThunderPhone's best contact
+    came out `legal@`. The comment named the principle and the ORDER BY encoded the
+    alphabet.
+    """
+    _lead(
+        store,
+        "acme.io",
+        emails=(
+            ("legal@acme.io", "role_account", ""),
+            ("security@acme.io", "role_account", ""),
+        ),
+    )
+
+    report = worklist(store)
+
+    assert report.items[0].email == "security@acme.io"
+    assert not report.items[0].contact_is_wrong_desk
+
+
+def test_a_complaints_desk_is_shown_and_marked_rather_than_dropped(store: Any) -> None:
+    """`legal@` may be the only address a company publishes, and a lead you cannot see
+    is worse than one you can see is awkward. What the operator must not do is paste a
+    cold pitch into a complaints desk without noticing -- an unsolicited commercial mail
+    there is the fastest route to a hostile reply. Same call as the borrowed evidence
+    URL: marked, not blanked."""
+    _lead(store, "acme.io", emails=(("legal@acme.io", "role_account", ""),))
+
+    report = worklist(store)
+
+    assert report.items[0].email == "legal@acme.io", "the lead is still reachable"
+    assert report.items[0].contact_is_wrong_desk
+    assert "complaints/wrong desk" in render_worklist(report)
+
+
+def test_an_ordinary_front_door_carries_no_warning(store: Any) -> None:
+    """A warning on every row is one nobody reads -- the reason the platform-evidence
+    marker is scoped the way it is."""
+    _lead(store, "acme.io", emails=(("hello@acme.io", "role_account", ""),))
+
+    report = worklist(store)
+
+    assert not report.items[0].contact_is_wrong_desk
+    assert "complaints/wrong desk" not in render_worklist(report)
+
+
+def test_a_named_human_still_outranks_every_desk(store: Any) -> None:
+    """The bound. `security@` is the best *role* account, not better than a person --
+    `has_named_contact` is worth +10 of the reachability component for a reason."""
+    _lead(
+        store,
+        "acme.io",
+        emails=(
+            ("security@acme.io", "role_account", ""),
+            ("sarah@acme.io", "verified", "Sarah Chen"),
+        ),
+    )
+
+    report = worklist(store)
+
+    assert report.items[0].email == "sarah@acme.io"
+
+
+def test_a_placeholder_name_is_not_shown_to_a_human(store: Any) -> None:
+    """`null · bopbook.com` reached a near-miss list as the literal four characters --
+    not NULL, so it survives every `IS NOT NULL AND <> ''` filter in the system. A card
+    built from that row greets a stranger as "null"."""
+    _lead(store, "bopbook.com")
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE companies SET display_name = 'null' WHERE canonical_domain = ?",
+            ("bopbook.com",),
+        )
+
+    report = worklist(store)
+
+    assert report.items[0].display_name == "bopbook.com"

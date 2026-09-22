@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from cindraleads.dedupe import display_name_or_domain
 from cindraleads.store import Store
 
 __all__ = ["WorkItem", "render_worklist", "worklist"]
@@ -49,6 +50,9 @@ class WorkItem:
     full_name: str = ""
     # True when the only proof we hold for the top trigger is somebody else's page.
     evidence_is_platform: bool = False
+    # True when the best address we have is a desk that cannot act on a cold email --
+    # support, careers, or worse, a complaints mailbox like `legal@` or `abuse@`.
+    contact_is_wrong_desk: bool = False
     angle: str = ""
     trigger: str = ""
     evidence_url: str = ""
@@ -136,12 +140,15 @@ def worklist(
             WorkItem(
                 lead_id=str(row["lead_id"]),
                 canonical_domain=str(row["canonical_domain"]),
-                display_name=str(row["display_name"] or row["canonical_domain"]),
+                display_name=display_name_or_domain(
+                    row["display_name"], str(row["canonical_domain"])
+                ),
                 score=int(row["score"]),
                 tier=str(row["tier"]),
                 offer=str(row["recommended_offer"] or ""),
                 email=str(contact["email"]),
                 email_status=str(contact["email_status"] or ""),
+                contact_is_wrong_desk=mailbox_rank(str(contact["email"])) >= WRONG_DESK_RANK,
                 role_title=str(contact["role_title"] or ""),
                 full_name=str(contact["full_name"] or ""),
                 angle=str(row["outreach_angle"] or ""),
@@ -156,24 +163,121 @@ def worklist(
     return Worklist(items=items[:limit], reachable=len(items), unreachable=unreachable)
 
 
+# What a mailbox is *for*, which is not what the alphabet says about it.
+#
+# The tiebreak among role accounts used to be `ORDER BY email`, so `abuse@` beat
+# `hello@` beat `legal@` beat `security@` -- and this function's own docstring singles
+# out `security@` as the one role account that is *good*. The comment named the
+# principle and the ORDER BY encoded the alphabet, which is how ThunderPhone's best
+# contact came out `legal@`.
+#
+# The bottom of this list is not merely a worse hit rate. `legal@` and `abuse@` are
+# complaint desks: an unsolicited commercial mail there is the fastest route to a
+# hostile reply, and at a company with a real abuse desk it may be filed as precisely
+# the thing that desk exists to log.
+#
+# Ranked, never filtered. A company that publishes only `legal@` is still reachable and
+# the lead is still worth working -- the operator just has to see which desk they are
+# writing to before they send, the same call as showing a borrowed evidence URL and
+# marking it rather than blanking it.
+_MAILBOX_RANK: dict[str, int] = {
+    # RFC 9116 makes this the mailbox the company nominated for exactly this
+    # conversation. Nothing we could write to is better.
+    "security": 0,
+    "psirt": 0,
+    "security-reports": 0,
+    "secure": 0,
+    # An ordinary front door.
+    "hello": 1,
+    "hi": 1,
+    "contact": 1,
+    "info": 1,
+    "team": 1,
+    "founders": 1,
+    "sales": 1,
+    "partnerships": 1,
+    "bd": 1,
+    # 2 is everything unlisted: a person's name, or an alias we cannot judge. Unknown
+    # beats a desk we know is wrong, and loses to a desk we know is right.
+    # The wrong desk. Not harmful, just read by someone who cannot act on it.
+    "support": 3,
+    "help": 3,
+    "helpdesk": 3,
+    "careers": 3,
+    "jobs": 3,
+    "recruiting": 3,
+    "hr": 3,
+    "press": 3,
+    "media": 3,
+    "investors": 3,
+    "ir": 3,
+    "billing": 3,
+    "accounts": 3,
+    "accounting": 3,
+    "invoices": 3,
+    # Complaint and compliance desks.
+    "legal": 4,
+    "abuse": 4,
+    "dmca": 4,
+    "copyright": 4,
+    "takedown": 4,
+    "privacy": 4,
+    "gdpr": 4,
+    "dpo": 4,
+    # Never a human.
+    "postmaster": 5,
+    "noreply": 5,
+    "no-reply": 5,
+    "donotreply": 5,
+    "do-not-reply": 5,
+    "bounce": 5,
+    "mailer-daemon": 5,
+}
+_UNRANKED_MAILBOX = 2
+#: At or above this, the operator should see which desk it is before sending.
+WRONG_DESK_RANK = 3
+
+
+def mailbox_rank(email: str) -> int:
+    """How suitable this mailbox is for a first cold email. Lower is better."""
+    local = email.split("@", 1)[0].strip().lower()
+    return _MAILBOX_RANK.get(local, _UNRANKED_MAILBOX)
+
+
 def _best_contact(store: Store, domain: str) -> dict[str, Any] | None:
     """The one address to write to.
 
-    A named human first, then a verified address, then anything. `security@` is a role
-    account but a good one -- RFC 9116 makes it the mailbox the company nominated for
-    exactly this conversation -- so status decides before the local part does.
+    A named human first, then a verified address, **then the desk the mailbox belongs
+    to**, and only then the alphabet. `security@` is a role account but a good one --
+    RFC 9116 makes it the mailbox the company nominated for exactly this conversation.
+
+    Ranked in Python rather than in the ORDER BY because the judgement is about the
+    local part, and a `CASE` over forty of them in SQL is a lookup table written in the
+    wrong language. A domain has a handful of contacts; there is nothing to optimise.
     """
-    row = store.conn.execute(
-        "SELECT email, email_status, role_title, full_name FROM contacts "
-        "WHERE canonical_domain = ? AND email IS NOT NULL "
-        "ORDER BY (full_name IS NULL), "
-        "         CASE email_status WHEN 'verified' THEN 0 WHEN 'role_account' THEN 1 "
-        "                           ELSE 2 END, "
-        "         email "
-        "LIMIT 1",
-        (domain,),
-    ).fetchone()
-    return dict(row) if row else None
+    rows = [
+        dict(r)
+        for r in store.conn.execute(
+            "SELECT email, email_status, role_title, full_name FROM contacts "
+            "WHERE canonical_domain = ? AND email IS NOT NULL",
+            (domain,),
+        ).fetchall()
+    ]
+    if not rows:
+        return None
+
+    status_rank = {"verified": 0, "role_account": 1}
+
+    def rank(contact: dict[str, Any]) -> tuple[int, int, int, str]:
+        email = str(contact["email"])
+        return (
+            0 if contact["full_name"] else 1,
+            status_rank.get(str(contact["email_status"] or ""), 2),
+            mailbox_rank(email),
+            email,
+        )
+
+    return min(rows, key=rank)
 
 
 def _top_trigger(store: Store, domain: str) -> tuple[str, str, bool]:
@@ -244,7 +348,16 @@ def render_worklist(report: Worklist) -> str:
         out.append(
             f"{n:>3}. {item.score:>3} {item.tier}  {item.display_name} · {item.canonical_domain}"
         )
-        out.append(f"      {item.email}  [{who}]{extra}")
+        # Marked, not hidden, and for the same reason the borrowed evidence URL is:
+        # `legal@` may be the only address a company publishes, and a lead you cannot
+        # see is worse than one you can see is awkward. What the operator must not do
+        # is paste a sales pitch into a complaints desk without noticing.
+        desk = (
+            "  [!] complaints/wrong desk -- read before sending"
+            if item.contact_is_wrong_desk
+            else ""
+        )
+        out.append(f"      {item.email}  [{who}]{extra}{desk}")
         if item.trigger:
             # Marked, not hidden. Preferring the company's own page is only half the
             # job: when a platform link is all we hold the card still cites it, and an

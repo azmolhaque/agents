@@ -30,6 +30,7 @@ from typing import Any
 from cindraleads import PIPELINE_VERSION
 from cindraleads.compliance import ComplianceGate, LeadFacts
 from cindraleads.config import Settings, load_prompt, load_yaml, prompt_version, settings
+from cindraleads.dedupe import display_name_or_domain
 from cindraleads.dns_hygiene import hygiene_gaps
 from cindraleads.errors import ConfigError, SchemaValidationError
 from cindraleads.llm import StructuredLLM
@@ -597,7 +598,9 @@ class Scorer:
             "canonical_domain": domain,
             "contacts": contacts,
             "enriched_at": row["enriched_at"],
-            "display_name": str(row["display_name"]),
+            # The prompt is handed this, so a stored placeholder becomes an opening
+            # line reading "null published a mail-authentication policy with gaps".
+            "display_name": display_name_or_domain(row["display_name"], domain),
             "description": row["description"],
             # Stated first, inferred second, and only ever downward. This one key
             # feeds both the `employee_band_points` gradient and the
