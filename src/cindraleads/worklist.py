@@ -55,6 +55,11 @@ class WorkItem:
     contact_is_wrong_desk: bool = False
     angle: str = ""
     trigger: str = ""
+    # What the code means, in the words the prospect would recognise. The card learned
+    # this and the worklist did not: `why: T3_HIRING_SEC` is a slug shown to the person
+    # deciding whether to send, which is the position every trigger code was in before
+    # `means` existed.
+    trigger_means: str = ""
     evidence_url: str = ""
     contacts_total: int = 1
 
@@ -125,6 +130,12 @@ def worklist(
         tuple(tiers),
     ).fetchall()
 
+    # Read once. `ScoringConfig.load()` parses YAML on every call, and this is wanted
+    # twice per row.
+    from cindraleads.agents.dispatcher import _trigger_means
+
+    means = _trigger_means()
+
     items: list[WorkItem] = []
     unreachable = 0
     for row in rows:
@@ -135,7 +146,12 @@ def worklist(
             # and hiding it would make the list look like the whole opportunity.
             unreachable += 1
             continue
-        trigger, evidence, borrowed = _top_trigger(store, str(row["canonical_domain"]))
+        angle = str(row["outreach_angle"] or "")
+        # The angle decides which trigger this card is about; the weight only decides
+        # it when the text does not.
+        trigger, evidence, borrowed = _top_trigger(
+            store, str(row["canonical_domain"]), angle, means
+        )
         items.append(
             WorkItem(
                 lead_id=str(row["lead_id"]),
@@ -151,8 +167,9 @@ def worklist(
                 contact_is_wrong_desk=mailbox_rank(str(contact["email"])) >= WRONG_DESK_RANK,
                 role_title=str(contact["role_title"] or ""),
                 full_name=str(contact["full_name"] or ""),
-                angle=str(row["outreach_angle"] or ""),
+                angle=angle,
                 trigger=trigger,
+                trigger_means=means.get(trigger, ""),
                 evidence_url=evidence,
                 evidence_is_platform=borrowed,
                 contacts_total=int(row["contacts_total"] or 1),
@@ -280,8 +297,73 @@ def _best_contact(store: Store, domain: str) -> dict[str, Any] | None:
     return min(rows, key=rank)
 
 
-def _top_trigger(store: Store, domain: str) -> tuple[str, str, bool]:
-    """The heaviest live trigger and one URL that proves it.
+# Words that carry no subject. Deliberately tiny: the threshold below does the work,
+# and a long stopword list is a second place to tune something nobody measures.
+_STOPWORDS = frozenset(
+    {"have", "been", "with", "their", "your", "that", "this", "from", "they", "them", "about"}
+)
+
+# The clauses rule 2 of `outreach_angle.md` opens the *ask* with. Everything after one
+# of these is the offer, and the offer text names "security", "report" and "assessment"
+# for every lead alive -- matching against it would hand T3 or T10 every card in the
+# corpus, which is a constant wearing a discriminator's clothes.
+_ASK_MARKERS = ("i'd like to", "i would like to", "i'd love to", "we'd like to")
+
+
+def _content_words(text: str) -> set[str]:
+    cleaned = "".join(ch if (ch.isalnum() or ch == "-") else " " for ch in text.lower())
+    return {w for w in cleaned.split() if len(w) >= 4 and w not in _STOPWORDS}
+
+
+def _angle_subject(angle: str) -> str:
+    """The part of the angle that talks about *them*, before the ask."""
+    lowered = angle.lower()
+    cuts = [lowered.find(marker) for marker in _ASK_MARKERS]
+    cut = min((c for c in cuts if c >= 0), default=-1)
+    return angle[:cut] if cut > 0 else angle
+
+
+def _trigger_the_angle_argues(angle: str, codes: list[str], means: dict[str, str]) -> str:
+    """Which of these live triggers the angle actually opens with, or `""`.
+
+    `_top_trigger` returned the *heaviest* trigger and the renderer printed its
+    evidence URL directly beneath the model's prose, so Matcha's card read
+    `why: T3_HIRING_SEC` over an angle describing a mail-authentication gap: **the link
+    the reader is invited to click did not support the sentence above it.** Weight
+    answers "how much is this lead worth"; this line answers "what is this card about",
+    and one ordering was serving both questions.
+
+    Matched on the `means` phrases because those are the words the model was handed --
+    the Scorer passes `means`, never the code -- so an angle that reproduces the
+    observation reproduces most of them. Scored by distinct content words rather than
+    by substring, because the model paraphrases and a whole-phrase match would fire on
+    almost nothing.
+
+    Conservative on purpose: two distinct words and a strict winner, otherwise `""` and
+    the caller keeps the heaviest. **The asymmetry is what makes this safe to ship
+    before it is measured against the corpus** -- a wrong reclassification cites the
+    wrong trigger, which is exactly and only what the weight ordering does
+    unconditionally today, so the floor is the current behaviour and every confident
+    match is an improvement on it.
+    """
+    subject = _content_words(_angle_subject(angle))
+    if not subject:
+        return ""
+    scores = sorted(
+        ((len(_content_words(means.get(code, "")) & subject), code) for code in codes),
+        key=lambda pair: -pair[0],
+    )
+    if not scores or scores[0][0] < 2:
+        return ""
+    if len(scores) > 1 and scores[1][0] == scores[0][0]:
+        return ""  # two triggers argued equally well; the text does not choose
+    return scores[0][1]
+
+
+def _top_trigger(
+    store: Store, domain: str, angle: str = "", means: dict[str, str] | None = None
+) -> tuple[str, str, bool]:
+    """The trigger this card is *about*, and one URL that proves it.
 
     The evidence URL is the whole reason a cold email lands: "your DMARC record is
     p=none" is checkable in ten seconds, and quoting it is what separates this from a
@@ -301,7 +383,7 @@ def _top_trigger(store: Store, domain: str) -> tuple[str, str, bool]:
     silently dropped, because the operator needs to see that this trigger's proof is
     weak before they decide to send it.
     """
-    from cindraleads.agents.dispatcher import TRIGGER_ORDER
+    from cindraleads.agents.dispatcher import TRIGGER_ORDER, _trigger_means
     from cindraleads.dedupe import canonical_domain, is_platform_url
 
     rows = store.conn.execute(
@@ -314,7 +396,13 @@ def _top_trigger(store: Store, domain: str) -> tuple[str, str, bool]:
     if not rows:
         return ("", "", False)
 
-    code = str(max(rows, key=lambda r: TRIGGER_ORDER.get(str(r["code"]), 0))["code"])
+    # Only triggers we can actually cite are candidates: the whole point of this line
+    # is the URL beside it, and picking a trigger with nothing to open would trade a
+    # mismatched link for no link at all.
+    provable = sorted({str(r["code"]) for r in rows if r["url"]})
+    code = _trigger_the_angle_argues(angle, provable, _trigger_means() if means is None else means)
+    if not code:
+        code = str(max(rows, key=lambda r: TRIGGER_ORDER.get(str(r["code"]), 0))["code"])
     urls = [str(r["url"]) for r in rows if str(r["code"]) == code and r["url"]]
 
     def rank(url: str) -> int:
@@ -367,7 +455,11 @@ def render_worklist(report: Worklist) -> str:
             borrowed = (
                 "  [!] not their page -- verify before sending" if item.evidence_is_platform else ""
             )
-            out.append(f"      why: {item.trigger}  {item.evidence_url}{borrowed}")
+            # The code alone is a slug shown to the person deciding whether to send --
+            # the position every trigger code was in before `means` existed, and the
+            # card was taught this while the call list was not.
+            says = f" ({item.trigger_means})" if item.trigger_means else ""
+            out.append(f"      why: {item.trigger}{says}  {item.evidence_url}{borrowed}")
         if item.angle:
             out.append(f"      {item.angle}")
         else:

@@ -2201,6 +2201,35 @@ place to forget one, which `auth_tokens_for` already settled by resolving tokens
 convention. **A map nobody checks is a map that describes the project as it was
 imagined.**
 
+**The `why:` line cited a trigger by weight and the prose above it argued a different
+one.** Recorded on the first call list and left open: Matcha's row read
+`why: T3_HIRING_SEC` over an angle describing a mail-authentication gap, so **the link
+the reader is invited to click did not support the sentence directly above it.**
+`_top_trigger` returns the heaviest live trigger, which answers "how much is this lead
+worth" -- and the `why:` line has to answer "what is this card about". One ordering was
+serving both questions, the same shape as `prompt_version` answering two.
+
+`_trigger_the_angle_argues` reads the angle instead, matched against the `means`
+phrases -- the words the model was actually handed, since the Scorer passes `means` and
+never the code. Distinct content words rather than a substring, because the model
+paraphrases; **the subject only, cut at "I'd like to"**, because every offer phrase
+names "security", "report" and "assessment" and matching the whole angle would hand T3
+or T10 every card in the corpus. A constant wearing a discriminator's clothes, for the
+sixth time.
+
+Two distinct words and a strict winner, otherwise the weight still decides. **The
+asymmetry is what made it shippable before it could be measured**: a wrong
+reclassification cites the wrong trigger, which is exactly and only what the weight
+ordering does unconditionally today, so the floor is the current behaviour.
+`scripts/why_line_agreement.py` is the measurement -- agreed / reclassified / no
+opinion, with the angle printed under each move, and a denominator of leads that
+actually had more than one citable trigger. **A high "no opinion" share means the
+matcher is inert rather than safe.** Run it on the Pi before trusting the mechanism.
+
+The line also printed the bare code. `why: T3_HIRING_SEC` is a slug shown to the person
+deciding whether to send -- the position every trigger code was in before `means`
+existed, and the Discord card was taught this two days ago while the call list was not.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

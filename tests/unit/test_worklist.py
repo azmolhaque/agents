@@ -24,6 +24,7 @@ def _lead(
     angle: str = "You published an AI assistant last month.",
     emails: tuple[tuple[str, str, str], ...] = (("hello@x.io", "role_account", ""),),
     trigger: str | None = "T1_AI_SHIP",
+    extra_triggers: tuple[str, ...] = (),
 ) -> str:
     lead_id = uuid.uuid4().hex[:16]
     now = to_iso(utcnow())
@@ -45,18 +46,22 @@ def _lead(
                 "email, email_status, pii_basis, first_seen_at) VALUES (?,?,?,?,?,?,?)",
                 (uuid.uuid4().hex[:16], domain, full_name or None, email, status, "x", now),
             )
-        if trigger:
+        codes = ([trigger] if trigger else []) + list(extra_triggers)
+        for code in codes:
             tid = uuid.uuid4().hex[:16]
             eid = uuid.uuid4().hex[:16]
             conn.execute(
                 "INSERT INTO triggers (trigger_id, canonical_domain, code, confidence, "
                 "observed_at, decays_at) VALUES (?,?,?,0.9,?,'2099-01-01T00:00:00Z')",
-                (tid, domain, trigger, now),
+                (tid, domain, code, now),
             )
+            # One URL per trigger, so a mis-chosen trigger is visible as a wrong link
+            # rather than hidden behind a shared one.
+            path = "proof" if code == trigger else code.lower()
             conn.execute(
                 "INSERT INTO evidence (evidence_id, url, source_id, snippet, observed_at, "
                 "content_sha256) VALUES (?,?,'company_site','s',?,'h')",
-                (eid, f"https://{domain}/proof", now),
+                (eid, f"https://{domain}/{path}", now),
             )
             conn.execute("INSERT INTO trigger_evidence VALUES (?,?)", (tid, eid))
     return lead_id
@@ -429,3 +434,85 @@ def test_a_placeholder_name_is_not_shown_to_a_human(store: Any) -> None:
     report = worklist(store)
 
     assert report.items[0].display_name == "bopbook.com"
+
+
+def test_the_why_line_cites_the_trigger_the_angle_actually_argues(store: Any) -> None:
+    """Matcha's `why:` said `T3_HIRING_SEC` over an angle describing a mail-auth gap.
+
+    `_top_trigger` returned the *heaviest* trigger and the renderer printed its
+    evidence URL directly beneath the model's prose, so **the link the reader is
+    invited to click did not support the sentence above it**. Weight answers "how much
+    is this lead worth"; this line answers "what is this card about", and one ordering
+    was serving both questions.
+    """
+    _lead(
+        store,
+        "matcha.io",
+        trigger="T3_HIRING_SEC",  # weight 20, the heavier of the two
+        extra_triggers=("T8_HYGIENE_GAP",),  # weight 12
+        angle=(
+            "You publish a mail-authentication policy with gaps in it -- your DMARC "
+            "record is still p=none. I'd like to run your first external "
+            "attack-surface Snapshot free as a founding-cohort client."
+        ),
+    )
+
+    item = worklist(store).items[0]
+
+    assert item.trigger == "T8_HYGIENE_GAP"
+    assert item.evidence_url == "https://matcha.io/t8_hygiene_gap"
+
+
+def test_weight_still_decides_when_the_angle_argues_nothing(store: Any) -> None:
+    """The fallback is today's behaviour, and it has to stay reachable: an angle-less
+    lead, or one whose wording matches no `means` phrase, still needs a `why:` line.
+
+    Two distinct content words and a strict winner, or the heaviest trigger wins --
+    a guess that reads well is worse than the ordering it replaced, because nothing
+    downstream would ever question it.
+    """
+    _lead(
+        store,
+        "quiet.io",
+        trigger="T3_HIRING_SEC",
+        extra_triggers=("T8_HYGIENE_GAP",),
+        angle="",
+    )
+
+    item = worklist(store).items[0]
+
+    assert item.trigger == "T3_HIRING_SEC"
+    assert item.evidence_url == "https://quiet.io/proof"
+
+
+def test_the_ask_is_not_evidence_of_what_the_card_is_about(store: Any) -> None:
+    """Every offer phrase names "security", "report" or "assessment", so matching
+    against the whole angle would hand T3 or T10 every card in the corpus -- a marker
+    present in ~100% of cases is a constant, not a discriminator. The subject is what
+    comes before the ask."""
+    _lead(
+        store,
+        "offered.io",
+        trigger="T1_AI_SHIP",
+        extra_triggers=("T10_VENDOR_PRESSURE",),
+        angle=(
+            "You announced an AI assistant last month. I'd like to run a security "
+            "assessment for you and send a report -- a customer asked us for one "
+            "last week, so the pentest report format is settled."
+        ),
+    )
+
+    item = worklist(store).items[0]
+
+    assert item.trigger == "T1_AI_SHIP"
+
+
+def test_the_why_line_says_what_the_code_means(store: Any) -> None:
+    """`why: T3_HIRING_SEC` is a slug shown to the person deciding whether to send --
+    exactly where every trigger code stood before `means` existed. The Discord card
+    was taught this and the call list was not."""
+    _lead(store, "acme.io", trigger="T1_AI_SHIP")
+
+    rendered = render_worklist(worklist(store))
+
+    assert "announced an AI feature or assistant" in rendered
