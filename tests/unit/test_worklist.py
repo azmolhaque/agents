@@ -516,3 +516,110 @@ def test_the_why_line_says_what_the_code_means(store: Any) -> None:
     rendered = render_worklist(worklist(store))
 
     assert "announced an AI feature or assistant" in rendered
+
+
+def test_the_longer_phrase_does_not_win_for_being_longer(store: Any) -> None:
+    """Measured on the Pi, and the first version failed it.
+
+    `scripts/why_line_agreement.py` reclassified 49 of 107 leads, and **every single
+    move went from a three-word phrase to a four- or five-word one** -- T1_AI_SHIP is
+    "announced an AI feature or assistant", T11_STACK_RISK is "publish code using an
+    LLM agent framework". An angle saying both scored T11 higher for no reason except
+    that its phrase has more words in it, so Tavus's row cited a repo framework under
+    a sentence quoting their product announcement.
+
+    49 of 49 in one direction is the shape of a constant, the same tell as
+    `single_source` at 96% and `832 of 833`. Counting measured the config; position
+    measures the prose.
+
+    This is Tavus's stored angle, verbatim from the corpus.
+    """
+    _lead(
+        store,
+        "tavus.io",
+        trigger="T1_AI_SHIP",
+        extra_triggers=("T11_STACK_RISK",),
+        angle=(
+            "I'd like to run an AI/LLM security assessment covering prompt injection, "
+            "data leakage, agent tool abuse and the MCP tool surface "
+            "($2,000-8,000, 2-5 days) for you, under a signed RoE. You announced an AI "
+            "feature: 'Sparrow-2 is here: Next-gen turn-taking for real-time voice and "
+            "video AI.' You published code using an LLM agent framework."
+        ),
+    )
+
+    item = worklist(store).items[0]
+
+    assert item.trigger == "T1_AI_SHIP"
+
+
+def test_an_angle_that_opens_with_the_ask_still_has_a_subject(store: Any) -> None:
+    """~7% of angles open with the ask, and for those the old cut index was 0 -- which
+    `if cut > 0` read as "no ask found" and handed back the whole string. So the offer
+    text was matched as though the prospect had written it, and `ai_llm_assessment`
+    names "agent tool abuse", where "agent" is a word in T11's phrase."""
+    from cindraleads.worklist import _angle_subject
+
+    subject = _angle_subject(
+        "I'd like to run an AI/LLM assessment covering agent tool abuse. "
+        "You announced an AI feature."
+    )
+
+    assert "agent tool abuse" not in subject
+    assert "announced an AI feature" in subject
+
+
+def test_an_angle_the_dispatcher_would_refuse_is_not_offered_for_pasting(
+    store: Any,
+) -> None:
+    """The call list served text the Dispatcher had already refused.
+
+    Measured on the Pi on 2026-09-22: two of the top eight rows carried an angle
+    offering a $2k-8k engagement with "free" attached and no price -- exactly what
+    `_free_claim_is_backed` withholds from a card. **A card is something you read; a
+    worklist row is something you copy**, so this was the more dangerous of the two
+    routes and the only one with no guard on it.
+
+    Shown rather than blanked, for the same reason a borrowed evidence URL is: the
+    operator may want to rewrite it, and a blank line would read as "no angle" and
+    hide that there is one and it is wrong.
+    """
+    _lead(
+        store,
+        "thunderphone.com",
+        angle=(
+            "You announced an AI feature. I'd like to run an AI/LLM security assessment "
+            "covering prompt injection and the MCP tool surface, and a free "
+            "attack-surface Snapshot first if they would rather start small."
+        ),
+    )
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET recommended_offer = 'ai_llm_assessment'")
+
+    item = worklist(store).items[0]
+    rendered = render_worklist(worklist(store))
+
+    assert item.angle_withheld == "promises free without naming the price"
+    assert "NOT SENDABLE AS WRITTEN" in rendered
+    assert item.angle in rendered  # shown, not hidden
+
+
+def test_an_angle_that_keeps_its_price_is_offered_plainly(store: Any) -> None:
+    """The bound, and it is the one that matters: a warning on every row is one nobody
+    reads, and 158 of 275 paid leads reproduce the offer text with the price intact.
+    Traccia's stored angle, verbatim."""
+    _lead(
+        store,
+        "traccia.ai",
+        angle=(
+            "You published a mail-authentication policy with gaps. I'd like to run a "
+            "free first attack-surface Snapshot, and an AI/LLM security assessment "
+            "after it covering prompt injection, data leakage, agent tool abuse and "
+            "the MCP tool surface ($2,000-8,000, 2-5 days)."
+        ),
+    )
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET recommended_offer = 'ai_llm_assessment'")
+
+    assert worklist(store).items[0].angle_withheld == ""
+    assert "NOT SENDABLE" not in render_worklist(worklist(store))

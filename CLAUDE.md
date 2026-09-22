@@ -2305,6 +2305,51 @@ calling it**, so the guard read as unused to every scan and the predicate existe
 twice. The seventh duplicate-inside-the-detector, after `preview_angle.py` carrying its
 own copy of the `format()` kwargs the `ast` check had just been written to protect.
 
+**The matcher measured the config and not the prose, and the script shipped with it
+said so on its first run.** 107 leads, **49 reclassified (46%)** -- and every single
+move went from a three-word `means` phrase to a four- or five-word one: T1_AI_SHIP
+("announced an AI feature or assistant", 3 content words) lost to T11_STACK_RISK
+("publish code using an LLM agent framework", 5), T8 (4) and T7 (5), ten times out of
+ten in the printed sample. Most angles name two or three triggers, so counting distinct
+matched words was a vote for whichever phrase is longest. **49 of 49 in one direction
+is the shape of a constant**, the sixth appearance of that tell, and Tavus at 85 --
+the top lead in the corpus -- cited a repo framework under a sentence quoting their
+product announcement.
+
+Order was what the question was always about: the `why:` line sits under the opening
+sentence, so it has to name what *that sentence* is about. Ranked by the earliest
+position a phrase word appears, count only breaking ties. Replayed against the eight
+real angles from the report, seven revert to the trigger the angle opens with and
+**matcha.fm -- the case the mechanism was built for -- still moves.** Rare and right
+rather than frequent and arbitrary.
+
+`_angle_subject` had a second defect underneath it: it truncated at the ask rather
+than removing it, and for the ~7% of angles that *open* with the ask the cut index is
+0, which `if cut > 0` read as "no ask found" and handed back the whole string. So
+Tavus's offer text was matched as the prospect's own words, and `ai_llm_assessment`
+names "agent tool abuse" -- "agent" being a word in T11's phrase. It removes the ask
+*sentence* now.
+
+**Shipping a mechanism with the instrument that judges it is what made this cheap.**
+The asymmetry argument was sound and the mechanism was still wrong; only the
+measurement could say which. One run, ten seconds, no card sent.
+
+**The call list served text the Dispatcher had already refused.** In the same output:
+rows 2 and 3 of the top eight carried an angle offering a $2k-8k engagement with
+"free" attached and **no price** -- byte-identical to what `_free_claim_is_backed`
+withholds from a card. `worklist` printed `outreach_angle` raw.
+
+**A card is something you read; a worklist row is something you copy**, so this was
+the more dangerous of the two routes and the only one with no guard on it. Same shape
+as `digest_pages` and `_blocked`, from the third side: the guard was written for the
+per-lead card, extended to `send_digest` when that gap was found, and the one path
+with a human and a clipboard on the end of it was never asked. `angle_withheld_reason`
+is now the single predicate and `_publishable` is a logging wrapper over it.
+
+Shown rather than blanked, under `[!] NOT SENDABLE AS WRITTEN -- <reason>`: the
+operator may want to rewrite it by hand, and a blank line would read as "no angle
+written" and hide that there is one and it is wrong.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

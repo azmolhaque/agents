@@ -23,6 +23,7 @@ mutated state would need to be trusted; this one only has to be correct.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -61,6 +62,9 @@ class WorkItem:
     # `means` existed.
     trigger_means: str = ""
     evidence_url: str = ""
+    # Why the angle must not be sent as written, or "" when it may be. The Dispatcher
+    # has refused this text since the free-claim guard shipped; the call list served it.
+    angle_withheld: str = ""
     contacts_total: int = 1
 
     @property
@@ -102,7 +106,7 @@ def worklist(
     judged_clause = "" if include_judged else "  AND f.lead_id IS NULL\n"
     rows = store.conn.execute(
         "SELECT l.lead_id, l.canonical_domain, l.score, l.tier, l.recommended_offer, "
-        "       l.outreach_angle, c.display_name, "
+        "       l.outreach_angle, c.display_name, c.country, "
         "       (SELECT COUNT(*) FROM contacts x "
         "          WHERE x.canonical_domain = l.canonical_domain AND x.email IS NOT NULL) "
         "         AS contacts_total "
@@ -132,7 +136,11 @@ def worklist(
 
     # Read once. `ScoringConfig.load()` parses YAML on every call, and this is wanted
     # twice per row.
-    from cindraleads.agents.dispatcher import _trigger_means
+    from cindraleads.agents.dispatcher import (
+        _free_claim_is_backed,
+        _trigger_means,
+        angle_withheld_reason,
+    )
 
     means = _trigger_means()
 
@@ -168,6 +176,16 @@ def worklist(
                 role_title=str(contact["role_title"] or ""),
                 full_name=str(contact["full_name"] or ""),
                 angle=angle,
+                # The same question the card asks, asked by the route with a human and
+                # a clipboard on the end of it.
+                angle_withheld=angle_withheld_reason(
+                    angle,
+                    allow_free=_free_claim_is_backed(
+                        angle,
+                        str(row["recommended_offer"] or ""),
+                        str(row["country"] or "") or None,
+                    ),
+                ),
                 trigger=trigger,
                 trigger_means=means.get(trigger, ""),
                 evidence_url=evidence,
@@ -310,21 +328,35 @@ _STOPWORDS = frozenset(
 _ASK_MARKERS = ("i'd like to", "i would like to", "i'd love to", "we'd like to")
 
 
-def _content_words(text: str) -> set[str]:
+def _content_tokens(text: str) -> list[str]:
+    """Content words **in the order they were written.** Order is the whole signal."""
     cleaned = "".join(ch if (ch.isalnum() or ch == "-") else " " for ch in text.lower())
-    return {w for w in cleaned.split() if len(w) >= 4 and w not in _STOPWORDS}
+    return [w for w in cleaned.split() if len(w) >= 4 and w not in _STOPWORDS]
+
+
+def _content_words(text: str) -> set[str]:
+    return set(_content_tokens(text))
 
 
 def _angle_subject(angle: str) -> str:
-    """The part of the angle that talks about *them*, before the ask."""
-    lowered = angle.lower()
-    cuts = [lowered.find(marker) for marker in _ASK_MARKERS]
-    cut = min((c for c in cuts if c >= 0), default=-1)
-    return angle[:cut] if cut > 0 else angle
+    """The angle with the *ask* removed -- what is left talks about them.
+
+    Removes the ask **sentence**, rather than truncating at it. Truncating looked
+    equivalent and was not: ~7% of angles open with the ask, and for those the cut
+    index is 0, which the old code read as "no ask found" and handed back the whole
+    string. So Tavus -- the top lead in the corpus -- was matched against an offer
+    naming "agent tool abuse", and "agent" is a word in T11's phrase.
+    """
+    kept = [
+        part
+        for part in re.split(r"(?<=[.;!?])\s+", angle)
+        if not any(marker in part.lower() for marker in _ASK_MARKERS)
+    ]
+    return " ".join(kept)
 
 
 def _trigger_the_angle_argues(angle: str, codes: list[str], means: dict[str, str]) -> str:
-    """Which of these live triggers the angle actually opens with, or `""`.
+    """Which of these live triggers the angle **opens with**, or `""`.
 
     `_top_trigger` returned the *heaviest* trigger and the renderer printed its
     evidence URL directly beneath the model's prose, so Matcha's card read
@@ -335,29 +367,49 @@ def _trigger_the_angle_argues(angle: str, codes: list[str], means: dict[str, str
 
     Matched on the `means` phrases because those are the words the model was handed --
     the Scorer passes `means`, never the code -- so an angle that reproduces the
-    observation reproduces most of them. Scored by distinct content words rather than
-    by substring, because the model paraphrases and a whole-phrase match would fire on
-    almost nothing.
+    observation reproduces most of them. Content words rather than a substring, because
+    the model paraphrases and a whole-phrase match would fire on almost nothing.
 
-    Conservative on purpose: two distinct words and a strict winner, otherwise `""` and
-    the caller keeps the heaviest. **The asymmetry is what makes this safe to ship
-    before it is measured against the corpus** -- a wrong reclassification cites the
-    wrong trigger, which is exactly and only what the weight ordering does
-    unconditionally today, so the floor is the current behaviour and every confident
-    match is an improvement on it.
+    **Ranked by where the match falls, not by how many words matched**, and the first
+    version got that wrong in a way `scripts/why_line_agreement.py` made obvious on the
+    first run: 49 of 107 leads reclassified, and **every single move went from a
+    three-word phrase to a four- or five-word one.** T1_AI_SHIP is "announced an AI
+    feature or assistant"; T11_STACK_RISK is "publish code using an LLM agent
+    framework". An angle saying both -- which most of them do -- scored T11 higher for
+    no reason except that its phrase is longer, so Tavus's row cited a repo framework
+    under a sentence quoting their product announcement. Counting measured the config,
+    not the prose. **49 of 49 in one direction is the shape of a constant**, the same
+    tell as `single_source` at 96% and `832 of 833`.
+
+    Order is what the question was always about: the `why:` line sits under the opening
+    sentence, so it has to name what that sentence is about. Two distinct words are
+    still required -- one shared word is noise -- and ties return `""`.
+
+    The floor is unchanged and is why this was shippable before it was measured: a
+    wrong choice cites a trigger the angle *does* mention, which is no worse than the
+    weight ordering naming one unconditionally.
     """
-    subject = _content_words(_angle_subject(angle))
-    if not subject:
+    tokens = _content_tokens(_angle_subject(angle))
+    if not tokens:
         return ""
-    scores = sorted(
-        ((len(_content_words(means.get(code, "")) & subject), code) for code in codes),
-        key=lambda pair: -pair[0],
-    )
-    if not scores or scores[0][0] < 2:
+
+    ranked: list[tuple[int, int, str]] = []
+    for code in codes:
+        phrase = _content_words(means.get(code, ""))
+        hits = [index for index, word in enumerate(tokens) if word in phrase]
+        if len({tokens[index] for index in hits}) < 2:
+            continue
+        # Earliest mention first; more matches breaks a tie, because two triggers
+        # sharing their first word ("announced" is in T1 and T2) are separated by how
+        # much else of each phrase survived.
+        ranked.append((hits[0], -len({tokens[index] for index in hits}), code))
+
+    ranked.sort()
+    if not ranked:
         return ""
-    if len(scores) > 1 and scores[1][0] == scores[0][0]:
+    if len(ranked) > 1 and ranked[1][:2] == ranked[0][:2]:
         return ""  # two triggers argued equally well; the text does not choose
-    return scores[0][1]
+    return ranked[0][2]
 
 
 def _top_trigger(
@@ -460,7 +512,14 @@ def render_worklist(report: Worklist) -> str:
             # card was taught this while the call list was not.
             says = f" ({item.trigger_means})" if item.trigger_means else ""
             out.append(f"      why: {item.trigger}{says}  {item.evidence_url}{borrowed}")
-        if item.angle:
+        if item.angle and item.angle_withheld:
+            # Shown, not hidden -- the operator may still want to rewrite it by hand,
+            # and a blank line would read as "no angle" and hide that there is one and
+            # it is wrong. But it must not look like text that is ready to paste, so
+            # the reason comes first and the prose is indented under it.
+            out.append(f"      [!] NOT SENDABLE AS WRITTEN -- {item.angle_withheld}")
+            out.append(f"          {item.angle}")
+        elif item.angle:
             out.append(f"      {item.angle}")
         else:
             # Says so rather than printing a blank line. An angle-less lead is still

@@ -664,6 +664,36 @@ _FREE_CLAIM = re.compile(
 )
 
 
+#: Why an angle must not reach a prospect. Phrased for a human, because the call list
+#: prints them.
+LEAKS_INTERNAL_CODE = "names our internal taxonomy"
+UNBACKED_FREE_CLAIM = "promises free without naming the price"
+
+
+def angle_withheld_reason(text: str, *, allow_free: bool) -> str:
+    """Why this prose must not be sent, or `""` when it may be.
+
+    **One predicate, two readers, and the second one was missing.** `_publishable`
+    guarded the Discord card and `send_digest` was taught the same lesson about
+    `_blocked` -- but `cindra worklist` prints `outreach_angle` raw, and the call list
+    is the route that actually reaches a prospect: a card is something you read, a
+    worklist row is something you copy. Measured on the Pi on 2026-09-22, two of the
+    top eight rows served an angle offering a $2k-8k engagement with "free" attached
+    and no price -- byte-identical to the text the Dispatcher had just refused.
+
+    Same shape as `digest_pages` and `_blocked`, from the third side: the guard was
+    applied where it was written, then extended to the other Discord route, and the
+    one path with a human and a clipboard on the end of it was never asked.
+    """
+    if not text:
+        return ""
+    if _INTERNAL_CODE.search(text):
+        return LEAKS_INTERNAL_CODE
+    if not allow_free and _FREE_CLAIM.search(text):
+        return UNBACKED_FREE_CLAIM
+    return ""
+
+
 def _publishable(text: str | None, lead_id: Any = "", *, allow_free: bool = False) -> Any:
     """Prose, or nothing, if it names something only we should see or promises a price
     we do not offer.
@@ -680,17 +710,18 @@ def _publishable(text: str | None, lead_id: Any = "", *, allow_free: bool = Fals
     """
     if not text:
         return text
-    if _INTERNAL_CODE.search(str(text)):
+    # `allow_free` is "the config says a free claim belongs in this angle" rather than
+    # "this lead's offer is free" -- a *paid* phrase deliberately names the free first
+    # Snapshot, and keying on the offer alone withheld 98% of paid leads.
+    reason = angle_withheld_reason(str(text), allow_free=allow_free)
+    if reason == LEAKS_INTERNAL_CODE:
         log.warning(
             "card_prose_withheld",
             lead_id=str(lead_id),
             codes=sorted(set(_INTERNAL_CODE.findall(str(text)))),
         )
         return ""
-    # `allow_free` is now "the config says a free claim belongs in this angle" rather
-    # than "this lead's offer is free" -- because a *paid* phrase deliberately names the
-    # free first Snapshot, and keying on the offer alone withheld 98% of paid leads.
-    if not allow_free and _FREE_CLAIM.search(str(text)):
+    if reason:
         log.warning(
             "card_prose_withheld_free_claim",
             lead_id=str(lead_id),
