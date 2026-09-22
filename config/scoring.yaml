@@ -188,8 +188,19 @@ freshness:
 offers:
   snapshot_free:
     free: true
+    # Second person, because every phrase here is slotted into prose addressed to the
+    # prospect: rule 2 of `outreach_angle.md` says write "I'd like to run X for you".
+    # This read "their first external ..." and produced "You published a
+    # mail-authentication policy with gaps in it. I'd like to run **their** first
+    # external attack-surface Snapshot" on 4 of 8 freshly written angles -- second
+    # person to third inside one sentence, the Pamir defect, straight out of the config.
+    #
+    # It was latent until rule 3 was tightened to "reproduce the offer text exactly,
+    # do not paraphrase": before that the model rewrote the clause and fixed the pronoun
+    # on the way past. Tightening the rule was right and it turned a phrasing the model
+    # had been quietly repairing into one it now faithfully copies.
     means: >-
-      their first external attack-surface and exposed-secrets Snapshot free as a
+      your first external attack-surface and exposed-secrets Snapshot free as a
       founding-cohort client, with a verified report, a walkthrough call and a
       re-check two weeks later
   watch:

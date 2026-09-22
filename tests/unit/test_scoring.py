@@ -1273,3 +1273,35 @@ def test_a_derived_trigger_cannot_refute_a_recency_claim() -> None:
         SimpleNamespace(code="T8_HYGIENE_GAP", observed_at=utcnow() - timedelta(days=40))
     ]
     assert _false_recency(prose, only_derived) == ""
+
+
+def test_no_offer_phrase_speaks_about_the_reader_in_the_third_person():
+    """Every phrase here is slotted into prose addressed to the prospect.
+
+    Rule 2 of `outreach_angle.md` is `Write "I'd like to run X for you"`, so a phrase
+    carrying "their" produces "You published a mail-authentication policy with gaps in
+    it. I'd like to run **their** first external attack-surface Snapshot" -- second
+    person to third inside one sentence, on 4 of 8 freshly written angles.
+
+    Latent until rule 3 was tightened to "reproduce the offer text exactly, do not
+    paraphrase". The model had been rewriting the clause and fixing the pronoun on the
+    way past; the tightening was right, and it turned a phrasing that was quietly being
+    repaired into one that is now faithfully copied. **A prompt rule and a config phrase
+    are one decision**, and this is the check that they agree.
+    """
+    import re
+    import typing
+
+    from cindraleads.models import Offer
+
+    cfg = ScoringConfig.load()
+    third_person = re.compile(r"\b(their|theirs|they|them)\b", re.IGNORECASE)
+
+    for slug in typing.get_args(Offer):
+        for country in (None, "BD"):
+            phrase = cfg.offer_phrase(slug, country)
+            found = third_person.findall(phrase)
+            assert not found, (
+                f"{slug} ({country or 'default'}) says {found} about the reader: "
+                f"{phrase!r} -- the angle addresses them as 'you'"
+            )

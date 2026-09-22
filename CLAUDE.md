@@ -2084,6 +2084,45 @@ the prompt was fixed rather than the guard loosened: 158 of 275 paid leads alrea
 publish, so the product was never blocked -- the top cards work today, and 117 angles
 need re-prosing at leisure rather than 900 in a panic.
 
+**The ordering worry was killed by the column added the day before.** Tavus came back
+from an overnight re-prose opening with 150 characters of pitch before any reason, and
+the suspicion was that tightening rule 3 had raised the offer's salience against rule
+7's "open with the trigger". `angle_version` answers it directly: **4 leads on the new
+build, 1 opening with the ask; 393 on the old, 27 -- 7%.** The eight most recent angles
+all open with the observation. One unlucky decode, not a regression, and the
+measurement cost ten seconds against a prompt edit that would have invalidated the
+corpus. **A column added to make a reconciler work turned out to be the instrument for
+judging a prompt change**, which is the argument for stamping provenance even when
+nothing is asking yet.
+
+**Those same eight rows carried a real defect, and it came out of the config.**
+`snapshot_free.means` read *"**their** first external attack-surface and exposed-secrets
+Snapshot"*, and rule 2 slots that straight into `I'd like to run X for you` -- so 4 of 8
+freshly written angles read "You published a mail-authentication policy with gaps in it.
+I'd like to run **their** first external attack-surface Snapshot." Second person to
+third inside one sentence: the Pamir defect, straight out of a config phrase.
+
+**It was latent until rule 3 was tightened**, which is the part worth keeping. "Reproduce
+the offer text exactly, do not paraphrase" is correct and stays; before it the model
+rewrote that clause and fixed the pronoun on the way past. The tightening did not break
+anything -- it stopped a repair that was silently covering for the config, and a defect
+being quietly repaired by a model is one nobody can see. `offers` is prose-only and
+outside both hashes, so nothing re-proses on this change; with 4 leads affected that is
+`--reprose` territory rather than a mechanism.
+
+`test_no_offer_phrase_speaks_about_the_reader_in_the_third_person` checks every offer
+against both currencies. **A prompt rule and a config phrase are one decision**, and the
+other three phrases were already pronoun-free, so this was one line against a rule that
+had no check at all.
+
+**And the overnight dead letter was the thermal mechanism working, not failing.**
+`extract.candidate: LLM inference is paused by the thermal governor` at 02:09, with
+three siblings at 02:08-02:09 that recovered. `MAX_THERMAL_PAUSES` is 12, so that job
+was deferred twelve times before the ladder ended -- the documented "past that the
+governor is not having a spell, it is the steady state". Worth writing down because a
+`dead` counter ticking 32 -> 33 reads as a fault, and `cindra status` now prints the
+date and state beside it precisely so the answer takes one command.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
