@@ -330,3 +330,74 @@ def test_a_real_company_on_its_own_domain_still_resolves() -> None:
         ("https://acme.com.bd/", "acme.com.bd"),
     ):
         assert canonical_domain(url) == expected, url
+
+
+# ------------------------------------------------- the name shown to a human
+
+
+def test_a_placeholder_name_falls_back_to_the_domain() -> None:
+    """`null · bopbook.com` reached a near-miss list as the literal four characters.
+    Not NULL and not empty, so it survives every `IS NOT NULL AND <> ''` filter in the
+    system, and a card built from that row greets a stranger as "null"."""
+    from cindraleads.dedupe import display_name_or_domain
+
+    for placeholder in ("null", "None", " N/A ", "undefined", "--", ""):
+        assert display_name_or_domain(placeholder, "bopbook.com") == "bopbook.com"
+    assert display_name_or_domain(None, "bopbook.com") == "bopbook.com"
+
+
+def test_a_real_name_that_resembles_nothing_is_still_kept() -> None:
+    """The bound. `Rover · rtrvr.ai` is one of the best leads in the corpus and its
+    name resembles neither its domain nor anything else -- the measured reason the
+    name-similarity rule was rejected, and the reason this list stays tiny. "test" and
+    "company" are real company names and are deliberately absent."""
+    from cindraleads.dedupe import display_name_or_domain
+
+    for name in ("Rover", "Test", "Company", "Nil Software", "Nan Labs"):
+        assert display_name_or_domain(name, "x.io") == name
+
+
+def test_latin_spliced_into_a_bengali_name_is_decode_damage() -> None:
+    """`hasinhayder.com` was extracted as `লার্ন উইথ হাসিন হাFRINGদার` -- "FRING"
+    wedged into the middle of a Bengali name, which would have reached a prospect's
+    inbox exactly as written."""
+    from cindraleads.dedupe import display_name_or_domain, looks_corrupted
+
+    corrupt = "লার্ন উইথ হাসিন হাFRINGদার"
+    assert looks_corrupted(corrupt)
+    assert display_name_or_domain(corrupt, "hasinhayder.com") == "hasinhayder.com"
+
+
+def test_an_ordinary_bangladeshi_name_is_not_decode_damage() -> None:
+    """Scoped to one whitespace-delimited token, because these are how real companies
+    in 40% of the ICP's geography write their names -- script and Latin part in
+    separate tokens, and digits are not letters. A rule that took `টেকনেক্সট Ltd`
+    away would cost more than the mojibake it catches."""
+    from cindraleads.dedupe import looks_corrupted
+
+    for name in ("ব্রেইন স্টেশন 23", "টেকনেক্সট Ltd", "শিখো", "SSLCOMMERZ", "বিকাশ"):
+        assert not looks_corrupted(name), name
+
+
+def test_a_cjk_brand_writing_its_own_name_is_left_alone() -> None:
+    """Indic ranges by name, not "everything non-Latin". `楽天Ichiba` is a real company
+    writing its own name in one token, and the general rule would take it away."""
+    from cindraleads.dedupe import looks_corrupted
+
+    assert not looks_corrupted("楽天Ichiba")
+
+
+def test_the_spam_name_this_rule_deliberately_misses() -> None:
+    """Recorded so the next person does not think the gap is closed.
+
+    `templatecookie.com` -- a Bangladeshi template company -- carries the
+    `display_name` "LAUTANTOTO", an Indonesian gambling brand, so the site is spammed
+    or parked and a card would open by addressing them as a casino. Nothing here
+    catches it and nothing should try: "LAUTANTOTO" is well-formed text in one script,
+    indistinguishable by shape from any invented brand name. It needs the domain's own
+    history or a reputation source, not a string rule.
+    """
+    from cindraleads.dedupe import display_name_or_domain, looks_corrupted
+
+    assert not looks_corrupted("LAUTANTOTO")
+    assert display_name_or_domain("LAUTANTOTO", "templatecookie.com") == "LAUTANTOTO"

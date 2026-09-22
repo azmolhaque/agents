@@ -35,6 +35,7 @@ __all__ = [
     "canonical_domain",
     "display_name_or_domain",
     "is_platform_url",
+    "looks_corrupted",
     "name_similarity",
     "rapidfuzz_available",
     "same_company",
@@ -485,6 +486,47 @@ _PLACEHOLDER_NAMES = frozenset(
 )
 
 
+# Scripts that never mix ASCII letters *inside* a word. Indic only, and named rather
+# than "everything non-Latin", because a CJK brand written `楽天Ichiba` is a real
+# company writing its own name and this rule would take it away.
+_INDIC_RANGES = (
+    (0x0900, 0x097F),  # Devanagari
+    (0x0980, 0x09FF),  # Bengali / Assamese
+    (0x0A00, 0x0A7F),  # Gurmukhi
+    (0x0B80, 0x0BFF),  # Tamil
+    (0x0D80, 0x0DFF),  # Sinhala
+)
+
+
+def _is_indic(ch: str) -> bool:
+    point = ord(ch)
+    return any(low <= point <= high for low, high in _INDIC_RANGES)
+
+
+def looks_corrupted(name: str) -> bool:
+    """A name with ASCII letters spliced inside an Indic word.
+
+    `hasinhayder.com` was extracted as `লার্ন উইথ হাসিন হাFRINGদার` -- "FRING" wedged
+    into the middle of a Bengali name -- and would have reached a prospect's inbox
+    exactly as written. Decode damage, not a transliteration: Bengali does not use
+    ASCII letters mid-word, so a token carrying both is corrupt whatever produced it.
+
+    Scoped to one whitespace-delimited token on purpose. `ব্রেইন স্টেশন 23` and
+    `টেকনেক্সট Ltd` are ordinary Bangladeshi company names and both keep their script
+    and their Latin part in separate tokens; digits are not letters and never trip it.
+
+    The asymmetry is the same one `display_name_or_domain` rests on: a false positive
+    costs a card the company's name and shows the domain, which is recoverable and
+    mild. A false negative greets a stranger with mojibake.
+    """
+    for token in name.split():
+        if any(_is_indic(ch) for ch in token) and any(
+            ch.isascii() and ch.isalpha() for ch in token
+        ):
+            return True
+    return False
+
+
 def display_name_or_domain(name: str | None, domain: str) -> str:
     """The name to show a human, or the domain when what we stored is a placeholder.
 
@@ -505,6 +547,8 @@ def display_name_or_domain(name: str | None, domain: str) -> str:
         return domain
     # A name made only of punctuation is the same failure wearing different bytes.
     if not any(ch.isalnum() for ch in cleaned):
+        return domain
+    if looks_corrupted(cleaned):
         return domain
     return cleaned
 

@@ -2259,6 +2259,27 @@ The summary is read once *before* the first POST. Each page's rows are logged on
 after that page is sent, so a late read would count part of its own digest and not the
 rest; the line describes the corpus the digest was assembled from.
 
+**"FRING" was wedged into the middle of a Bengali name and nothing looked at it.**
+`hasinhayder.com` extracted as `লার্ন উইথ হাসিন হাFRINGদার` -- decode damage, not a
+transliteration -- and would have reached a prospect's inbox exactly as written.
+Bengali does not use ASCII letters mid-word, so **a single whitespace-delimited token
+carrying both scripts is corrupt whatever produced it**, and `looks_corrupted` falls
+back to the domain the same way a `null` name does.
+
+Scoped to one token and to named Indic ranges, both deliberately. `ব্রেইন স্টেশন 23`
+and `টেকনেক্সট Ltd` are ordinary Bangladeshi company names that keep their script and
+their Latin part in separate tokens, and digits are not letters. "Everything non-Latin"
+would take `楽天Ichiba` away from a company writing its own name -- the same trap that
+killed bare "media" and bare "foundation".
+
+**`LAUTANTOTO · templatecookie.com` is the shape this does not catch**, and the test
+saying so is there for the same reason
+`test_the_nonprofits_the_academic_rule_deliberately_misses` is. An Indonesian gambling
+brand on a Bangladeshi template company's domain means the site is spammed or parked,
+and a card would open by addressing them as a casino -- but the string is well-formed
+text in one script, indistinguishable by shape from any invented brand. That needs the
+domain's history or a reputation source, not a string rule.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
