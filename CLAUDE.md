@@ -2380,6 +2380,32 @@ seeded with the newer trigger so the old `newest DESC` tiebreak puts it first.
 `discovered_by`, `enqueue_stale_extractions`, the HN mock, the free-offer flag,
 `test_a_rescored_corpus_reports_current` and `test_the_stamp_that_reprose_reads...`.
 
+**The first real `--reprose` pass queued 50 unsendable-first, and both predicted
+numbers were wrong: 1008/214 against the 871/117 written above.** Neither is explained
+here, because this file has twice recorded a confident explanation written before the
+row was read -- `apple.com`, which was not Apple, and the second worker, which was two
+process lifetimes. `scripts/withheld_angles.py` is the read: both reasons
+`angle_withheld_reason` can give, split by offer, with rows under each.
+
+It asks one thing the reconcile line cannot. **A withheld angle stamped by the
+*current* build is one `--reprose` will rewrite into the same refusal** -- that cell is
+a prompt problem, not a backlog one, and the two are indistinguishable in a single
+count. The script is scoped to every stored angle rather than the stale ones for the
+same reason: "the guard refuses this today" and "this was written by an older build"
+are different populations, and the gap between them is the finding.
+
+**And `_is_unsendable` re-read `scoring.yaml` for every row, which I shipped two hours
+earlier.** `_free_claim_is_backed` loads the config when it is not handed one, and both
+callers run over the whole candidate set -- so one `cindra reconcile --reprose` against
+this corpus did ~2000 YAML parses. Measured: **759x slower than the hoisted call**, ~13
+seconds of parsing per scan on a box whose entire problem is that it is slow.
+
+`test_every_caller_hands_the_unsendable_check_a_config` reads the call sites with `ast`,
+the same shape and the same reason as `DEFAULT_RESCORE_LIMIT`'s test reading `cli.py`:
+the function is correct and its default is deliberate, so a caller that stops passing
+the argument breaks nothing visible and no assertion would otherwise notice. **It only
+gets slower, which is the kind of regression this project has no other detector for.**
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

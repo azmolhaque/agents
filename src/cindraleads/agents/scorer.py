@@ -831,23 +831,29 @@ def _stale_rows(
     ).fetchall()
 
 
-def _is_unsendable(row: sqlite3.Row) -> bool:
+def _is_unsendable(row: sqlite3.Row, config: ScoringConfig | None = None) -> bool:
     """Whether this lead's stored angle is one the Dispatcher would refuse.
 
     The same predicate the card and the call list ask, asked a third time by the
     command that repairs them -- so a bounded `--reprose` pass spends its decode on
     the angles that are actually broken.
 
-    Measured on the Pi on 2026-09-22: **871 leads carry an angle from an older build
-    and ~117 of them are unsendable.** Without an ordering, a 50-row pass rewrites
-    roughly 43 correct angles and 7 broken ones, and the operator's call list keeps
-    its `NOT SENDABLE` rows for a week. That is the `enqueue_stale_scores` lesson
-    restated: **an ORDER BY only means anything with a limit**, and here the limit
-    existed while the ordering that would make it useful did not.
+    Measured on the Pi on 2026-09-22: **1008 leads carry an angle from an older build
+    and 214 of them are unsendable.** Without an ordering, a 50-row pass spends four
+    fifths of its decode on angles that are already fine, and the operator's call list
+    keeps its `NOT SENDABLE` rows for a week. That is the `enqueue_stale_scores`
+    lesson restated: **an ORDER BY only means anything with a limit**, and here the
+    limit existed while the ordering that would make it useful did not.
 
     Never a *filter*. An angle from an older build that is merely worded differently
     is still worth refreshing eventually, and a predicate that dropped it would make
     the backlog count stop describing the backlog.
+
+    **`config` is not an optimisation, it is the difference between one YAML parse and
+    a thousand.** Both callers run this over the whole candidate set, so the first
+    version parsed `scoring.yaml` twice per lead -- ~2000 times for one
+    `cindra reconcile --reprose` on this corpus, on a box whose whole problem is that
+    it is slow. The default is kept so a caller with one row need not thread it.
     """
     from cindraleads.agents.dispatcher import _free_claim_is_backed, angle_withheld_reason
 
@@ -857,7 +863,9 @@ def _is_unsendable(row: sqlite3.Row) -> bool:
     offer = str(row["offer"] or "")
     country = str(row["country"] or "") or None
     return bool(
-        angle_withheld_reason(angle, allow_free=_free_claim_is_backed(angle, offer, country))
+        angle_withheld_reason(
+            angle, allow_free=_free_claim_is_backed(angle, offer, country, config)
+        )
     )
 
 
@@ -911,9 +919,8 @@ def enqueue_stale_scores(
     inference, and a backfill nobody is waiting on must never be what a new lead waits
     behind.
     """
-    fingerprint = calibration_version(
-        config or ScoringConfig.load(), gate or ComplianceGate.from_config()
-    )
+    scoring = config or ScoringConfig.load()
+    fingerprint = calibration_version(scoring, gate or ComplianceGate.from_config())
     prose_ver = prose_version()
     now = to_iso(utcnow())
     rows = _stale_rows(
@@ -929,7 +936,7 @@ def enqueue_stale_scores(
         limit=0 if reprose else limit,
     )
     if reprose:
-        rows = sorted(rows, key=lambda row: not _is_unsendable(row))
+        rows = sorted(rows, key=lambda row: not _is_unsendable(row, scoring))
         if limit:
             rows = rows[:limit]
 
@@ -1001,17 +1008,16 @@ def reprose_backlog(
     backfill is hours on this box, and that is a decision the operator should get to
     make with the number in front of them rather than after the eighth pass.
     """
+    scoring = config or ScoringConfig.load()
     rows = _stale_rows(
         store.conn,
-        fingerprint=calibration_version(
-            config or ScoringConfig.load(), gate or ComplianceGate.from_config()
-        ),
+        fingerprint=calibration_version(scoring, gate or ComplianceGate.from_config()),
         prose_ver=prose_version(),
         now=to_iso(utcnow()),
         reprose=True,
         limit=0,
     )
-    return len(rows), sum(1 for row in rows if _is_unsendable(row))
+    return len(rows), sum(1 for row in rows if _is_unsendable(row, scoring))
 
 
 # Failures that will plausibly answer differently later. A schema violation from the

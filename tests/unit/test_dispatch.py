@@ -2221,3 +2221,37 @@ def test_a_stale_but_sendable_angle_is_still_in_the_backlog(store):  # type: ign
     _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
 
     assert reprose_backlog(store) == (2, 1)
+
+
+def test_every_caller_hands_the_unsendable_check_a_config():  # type: ignore[no-untyped-def]
+    """`_is_unsendable` loads `scoring.yaml` when it is not given one, and both callers
+    run it over the whole candidate set.
+
+    So the first version parsed the config twice per lead -- ~2000 times for one
+    `cindra reconcile --reprose` against this corpus, measured at **759x slower than
+    the hoisted call** and ~13 s of pure YAML parsing per scan on a box whose entire
+    problem is that it is slow.
+
+    Asserted on the call sites rather than the function, for the same reason
+    `DEFAULT_RESCORE_LIMIT`'s test reads `cli.py`: the function is correct and the
+    default is deliberate, so a caller that quietly stops passing the argument breaks
+    nothing visible and no test would otherwise notice. It only gets slower.
+    """
+    import ast
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "src/cindraleads/agents/scorer.py").read_text()
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_is_unsendable"
+    ]
+
+    assert len(calls) == 2, f"expected the two known callers, found {len(calls)}"
+    for call in calls:
+        assert len(call.args) == 2, (
+            f"_is_unsendable at line {call.lineno} is not handed a config, so it will "
+            "re-read scoring.yaml for every row it is asked about"
+        )
