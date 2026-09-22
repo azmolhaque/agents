@@ -2449,6 +2449,44 @@ version nested double quotes inside a double-quoted f-string -- **3.12+ grammar,
 runs on the Pi's 3.13 and is a `SyntaxError` on the 3.11 floor.** The dev box is the
 one that catches that, which is the inverse of the usual direction and worth knowing.
 
+**13 of 216, so the sort key was not built -- and asking found the real defect one
+level up.** The question was whether `--reprose` needs a third key to deprioritise
+leads the Dispatcher refuses anyway. Measured: **12 compliance vetoes and 1
+quarantined**, 6% of the withheld set and about four minutes of decode in total. That
+is noise, and a third key plus lifting `_blocked` out of the Dispatcher is not worth
+four minutes. **The distribution killed the mechanism, which is what the script was
+shipped to let it do** -- same outcome as the CT-certificate veto and the
+`name_similarity` rule.
+
+**But 12 vetoed leads carrying a stored angle is 12 model calls that should never have
+happened.** `prepare` calls the model; `commit` runs the gate. So compliance came
+*after* prose for the life of the project, and the module docstring's first paragraph
+says the opposite in bold -- *"Only after both is a model asked to write the rationale
+and the outreach angle"*. The Scorer spent ~18 s each writing prospect-facing copy
+about government bodies, competitors and universities it had already decided it must
+not contact, and spent it again on every rescore.
+
+**The score-safety half always held**, which is why this went unnoticed: `commit`
+re-reads the facts and recomputes `score()` from database state, so nothing the model
+produces can reach the number. What was false is the *ordering* the docstring names --
+**a docstring describing a property its own last line does not provide**, which is the
+`ComplianceGate.fingerprint` defect exactly, found the same way and for the second
+time. Reading a docstring against its own code remains the cheapest audit available.
+
+The gate now runs in `prepare` as well, **advisory and never authoritative**: `commit`
+still asks inside the transaction and that answer is the only one stored, because
+suppression changes without a lead row moving and the two can legitimately disagree.
+`_lead_facts` builds the gate's input once, since two constructions are two chances to
+hand the same rules different facts. `test_a_vetoed_lead_never_reaches_the_model`
+counts the calls -- the count is the whole claim -- and fails against the old code with
+`assert 1 == 0`.
+
+**`queued 3` is the message working, not a fault.** The second `--reprose` pass
+enqueued 3 because 47 of the previous 50 were still in the queue under their existing
+dedupe keys, and the backlog printed beside it moved 214 -> 211. That is precisely the
+"`queued 0` has a second way to mean nothing is wrong" case the two-number line was
+added for: **the pair says "waiting", where either number alone reads as "stuck".**
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

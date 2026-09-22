@@ -2305,3 +2305,113 @@ def test_the_withheld_report_reads_the_real_guard(store, monkeypatch, capsys):  
         "--reprose sorts it to the front"
     )
     assert "compliance veto" in printed
+
+
+def test_a_vetoed_lead_never_reaches_the_model(rig):  # type: ignore[no-untyped-def]
+    """The module docstring promises `arithmetic -> compliance -> prose` and the code
+    ran the model first.
+
+    `prepare` decoded an angle and `commit` then vetoed the lead, so ~18 s went into
+    writing prospect-facing copy about a government body, a competitor or a university
+    the gate had already decided we must not contact -- and it went in again on every
+    rescore. The score-safety half always held, because `commit` re-reads the facts and
+    recomputes `score()` from database state. The *ordering* the docstring names did
+    not, which is the `ComplianceGate.fingerprint` defect: a docstring describing a
+    property its own last line does not provide.
+
+    Counted rather than asserted in prose: the call count is the whole claim.
+    """
+    from cindraleads.agents.scorer import SCORE_KIND, Scorer
+    from cindraleads.config import settings as real_settings
+
+    _build, _posts, store = rig
+
+    class _CountingProse:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            from cindraleads.llm import StructuredResult
+            from cindraleads.models import LeadProse
+
+            self.calls += 1
+            return StructuredResult(
+                value=LeadProse(outreach_angle="You shipped an assistant last month."),
+                model="stub",
+                backend="stub",
+                attempts=1,
+                escalated=False,
+                latency_ms=1,
+            )
+
+    _seed_company_for_prose(store)
+    cfg = real_settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+    job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
+
+    # Suppression is the veto that needs no fixture surgery: the gate reads the table
+    # the operator writes with `cindra suppress`.
+    with store.tx() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO suppression_list "
+            "(entry_id, kind, value, reason, created_at) "
+            "VALUES ('s1','domain','acme.io','not a prospect','2026-09-22T00:00:00Z')"
+        )
+
+    llm = _CountingProse()
+    scorer = Scorer(store=store, llm=llm, config=cfg)
+    outcome = asyncio.run(scorer.prepare(job))
+    with store.tx() as conn:
+        result = scorer.commit(job, outcome, conn)
+
+    assert result.ok, "a vetoed lead is a successful stage, not a failure"
+    assert llm.calls == 0, (
+        "the model was asked to write an angle for a company the gate vetoes -- ~18 s "
+        "of decode on this box, repeated on every rescore"
+    )
+    quarantined = store.conn.execute("SELECT COUNT(*) AS n FROM quarantine").fetchone()["n"]
+    assert quarantined == 1, "commit must still be the authority that records the veto"
+
+
+def test_an_allowed_lead_still_reaches_the_model(rig):  # type: ignore[no-untyped-def]
+    """The bound. An advisory gate that vetoed everything would be indistinguishable
+    from a broken model, and the corpus would go quiet exactly the way it did when the
+    free-claim guard withheld 98% of it."""
+    from cindraleads.agents.scorer import SCORE_KIND, Scorer
+    from cindraleads.config import settings as real_settings
+
+    _build, _posts, store = rig
+
+    class _CountingProse:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def generate(self, *_args, **_kwargs):  # type: ignore[no-untyped-def]
+            from cindraleads.llm import StructuredResult
+            from cindraleads.models import LeadProse
+
+            self.calls += 1
+            return StructuredResult(
+                value=LeadProse(outreach_angle="You shipped an assistant last month."),
+                model="stub",
+                backend="stub",
+                attempts=1,
+                escalated=False,
+                latency_ms=1,
+            )
+
+    _seed_company_for_prose(store)
+    cfg = real_settings()
+    object.__setattr__(cfg, "config_dir", REPO_ROOT / "config")
+    object.__setattr__(cfg, "prompt_dir", REPO_ROOT / "prompts")
+    job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
+
+    llm = _CountingProse()
+    scorer = Scorer(store=store, llm=llm, config=cfg)
+    outcome = asyncio.run(scorer.prepare(job))
+    with store.tx() as conn:
+        scorer.commit(job, outcome, conn)
+
+    assert llm.calls == 1
+    assert store.conn.execute("SELECT outreach_angle FROM leads").fetchone()["outreach_angle"]

@@ -13,6 +13,21 @@ prose and nothing else — the tier, the offer and the verdict are already decid
 That ordering is what makes "a model must never be allowed to invent the number"
 structurally true rather than a convention. There is no branch in which the LLM's output
 reaches `score`.
+
+**That sentence was half true for the life of the project, and the half that was false
+is the ordering it names.** `prepare` called the model and `commit` ran the gate, so
+compliance came *after* prose, not before it: the Scorer spent ~18 s writing
+prospect-facing copy about government bodies, competitors and universities it had
+already decided it must not contact, and did it again on every rescore. The
+score-safety half always held -- `commit` re-reads the facts and recomputes `score()`
+from database state, so nothing the model produced can reach the number -- but the
+docstring promised an ordering the code did not implement, which is the
+`ComplianceGate.fingerprint` defect exactly: **a docstring describing the property its
+own last line does not provide.**
+
+The gate now runs in `prepare` too, advisorily, to decide whether the model is worth
+calling. `commit` still asks authoritatively inside the transaction and that answer is
+the only one stored, because suppression can change between the two phases.
 """
 
 from __future__ import annotations
@@ -112,6 +127,25 @@ PROSE_RETRY_SECONDS = 20 * 60
 # tightly to the bounds saved nothing and turned a long answer into a lost one.
 PROSE_MAX_TOKENS = 600
 PROSE_MAX_TOKENS_BENGALI = 1200
+
+
+def _lead_facts(domain: str, facts: dict[str, Any]) -> LeadFacts:
+    """What the gate is asked about, built in one place.
+
+    Two callers now: `prepare` asks advisorily to decide whether a model call is worth
+    making, `commit` asks authoritatively inside the transaction. Two constructions
+    would be two chances to hand the same rules different facts and get different
+    answers -- the shape `calibration_version` was introduced to stop one level up.
+    """
+    return LeadFacts(
+        canonical_domain=domain,
+        display_name=facts["display_name"],
+        employee_band=facts["employee_band"],
+        industry=facts["industry"],
+        country=facts["country"],
+        trigger_codes=tuple(t["code"] for t in facts["triggers"]),
+        evidence_urls=tuple(facts["evidence_urls"]),
+    )
 
 
 def _prose_budget(country: str | None) -> int:
@@ -387,6 +421,23 @@ class Scorer:
             log.info("scorer_prose_retry_moot", canonical_domain=domain)
             return ScoreOutcome(canonical_domain=domain)
 
+        # Compliance before prose, which is what the module docstring has always said
+        # and what the code did not do. A vetoed lead is quarantined by `commit` and can
+        # never be dispatched, so an angle for it is ~18 s of decode -- on a box that
+        # does 3.7 tok/s -- spent writing to a government body or a competitor, and
+        # spent again on every rescore.
+        #
+        # **Advisory, never authoritative.** `commit` re-reads the facts, recomputes the
+        # score and asks the gate again inside the transaction; that answer is the one
+        # stored. Suppression changes without a lead row moving, so the two can disagree
+        # and only the transactional one may decide what is written. This one decides
+        # only whether to call the model.
+        if self.gate is not None:
+            self.gate.load_suppression(self.store.conn)
+            if not self.gate.review(_lead_facts(domain, facts)).passed:
+                log.info("scorer_prose_skipped_vetoed", canonical_domain=domain)
+                return ScoreOutcome(canonical_domain=domain)
+
         result = score(self._score_input(facts), self.scoring)
         prompt = self._angle_prompt.format(**self.angle_kwargs(facts, result))
         try:
@@ -468,17 +519,7 @@ class Scorer:
         result = score(self._score_input(facts), self.scoring)
         assert self.gate is not None
         self.gate.load_suppression(conn)
-        verdict = self.gate.review(
-            LeadFacts(
-                canonical_domain=outcome.canonical_domain,
-                display_name=facts["display_name"],
-                employee_band=facts["employee_band"],
-                industry=facts["industry"],
-                country=facts["country"],
-                trigger_codes=tuple(t["code"] for t in facts["triggers"]),
-                evidence_urls=tuple(facts["evidence_urls"]),
-            )
-        )
+        verdict = self.gate.review(_lead_facts(outcome.canonical_domain, facts))
 
         lead_id = lead_id_for(outcome.canonical_domain)
         if not verdict.passed:
