@@ -2659,3 +2659,72 @@ def test_every_offer_has_a_label_short_enough_for_a_digest_row():  # type: ignor
         label = config.offer_label(slug)
         assert label != slug, f"{slug} has no label, so the card prints the slug"
         assert len(label) <= 40, f"{slug}'s label is prose, not a label: {label!r}"
+
+
+def test_a_lead_whose_retry_is_pending_is_not_queued_again(store):  # type: ignore[no-untyped-def]
+    """A prose retry carries no dedupe key, so the key check cannot see it.
+
+    `commit` hands the retry back as a follow-on and the worker enqueues follow-ons
+    without a key -- deliberately, since a retry is not the same logical work as the
+    job that scheduled it. Combined with `--reprose` noncing past a *finished* key,
+    that guaranteed a duplicate: the first attempt pauses on heat, completes, the key
+    reads `done`, and the next pass queues the same lead beside a retry still 20
+    minutes out.
+
+    Measured on the Pi 2026-09-23: 51 of 52 prose failures thermal, **every one at
+    `pauses: 1`**, no `pauses: 2` anywhere -- which is what a retry that had come back
+    would log. The work was waiting, not lost, and a second pass inside that window
+    spends decode re-doing it.
+    """
+    from cindraleads.agents.scorer import SCORE_KIND, enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _stale_lead(store, "broken.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+    queue = JobQueue(store)
+    assert enqueue_stale_scores(store, queue, reprose=True, limit=1) == 1
+
+    # The pass ran and paused on heat: the job completes, and the retry it scheduled is
+    # a *keyless* job sitting twenty minutes out.
+    with store.tx() as conn:
+        conn.execute("UPDATE jobs SET status = 'done' WHERE kind = ?", (SCORE_KIND,))
+        queue.enqueue(SCORE_KIND, {"canonical_domain": "broken.io"}, delay_seconds=1200, conn=conn)
+
+    assert enqueue_stale_scores(store, queue, reprose=True, limit=1) == 0, (
+        "the lead was queued a second time while its own retry was still waiting"
+    )
+    assert (
+        store.conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = ? AND status = 'pending'",
+            (SCORE_KIND,),
+        ).fetchone()["n"]
+        == 1
+    )
+
+
+def test_a_pending_retry_does_not_hide_the_rest_of_the_backlog(store):  # type: ignore[no-untyped-def]
+    """The bound. Dropped before the limit, so the slot goes to a lead that needs it.
+
+    Ranking the waiting lead behind the others would be wrong in the same way the
+    vetoed leads were: the pass is bounded, and a row that needs nothing from it must
+    not consume one of the fifty.
+    """
+    from cindraleads.agents.scorer import SCORE_KIND, enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _stale_lead(store, "waiting.io", angle=_UNSENDABLE, offer="ai_llm_assessment")
+    _stale_lead(store, "next.io", angle=_UNSENDABLE, offer="ai_llm_assessment", age_days=9)
+    queue = JobQueue(store)
+    with store.tx() as conn:
+        queue.enqueue(SCORE_KIND, {"canonical_domain": "waiting.io"}, delay_seconds=1200, conn=conn)
+
+    assert enqueue_stale_scores(store, queue, reprose=True, limit=1) == 1
+    queued = [
+        json.loads(row["payload"])["canonical_domain"]
+        for row in store.conn.execute(
+            "SELECT payload FROM jobs WHERE kind = ? AND status = 'pending' ORDER BY rowid",
+            (SCORE_KIND,),
+        )
+    ]
+    assert queued == ["waiting.io", "next.io"], (
+        f"the bounded pass skipped the lead that needed it, queued {queued}"
+    )

@@ -914,6 +914,40 @@ def _is_unsendable(row: sqlite3.Row, config: ScoringConfig | None = None) -> boo
     )
 
 
+def outstanding_score_domains(conn: sqlite3.Connection) -> frozenset[str]:
+    """Domains that already have a score job waiting or running, by payload.
+
+    **A prose retry carries no dedupe key.** `commit` hands it back as a follow-on and
+    the worker enqueues follow-ons without one, deliberately -- a retry is not the same
+    logical work as the job that scheduled it. So the key check cannot see it, and once
+    `--reprose` learned to nonce past a *finished* key the two combined to guarantee a
+    duplicate: the first attempt pauses on heat and completes, the key reads `done`, and
+    the next pass queues the same lead again beside a retry that is still waiting.
+
+    Measured 2026-09-23: 51 of 52 prose failures were thermal, **every one at
+    `pauses: 1`** -- no `pauses: 2` anywhere, which is what a retry that had actually
+    come back would log. The constant is the tell, the same one this file keeps
+    recording. The work was not lost; it was 20 minutes out, and a second `--reprose`
+    inside that window spends decode re-doing it.
+
+    Read once per pass, not per row.
+    """
+    rows = conn.execute(
+        "SELECT payload FROM jobs WHERE kind = ? AND status IN ('pending', 'in_flight')",
+        (SCORE_KIND,),
+    ).fetchall()
+    domains: set[str] = set()
+    for row in rows:
+        try:
+            payload = json.loads(str(row["payload"] or "{}"))
+        except json.JSONDecodeError:  # pragma: no cover - a payload we did not write
+            continue
+        domain = str(payload.get("canonical_domain") or "")
+        if domain:
+            domains.add(domain)
+    return frozenset(domains)
+
+
 def _needs_repair(
     row: sqlite3.Row,
     config: ScoringConfig | None,
@@ -1005,6 +1039,12 @@ def stale_selection(
         from cindraleads.agents.dispatcher import blocked_subjects
 
         suppressed, quarantined = blocked_subjects(store.conn)
+        # Dropped *before* the limit, not ranked behind it: a lead whose retry is
+        # pending needs nothing from this pass, so letting it hold a slot would spend
+        # the bound on work already scheduled. The same top-up shape as
+        # `enqueue_stale_extractions` counting outstanding jobs rather than new ones.
+        waiting = outstanding_score_domains(store.conn)
+        rows = [row for row in rows if str(row["domain"]) not in waiting]
         rows = sorted(
             rows, key=lambda row: not _needs_repair(row, scoring, suppressed, quarantined)
         )

@@ -2607,6 +2607,31 @@ product, and the rule that is safe for a model's own English summary is not obvi
 the rule that is safe for a company's name. Recorded rather than patched, the same
 call as the nonprofit half of `not_academic`.
 
+**`pauses: 1` on 51 of 52 failures is the finding; the thermal message is not.**
+Read 2026-09-23: 52 `scorer_prose_failed`, 51 of them `LLM inference is paused by the
+thermal governor`, **every single one at `pauses: 1`, `will_retry: true`,
+`gave_up: false`** -- and not one `pauses: 2` anywhere. A retry that had actually come
+back and paused again would log 2. So the retries had not run: `PROSE_RETRY_SECONDS` is
+20 minutes, and the whole measurement was taken inside that window. **A constant across
+51 of 52 observations is a claim about the measurement**, for the seventh time in this
+file, and here it was the one fact that mattered -- the work was waiting, not lost.
+
+**And a retry carries no dedupe key, which turned my own fix into a duplicate
+generator.** `commit` hands the retry back as a follow-on and the worker enqueues
+follow-ons without a key (`cli.py`), deliberately: a retry is not the same logical work
+as the job that scheduled it. Two commits earlier `--reprose` learned to nonce past a
+**finished** key, which was right on its own evidence. Together: the first attempt
+pauses on heat and completes, the key reads `done`, and the next pass queues that lead
+again beside a retry that is still twenty minutes out. Three passes in an afternoon is
+`done` +282 while the backlog moved 3.
+
+`outstanding_score_domains` closes it by asking the question the key cannot -- *is a
+score job for this domain pending or in flight, whatever its key* -- read once per pass
+and applied **before** the limit, because a lead that needs nothing from this pass must
+not hold one of its fifty slots. The `pending`/`in_flight` half of `_SPENT` was the
+right instinct and it was looking at the wrong thing: the retry has no key to be seen
+by.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
