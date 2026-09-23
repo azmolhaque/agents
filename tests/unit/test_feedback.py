@@ -367,3 +367,38 @@ def test_an_outcome_only_reaction_leaves_a_lead_unjudged(store: Store) -> None:
     record_reaction(store, message_id="m1", emoji="📧", actor="zahin")
 
     assert [row["lead_id"] for row in unjudged_leads(store, days=7)] == ["lead-1"]
+
+
+def test_a_reaction_on_a_digest_page_is_refused_not_guessed(store: Store) -> None:
+    """One digest message carries up to eight leads, and the join picked one of them.
+
+    `send_digest` writes the same `discord_message_id` for every lead on the page, and
+    `lead_for_message` asked for `ORDER BY dispatched_at DESC LIMIT 1` -- so a thumbs-up
+    on the Tier C roll-up recorded a verdict against whichever lead the loop inserted
+    last, silently and unrepeatably. Its own docstring said unattributable reactions
+    "must be dropped rather than guessed at".
+
+    A wrong verdict is worse than a missing one here: feedback is the only ground truth
+    the Critic has, the last run reported `judged: 0`, and one misattributed thumbs-down
+    argues to down-weight whatever the *other* lead was scored on.
+    """
+    _dispatch(store, lead_id="lead-a", message_id="msg-digest")
+    _dispatch(store, lead_id="lead-b", message_id="msg-digest")
+
+    assert lead_for_message(store, "msg-digest") is None
+    result = record_reaction(store, message_id="msg-digest", emoji="👍", actor="zahin")
+    assert result.recorded is False
+    assert "digest of 2 leads" in result.reason, result.reason
+    assert "cindra feedback" in result.reason, "the refusal has to name the way that works"
+    assert store.conn.execute("SELECT COUNT(*) AS n FROM feedback").fetchone()["n"] == 0
+
+
+def test_a_reaction_on_a_single_lead_card_still_records(store: Store) -> None:
+    """The bound. A Tier A/B card is one message for one lead, which is the whole
+    reason the join exists, and it must keep working."""
+    _dispatch(store, lead_id="lead-a", message_id="msg-card")
+
+    assert lead_for_message(store, "msg-card") == "lead-a"
+    result = record_reaction(store, message_id="msg-card", emoji="👍", actor="zahin")
+    assert result.recorded is True
+    assert result.lead_id == "lead-a"

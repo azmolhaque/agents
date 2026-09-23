@@ -2701,6 +2701,28 @@ first where the impossible fixture was what kept the wrong rule in place: its st
 argument ("a partial drop rate is the template's fault") cannot occur, so it could only
 ever have been defending the defect.
 
+**A reaction on the Tier C digest recorded a verdict against an arbitrary one of its
+eight leads.** `send_digest` writes the *same* `discord_message_id` for every lead on a
+page -- that is what a digest is -- and `lead_for_message` asked for `ORDER BY
+dispatched_at DESC LIMIT 1`, so a thumbs-up on the roll-up was attributed to whichever
+lead the loop happened to insert last. Silent, unrepeatable, and pointed at a lead the
+operator was not looking at.
+
+Its own docstring says the other two unattributable cases "must be dropped rather than
+guessed at" and then the last line guessed. **Fourth instance of a docstring describing
+a property its own code does not provide**, after `ComplianceGate.fingerprint`, the
+Scorer's prose-before-compliance ordering and `is_exhausted`. Reading a docstring
+against its own last line remains the cheapest audit in this project and keeps paying.
+
+A wrong verdict is worse than a missing one here, which is why this is a refusal and
+not a best guess. Feedback is the only ground truth the Critic has, it is scarce --
+`judged: 0` on the last report -- and one misattributed thumbs-down argues to
+down-weight whatever the *other* lead was scored on. The refusal names the digest size
+and the two routes that do work: react to a per-lead Tier A/B card, or use the `cindra
+feedback <lead_id> good|bad` line the worklist prints under every row. It is logged at
+`info` in the store rather than left to the bot, which files an ignored event at
+`debug` -- **a human deliberately reacting and getting nothing is not a debug event.**
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

@@ -28,6 +28,7 @@ __all__ = [
     "FeedbackResult",
     "PrecisionReport",
     "lead_for_message",
+    "leads_on_message",
     "precision_report",
     "record_reaction",
     "record_verdict",

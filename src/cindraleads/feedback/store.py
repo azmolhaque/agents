@@ -34,6 +34,7 @@ __all__ = [
     "FeedbackResult",
     "PrecisionReport",
     "lead_for_message",
+    "leads_on_message",
     "precision_report",
     "record_reaction",
     "record_verdict",
@@ -78,21 +79,52 @@ class FeedbackResult:
 
 
 def lead_for_message(store: Store, message_id: str) -> str | None:
-    """The lead a Discord message is about, or None.
+    """The lead a Discord message is about, or None when it is not exactly one.
 
-    None has two causes worth telling apart in the log: a message that is not one of
-    ours at all (someone reacting to chat), and one of our cards sent before
-    `discord_message_id` was being captured. Neither is an error; both mean the
-    reaction cannot be attributed and must be dropped rather than guessed at.
+    None has three causes worth telling apart in the log: a message that is not one of
+    ours at all (someone reacting to chat), one of our cards sent before
+    `discord_message_id` was being captured, and **a digest page, which is one message
+    carrying up to eight leads**. None of them is an error; all three mean the reaction
+    cannot be attributed and must be dropped rather than guessed at.
+
+    That third one was guessed at. `send_digest` writes the same `discord_message_id`
+    for every lead on the page, and this asked for `ORDER BY dispatched_at DESC LIMIT
+    1` -- so a thumbs-up on a digest recorded a verdict against whichever of the eight
+    the loop happened to insert last, and the operator would never know which. The
+    docstring already said "dropped rather than guessed at" while the last line did the
+    guessing: **fourth instance of a docstring describing a property its own code does
+    not provide**, after `ComplianceGate.fingerprint`, the Scorer's ordering and
+    `is_exhausted`.
+
+    A wrong verdict is worse here than a missing one. Feedback is the only ground truth
+    the Critic has, it is scarce -- `judged: 0` on the last run -- and one misattributed
+    thumbs-down argues to down-weight whatever the *other* lead was scored on.
     """
     if not message_id:
         return None
+    rows = store.conn.execute(
+        "SELECT DISTINCT lead_id FROM dispatch_log WHERE discord_message_id = ? LIMIT 2",
+        (str(message_id),),
+    ).fetchall()
+    if len(rows) != 1:
+        return None
+    return str(rows[0]["lead_id"])
+
+
+def leads_on_message(store: Store, message_id: str) -> int:
+    """How many leads that message carries, so a refusal can say *why* it refused.
+
+    "Nothing happened" and "that message is a digest of eight leads, react to a card or
+    use `cindra feedback <lead_id>`" are the same silence otherwise, and the second is
+    the one a human can act on.
+    """
+    if not message_id:
+        return 0
     row = store.conn.execute(
-        "SELECT lead_id FROM dispatch_log WHERE discord_message_id = ? "
-        "ORDER BY dispatched_at DESC LIMIT 1",
+        "SELECT COUNT(DISTINCT lead_id) AS n FROM dispatch_log WHERE discord_message_id = ?",
         (str(message_id),),
     ).fetchone()
-    return str(row["lead_id"]) if row else None
+    return int(row["n"]) if row else 0
 
 
 def record_reaction(
@@ -115,6 +147,16 @@ def record_reaction(
 
     lead_id = lead_for_message(store, message_id)
     if lead_id is None:
+        carried = leads_on_message(store, message_id)
+        if carried > 1:
+            log.info("feedback_ambiguous_message", message_id=message_id, leads=carried)
+            return FeedbackResult(
+                False,
+                reason=(
+                    f"that message is a digest of {carried} leads -- react to a Tier A/B "
+                    f"card, or run `cindra feedback <lead_id> good|bad`"
+                ),
+            )
         log.debug("feedback_unmatched_message", message_id=message_id, emoji=emoji)
         return FeedbackResult(False, reason="no dispatched lead for that message")
 
