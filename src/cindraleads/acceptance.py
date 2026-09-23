@@ -45,6 +45,7 @@ from cindraleads.metrics import (
     HEARTBEAT_UNITS,
     OPTIONAL_UNITS,
     boot_of,
+    uptime_seconds,
 )
 from cindraleads.models import to_iso, utcnow
 from cindraleads.store import Store
@@ -140,6 +141,10 @@ class AcceptanceReport:
     # box that is not on for the whole window.
     covered_hours: float = 0.0
     silent_units: list[str] = field(default_factory=list)
+    # Units whose silence cannot be judged yet: the box has not been up as long as the
+    # unit's own budget, so a daily timer may simply not have had its turn. Reported,
+    # and enough on its own to keep `no_silent_unit` off green.
+    unjudged_units: list[str] = field(default_factory=list)
     worker_restarts: int = 0
     builds_seen: int = 0
     # heat, reported not judged
@@ -159,7 +164,16 @@ class AcceptanceReport:
                 else None
             ),
             "no_job_lost": self.jobs_lost == 0,
-            "no_silent_unit": not self.silent_units and not self.worker_gaps,
+            # A real fault still fails. Otherwise, a unit nobody could judge yet keeps
+            # this off green rather than earning one -- same rule as `throughput`
+            # under `MIN_THROUGHPUT_HOURS`.
+            "no_silent_unit": (
+                False
+                if (self.silent_units or self.worker_gaps)
+                else None
+                if self.unjudged_units
+                else True
+            ),
             "one_build_throughout": self.builds_seen <= 1 if self.builds_seen else None,
             "governor_recovered": self.thermal.recovered if self.thermal.measured else None,
         }
@@ -211,7 +225,10 @@ def assess_run(
     beats = _heartbeat_rows(store, "worker", stamp)
     _job_integrity(report, store, stamp)
     # After `_liveness`, which is what measures `covered_hours` -- the denominator.
-    _liveness(report, store, stamp, beats, now=at)
+    # Read here rather than inside `_liveness`, so a test states the box's uptime by
+    # patching one function and nothing has to remember to pass an argument. A
+    # parameter no caller supplies is the shape this project has paid for ten times.
+    _liveness(report, store, stamp, beats, now=at, uptime=uptime_seconds())
     _throughput(report, store, stamp)
     report.thermal = _thermal(beats)
     return report
@@ -289,6 +306,7 @@ def _liveness(
     beats: list[tuple[datetime, dict[str, Any]]],
     *,
     now: datetime,
+    uptime: float | None = None,
 ) -> None:
     """Gaps in the worker's own record, plus units that never reported at all.
 
@@ -343,11 +361,77 @@ def _liveness(
     report.builds_seen = len(builds)
     report.worker_restarts = sum(1 for _, d in beats if d.get("exiting"))
 
-    for unit in HEARTBEAT_UNITS:
+    _silent_units(report, store, now=now, uptime=uptime)
+
+
+def _silent_units(
+    report: AcceptanceReport, store: Store, *, now: datetime, uptime: float | None
+) -> None:
+    """Which timers have actually stopped, judged against their own cadence.
+
+    This asked whether a unit beat *inside the operator's window*, and that is a
+    question about the window. `digest` fires daily at 08:30 and `maintenance` at
+    03:20, so **neither can beat in a six-hour evening window** and a correct system
+    fails by construction -- observed 2026-09-23, `silent: digest` on a box whose
+    digest timer was enabled, loaded and entirely healthy. Same family as the
+    `get_throttled == 0x0` gate asserting a heatsink, as `throughput` dividing by
+    wall-clock on a grid with load shedding, and as `no_job_lost` charging an
+    unreachable prospect to the software: **a criterion a correct system cannot
+    satisfy is grading something other than the software.**
+
+    The right number already existed and already had a reader. `HEARTBEAT_UNITS` maps
+    each unit to `max_silence_hours` -- 36 for the daily pair, 6 for hourly harvest --
+    and `/healthz` has always judged against it. So this was one decision in two files
+    with only one of them reading the number, for the eighth time, and the fix is to
+    ask the same question: **is this unit's last beat older than its own budget**,
+    looking as far back as it takes rather than stopping at the window edge.
+
+    The boot case is the one exemption and it follows the `no_job_lost` discipline --
+    positive evidence, never absence of it. A box up for less than a unit's budget has
+    not given that timer its turn, so the answer is *unknown*, which keeps the
+    criterion off green instead of excusing it. Unknown uptime buys nothing.
+    """
+    up_hours = None if uptime is None else uptime / 3600.0
+    for unit, budget_hours in HEARTBEAT_UNITS.items():
         if unit == "worker" or unit in OPTIONAL_UNITS:
             continue
-        if not _heartbeat_rows(store, unit, stamp):
+        beat = _last_beat_at_or_before(store, unit, now)
+        if beat is not None and (now - beat).total_seconds() <= budget_hours * 3600:
+            continue
+        if up_hours is not None and up_hours < budget_hours:
+            report.unjudged_units.append(unit)
+        else:
             report.silent_units.append(unit)
+
+
+def _with_budgets(units: list[str]) -> str:
+    """`digest (36 h)`, because the budget is what the operator is being told about.
+
+    A bare `silent: digest` reads as "the digest timer is broken" and sent a reader
+    looking at systemd. `digest (36 h)` says what claim is being made, and the next
+    question -- has it been more than 36 hours -- is one they can answer.
+    """
+    return ", ".join(f"{u} ({HEARTBEAT_UNITS[u]:g} h)" for u in units)
+
+
+def _last_beat_at_or_before(store: Store, unit: str, at: datetime) -> datetime | None:
+    """The unit's most recent heartbeat, unbounded by the operator's window.
+
+    Deliberately not `_heartbeat_rows`: that one is scoped to the window, which is
+    correct for the worker -- whose gaps are a fact *about* the window -- and wrong for
+    a timer, whose cadence is longer than most windows anyone will ask about.
+    """
+    row = store.conn.execute(
+        "SELECT recorded_at FROM metrics WHERE name = ? AND labels LIKE ? "
+        "AND recorded_at <= ? ORDER BY recorded_at DESC LIMIT 1",
+        (HEARTBEAT_METRIC, f'%"unit":"{unit}"%', to_iso(at)),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return datetime.fromisoformat(str(row["recorded_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _recovered(states: list[tuple[datetime, dict[str, Any]]]) -> bool:
@@ -472,7 +556,20 @@ def render_markdown(report: AcceptanceReport) -> str:
                 else ""
             )
             + (f"; {len(report.power_gaps)} power cut(s), not graded" if report.power_gaps else "")
-            + (f"; silent: {', '.join(report.silent_units)}" if report.silent_units else "")
+            + (
+                f"; silent past its budget: {_with_budgets(report.silent_units)}"
+                if report.silent_units
+                else ""
+            )
+            # Printed for the same reason the unreachable and announced counts are: an
+            # exemption nobody can see is a weakened gate, and "the box has only been
+            # up an hour" is the operator's cue to wait rather than to investigate.
+            + (
+                f"; not yet judgeable: {_with_budgets(report.unjudged_units)}"
+                f" -- box up under their budget"
+                if report.unjudged_units
+                else ""
+            )
         ),
         "one_build_throughout": f"{report.builds_seen} build(s) seen, "
         f"{report.worker_restarts} clean exit(s)",

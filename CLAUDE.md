@@ -2723,6 +2723,54 @@ feedback <lead_id> good|bad` line the worklist prints under every row. It is log
 `info` in the store rather than left to the bot, which files an ignored event at
 `debug` -- **a human deliberately reacting and getting nothing is not a debug event.**
 
+**`no_silent_unit` failed a box on which every timer was working, and the criterion was
+grading the window.** Read 2026-09-23 over 6 h: `FAIL no_silent_unit ... silent: digest`
+on a Pi whose digest timer was enabled, loaded and had posted that morning. The check
+asked whether a unit beat inside the *operator's* window -- and `digest` fires daily at
+08:30, `maintenance` at 03:20, so **neither can beat in a six-hour evening window.** A
+correct system failed by construction, and the only reason `maintenance` did not fail
+with it is that `Persistent=true` fired its missed run at boot.
+
+Fourth member of the family that retired `get_throttled == 0x0` (asserting a heatsink),
+narrowed `no_job_lost` (charging an unreachable prospect to the software) and gave
+`throughput` a running-hours denominator (dividing by a grid with load shedding): **a
+criterion a correct system cannot satisfy is grading something other than the
+software.**
+
+The number it should have used already existed and already had a reader.
+`HEARTBEAT_UNITS` maps each unit to `max_silence_hours` -- 36 for the daily pair, 6 for
+hourly harvest -- and `/healthz` has judged against it since Phase 7. **One decision in
+two files with only one of them reading the number**, for the eighth time, after the
+prose bound against its budget, `WatchdogSec` against the lease, `MAX_STAGE_SECONDS`
+against `TimeoutStopSec` and `ENRICH_DEADLINE_SECONDS`. The question is now the same on
+both sides: is this unit's last beat older than its own budget, looking as far back as
+it takes rather than stopping at the window edge.
+
+The boot exemption follows the `no_job_lost` discipline exactly -- **positive evidence,
+never absence of it.** A box up for less than a unit's budget has not given that timer
+its turn, so the answer is *unknown*: `unjudged_units`, which reports `n/a` and does
+**not** pass, the same rule `throughput` follows under `MIN_THROUGHPUT_HOURS`. Unknown
+uptime buys nothing, because a platform that cannot prove it was off must not get the
+widest excuse. Both lists print with their budgets (`digest (36 h)`), because a bare
+`silent: digest` reads as "systemd is broken" and sent a reader looking in the wrong
+place for an evening.
+
+`uptime_seconds` moved to `metrics.py` beside `boot_id` -- same kind of `/proc` fact,
+and now two readers rather than two copies -- and `assess_run` calls it at the top
+rather than taking it as an argument, because **a parameter no caller supplies is the
+shape this project has paid for ten times.**
+
+**And every silence test in the suite had just become a claim about the test machine.**
+Reading real uptime means the verdict depends on how long the laptop or the CI runner
+happened to have been switched on: green on a box up a week, red on one booted that
+morning, with nothing in the diff to explain it. An autouse fixture states the uptime.
+Third instance, after the health test that polled the real SoC and the two tests pinned
+to literal dates -- **green locally is a claim about the laptop.**
+
+The old predicate is not argued against here, it was run: same database, both
+predicates, a healthy box with the hourly timers minutes old and the daily pair 9 and 14
+hours old. Old says silent on both dailies, new says silent on neither.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

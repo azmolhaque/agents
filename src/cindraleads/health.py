@@ -45,6 +45,7 @@ from cindraleads.metrics import (
     render_prometheus,
     snapshot,
     source_mtime,
+    uptime_seconds,
 )
 from cindraleads.models import utcnow
 from cindraleads.store import Store
@@ -145,19 +146,6 @@ def assess(
     _check_thermal(report, thermal)
 
     return report
-
-
-def uptime_seconds() -> float | None:
-    """Seconds since boot, or None where that is not knowable.
-
-    None on anything without `/proc/uptime`, which the caller must treat as "no
-    information" rather than as zero -- reading a missing file as a fresh boot would
-    suppress every staleness alarm on the one platform that could not prove otherwise.
-    """
-    try:
-        return float(Path("/proc/uptime").read_text().split()[0])
-    except (OSError, ValueError, IndexError):
-        return None
 
 
 def _check_heartbeats(

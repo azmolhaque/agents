@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any
+
+import pytest
 
 from cindraleads.acceptance import (
     HEARTBEAT_GAP_SECONDS,
@@ -21,6 +24,23 @@ from cindraleads.acceptance import (
 )
 from cindraleads.metrics import HEARTBEAT_METRIC, HEARTBEAT_UNITS, OPTIONAL_UNITS
 from cindraleads.models import to_iso, utcnow
+
+LONG_UPTIME = 90 * 24 * 3600.0
+
+
+@pytest.fixture(autouse=True)
+def _box_has_been_up_a_while(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """State the box's uptime instead of reading the machine running the tests.
+
+    `_silent_units` exempts a unit the box has not been up long enough to have run,
+    so without this every silence verdict here would depend on how long the laptop or
+    the CI runner happened to have been switched on -- green on a box up for a week,
+    red on one booted this morning, with nothing in the diff to explain it. That is
+    the health test polling the real SoC and the tests pinned to literal dates, for
+    the third time: **green locally is a claim about the laptop.**
+    """
+    monkeypatch.setattr("cindraleads.acceptance.uptime_seconds", lambda: LONG_UPTIME)
+    yield
 
 
 def _beat(store: Any, unit: str, *, ago_minutes: float, **detail: Any) -> None:
@@ -159,12 +179,90 @@ def test_a_gap_in_the_worker_record_is_caught(store: Any) -> None:
     assert report.criteria["no_silent_unit"] is False
 
 
-def test_a_timer_that_never_ran_in_the_window_is_named(store: Any) -> None:
+def test_a_timer_that_has_not_run_within_its_own_budget_is_named(store: Any) -> None:
     _healthy_run(store)
     with store.tx() as conn:
         conn.execute('DELETE FROM metrics WHERE labels LIKE \'%"unit":"digest"%\'')
 
     report = assess_run(store, hours=72)
+
+    assert "digest" in report.silent_units
+    assert report.criteria["no_silent_unit"] is False
+
+
+def test_a_daily_timer_is_not_silent_just_because_the_window_is_short(store: Any) -> None:
+    """The defect this criterion shipped with, and it failed a healthy box.
+
+    `digest` fires daily at 08:30 and `maintenance` at 03:20, while the check asked
+    whether a unit beat inside the *operator's* window. A six-hour evening window
+    therefore failed on a system where every timer was enabled, loaded and running --
+    read on the Pi 2026-09-23 as `FAIL no_silent_unit ... silent: digest`, on a box
+    that had posted its digest that morning.
+
+    Same family as `get_throttled == 0x0` asserting a heatsink and `throughput`
+    dividing by wall-clock: **a criterion a correct system cannot satisfy is grading
+    something other than the software.** The budget it should have used was already in
+    `HEARTBEAT_UNITS` and already read by `/healthz`.
+    """
+    _healthy_run(store, hours=6)
+    for unit in HEARTBEAT_UNITS:
+        if unit in ("worker", *OPTIONAL_UNITS):
+            continue
+        # Every timer alive on its own cadence, and the daily pair last ran this
+        # morning -- well before a window that covers only the evening.
+        _beat(store, unit, ago_minutes=30 if HEARTBEAT_UNITS[unit] <= 12 else 9 * 60)
+
+    report = assess_run(store, hours=6)
+
+    assert report.silent_units == []
+    assert report.unjudged_units == []
+    assert report.criteria["no_silent_unit"] is True
+
+
+def test_a_timer_the_box_has_not_been_up_long_enough_to_run_is_not_yet_judged(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unknown, which keeps the criterion off green rather than excusing it.
+
+    A box up for ten minutes has not given a 36-hour timer its turn, so "digest has
+    not beaten" says nothing about the timer. Reporting that as a pass would be the
+    `get_throttled` mistake in the other direction -- a green earned by not looking --
+    so it reports `n/a`, the same rule `throughput` follows under
+    `MIN_THROUGHPUT_HOURS`.
+    """
+    monkeypatch.setattr("cindraleads.acceptance.uptime_seconds", lambda: 600.0)
+    _healthy_run(store, hours=6)
+    # A box booted ten minutes ago has no beat from either daily timer yet, which is
+    # what `_healthy_run` would otherwise supply.
+    with store.tx() as conn:
+        conn.execute(
+            'DELETE FROM metrics WHERE labels LIKE \'%"unit":"digest"%\' '
+            'OR labels LIKE \'%"unit":"maintenance"%\''
+        )
+
+    report = assess_run(store, hours=6)
+
+    assert set(report.unjudged_units) == {"digest", "maintenance"}
+    assert report.silent_units == []
+    assert report.criteria["no_silent_unit"] is None
+    assert report.passed is False
+
+
+def test_unknown_uptime_buys_a_dead_timer_no_alibi(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Positive evidence, never absence of it -- the `no_job_lost` discipline.
+
+    A platform with no `/proc/uptime` cannot show that a timer has not had its turn,
+    and a missing file must not become a blanket excuse. Without this, the exemption
+    would be widest on exactly the machines that can prove the least.
+    """
+    monkeypatch.setattr("cindraleads.acceptance.uptime_seconds", lambda: None)
+    _healthy_run(store, hours=6)
+    with store.tx() as conn:
+        conn.execute('DELETE FROM metrics WHERE labels LIKE \'%"unit":"digest"%\'')
+
+    report = assess_run(store, hours=6)
 
     assert "digest" in report.silent_units
     assert report.criteria["no_silent_unit"] is False

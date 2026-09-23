@@ -48,6 +48,7 @@ __all__ = [
     "render_prometheus",
     "snapshot",
     "source_mtime",
+    "uptime_seconds",
     "worker_identity",
 ]
 
@@ -118,6 +119,24 @@ def boot_id() -> str | None:
     except OSError:
         return None
     return raw[:8] or None
+
+
+def uptime_seconds() -> float | None:
+    """Seconds since boot, or None where that is not knowable.
+
+    None on anything without `/proc/uptime`, which the caller must treat as "no
+    information" rather than as zero -- reading a missing file as a fresh boot would
+    suppress every staleness alarm on the one platform that could not prove otherwise.
+
+    It lives beside `boot_id` because they are the same kind of fact and because it has
+    two readers: `/healthz` asks whether a timer has had its turn yet, and so does
+    `cindra acceptance`. Two copies of a `/proc` read is one more place to get the
+    None case wrong.
+    """
+    try:
+        return float(Path("/proc/uptime").read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
 
 
 def worker_identity() -> str:
