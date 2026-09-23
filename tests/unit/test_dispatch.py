@@ -2606,3 +2606,56 @@ def test_work_already_waiting_is_not_queued_twice(store):  # type: ignore[no-unt
         ).fetchone()["n"]
         == 1
     )
+
+
+def test_the_card_names_the_offer_in_words_not_as_a_slug(rig):  # type: ignore[no-untyped-def]
+    """A digest row read `` `T1_AI_SHIP` announced an AI feature · ai_llm_assessment ·
+    riffn.io ``, and one of them said `gig`.
+
+    The trigger code was given its `means` phrase two days ago so the person deciding
+    whether to send could read the row; **the field immediately beside it was left as
+    the internal slug** -- the position every trigger code was in before `means`
+    existed, for the third time, now one column over.
+
+    `means` is the wrong text here: it is a sentence with a price range in it, written
+    to be slotted into prose. A digest row is eight to a message. So `label` is a
+    separate short form, required at load for the same reason `means` is -- the failure
+    is silent, the row keeps rendering and the slug comes back.
+    """
+    from cindraleads.agents.dispatcher import _card_data, build_card
+    from cindraleads.discord import digest_row
+    from cindraleads.scoring import ScoringConfig
+
+    build, _posts, store = rig
+    dispatcher = build(tier="C")
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET recommended_offer = 'ai_llm_assessment'")
+    lead = dispatcher.read_lead("lead1")
+    assert lead is not None
+
+    data = _card_data(lead)
+    label = ScoringConfig.load().offer_label("ai_llm_assessment")
+    assert label and label != "ai_llm_assessment"
+    assert data.offer == "ai_llm_assessment", "the guards key on the slug and must keep it"
+
+    rendered = json.dumps([digest_row(data), build_card(lead)])
+    assert label in rendered
+    assert "ai_llm_assessment" not in rendered, (
+        "the card shows the operator an internal slug where the offer goes"
+    )
+
+
+def test_every_offer_has_a_label_short_enough_for_a_digest_row():  # type: ignore[no-untyped-def]
+    """The load-bearing half. A missing label is invisible -- the row renders, with the
+    slug -- so it is validated at load, and a label as long as `means` would not fit
+    eight to a message, which is the only reason `label` is not just `means`."""
+    from typing import get_args
+
+    from cindraleads.models import Offer
+    from cindraleads.scoring import ScoringConfig
+
+    config = ScoringConfig.load()
+    for slug in get_args(Offer):
+        label = config.offer_label(slug)
+        assert label != slug, f"{slug} has no label, so the card prints the slug"
+        assert len(label) <= 40, f"{slug}'s label is prose, not a label: {label!r}"

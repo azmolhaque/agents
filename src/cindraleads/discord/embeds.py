@@ -80,6 +80,10 @@ class CardData:
     tier: str
     score: int
     offer: str
+    #: What the card *shows* for the offer. `offer` stays the slug because the guards
+    #: key on it; this is the phrase a human reads. Empty falls back to the slug, which
+    #: is the old behaviour and is what a card built by hand in a test gets.
+    offer_label: str = ""
     triggers: tuple[TriggerLine, ...] = ()
     evidence: tuple[tuple[str, str], ...] = ()  # (label, url)
     description: str = ""
@@ -92,6 +96,11 @@ class CardData:
     pipeline_version: str = ""
     observed_at: datetime | None = None
     extra_fields: tuple[tuple[str, str], ...] = field(default=())
+
+
+def _offer(data: CardData) -> str:
+    """What the card shows where the offer goes."""
+    return data.offer_label or data.offer
 
 
 def _fmt_triggers(data: CardData) -> str:
@@ -241,7 +250,7 @@ def lead_card(data: CardData) -> dict[str, Any]:
         "color": TIER_COLORS.get(data.tier, TIER_COLORS["C"]),
         "author": {
             "name": limits.truncate(
-                f"{mark} TIER {data.tier} · CindraScore {data.score} · {data.offer}",
+                f"{mark} TIER {data.tier} · CindraScore {data.score} · {_offer(data)}",
                 limits.AUTHOR_NAME,
             )
         },
@@ -281,7 +290,7 @@ def digest_row(data: CardData) -> dict[str, Any]:
             f"{TIER_MARK.get(data.tier, '•')} {data.score} · {data.display_name}", limits.TITLE
         ),
         "url": f"https://{data.canonical_domain}",
-        "description": limits.truncate(f"{top} · {data.offer}{link}\n{data.description}", 400),
+        "description": limits.truncate(f"{top} · {_offer(data)}{link}\n{data.description}", 400),
     }
     return _fit_total(embed)
 

@@ -398,6 +398,19 @@ def _trigger_means() -> dict[str, str]:
         return {}
 
 
+def _offer_label(offer: str) -> str:
+    """The offer in a few words, or the slug when the config cannot be read.
+
+    Degrades the same way `_trigger_means` does and for the same reason: a broken
+    config must not stop a card rendering, and the slug is exactly what it printed
+    before this existed.
+    """
+    try:
+        return ScoringConfig.load().offer_label(offer)
+    except (ConfigError, OSError):
+        return offer
+
+
 def _card_data(lead: dict[str, Any]) -> CardData:
     # Local, matching `worklist._top_trigger`: the scorer imports `TRIGGER_ORDER` from
     # this module, so a module-level import back into it is a cycle.
@@ -438,7 +451,11 @@ def _card_data(lead: dict[str, Any]) -> CardData:
         display_name=display_name_or_domain(lead["display_name"], str(lead["canonical_domain"])),
         tier=str(lead["tier"]),
         score=int(lead["score"]),
-        offer=str(lead["recommended_offer"]),
+        offer=offer_slug,
+        # The slug stays in `offer` because every guard keys on it; the card shows the
+        # label. `_trigger_means` already swallows a config failure for the same reason
+        # -- a card that renders without a phrase beats one that does not render.
+        offer_label=_offer_label(offer_slug),
         triggers=tuple(triggers),
         evidence=tuple((str(e["source_id"]), str(e["url"])) for e in lead["evidence"]),
         description=str(lead["description"] or ""),

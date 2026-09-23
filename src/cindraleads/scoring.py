@@ -117,6 +117,25 @@ class ScoringConfig:
         phrase = str(entry.get("means") or "").strip()
         return phrase or "a scoped external security review, priced before any work starts"
 
+    def offer_label(self, offer: str) -> str:
+        """The offer in a few words, for the human deciding whether to send.
+
+        **The Discord card printed the slug.** A digest row reads
+        `` `T1_AI_SHIP` announced an AI feature or assistant · ai_llm_assessment ·
+        riffn.io `` -- the trigger code was given its `means` phrase two days ago and
+        the field immediately beside it was not. Nobody outside this repository knows
+        what `gig` is, and the card exists to be read at a glance before a human sends
+        an email.
+
+        `means` is the wrong text here: it is a full sentence with a price range in it,
+        written to be slotted into prose, and four of those would not fit in a digest
+        row at all. A label is the short form the operator needs.
+
+        Fail closed on a missing one, exactly like `means`, because the failure is
+        silent: the row keeps rendering and the slug comes back.
+        """
+        return str((self.offers.get(offer) or {}).get("label") or "").strip() or offer
+
     def offer_is_free(self, offer: str) -> bool:
         """Whether the prospect pays nothing.
 
@@ -235,6 +254,20 @@ class ScoringConfig:
             raise ConfigError(
                 f"scoring.yaml offers need a human `means` phrase: {missing_offers}. "
                 f"Without it the outreach angle names the internal slug to the prospect."
+            )
+        # And a short one, for the card. Same rule, different reader: `means` is a
+        # sentence with a price in it and belongs in prose, `label` is what fits beside
+        # a trigger on a digest row. Without it the row prints `ai_llm_assessment` --
+        # which it did, to the person deciding whether to send.
+        missing_labels = sorted(
+            slug
+            for slug in get_args(Offer)
+            if not str((offers.get(slug) or {}).get("label", "")).strip()
+        )
+        if missing_labels:
+            raise ConfigError(
+                f"scoring.yaml offers need a short `label`: {missing_labels}. "
+                f"Without it the Discord card names the internal slug to the operator."
             )
 
         return cls(

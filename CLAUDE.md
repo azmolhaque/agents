@@ -2580,6 +2580,33 @@ which this command's own message invites, into a way to multiply the backlog.
 `test_work_already_waiting_is_not_queued_twice` is that bound, and it passes against the
 old code as well, because it pins behaviour that must *not* change.
 
+**The card printed the offer as a slug, one column from the fix that exists for
+exactly that.** A digest row read `` `T1_AI_SHIP` announced an AI feature or assistant ·
+ai_llm_assessment · riffn.io ``, and another said `· gig ·`. The trigger code was given
+its `means` phrase two days earlier so the person deciding whether to send could read
+the row; **the field immediately beside it was left alone** -- the position every
+trigger code was in before `means` existed, for the third time, now one column over.
+
+`means` is the wrong text here and that is why this is a new field rather than a reuse:
+it is a sentence with a price range in it, written to be slotted into prose, and eight
+of those do not fit in one digest message. `label` is required at load like `means`,
+because the failure is silent -- the row renders and the slug comes back -- and it
+degrades to the slug when the config cannot be read at all, the call `_trigger_means`
+already makes. `offer` stays the slug on `CardData`, because every guard keys on it.
+
+`offers` is outside `ScoringConfig.fingerprint` and outside `prose_version`, so this
+changes no score and re-proses nothing.
+
+**`description` reaches the card and the prose prompt with no guard on it at all.**
+Riffn's reads *"allowing voice-based,实时"* -- Chinese spliced into the middle of an
+English sentence the model wrote itself, the `হাFRINGদার` family in a second column.
+`looks_corrupted` exists for this shape and is wired only into
+`display_name_or_domain`, and it tests named Indic ranges, so it would not fire here
+even if it were called. Not fixed: a description may legitimately name a non-Latin
+product, and the rule that is safe for a model's own English summary is not obviously
+the rule that is safe for a company's name. Recorded rather than patched, the same
+call as the nonprofit half of `not_academic`.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
