@@ -2661,6 +2661,46 @@ flaw one level down -- it wrote an angle with a NULL `angle_version`, a pair the
 pipeline cannot produce, which is exactly what made two older tests go red against a
 correct change.
 
+**`cindra explain` told the operator to retire the South Asia strategy, and its own
+table two screens up disagreed.** Read 2026-09-24: `gh_orgs_bangladesh` 18 hits, 0
+candidates, **2 dropped** and `gh_orgs_dhaka` 18/0/**1**, both flagged *"returns nothing
+usable ... Every hit was a platform URL with no company site behind it. Lower the weight
+in icp.yaml, add a site: filter, or retire them."* The discovery table in the same report
+credits the pair with **29 companies and 9 sendable leads at a 40% hit rate** -- the
+templates that exist because South Asian companies were 1.6% of the corpus against an
+ICP target of 40%. One report, two opposite verdicts, and the advice was attached to the
+wrong one.
+
+**The sentence was false on the face of the row it described**: 2 of 18 is not "every
+hit". `is_barren` required only `dropped_platform > 0`, so **one platform URL among
+eighteen hits flipped a working template into the retire bucket** -- and `is_exhausted`'s
+own docstring says "*all* hits dropped means the query returns URLs with no company
+behind them" while its last line asks `== 0`. Third instance of a docstring describing a
+property its own code does not provide, after `ComplianceGate.fingerprint` and the
+Scorer's ordering.
+
+**The discriminator was in the Harvester's loop, uncounted.** Every hit is exactly one
+of three things -- a candidate, a platform drop, or `if self._seen(conn, target):
+continue` -- and only the first two were recorded, so both verdicts were inferring the
+third from the drop share. `already_seen` is in the metric now and the verdict is a
+comparison of two recorded numbers: junk outnumbering already-seen is barren, the
+reverse is exhausted.
+
+**`already_seen` is `int | None`, and a window containing one run that predates the
+count is unknown rather than zero** -- `evidence.reachable`, `SecurityTxt.present`,
+`ThermalWindow.measured` and `growth` returning `None` for a body it could not read, for
+the fifth time. Summing a recorded run with an unrecorded one produces a number that
+*looks* recorded, and the advice on the other side of this predicate is "delete a
+source". A row that cannot answer prints its numbers and no verdict.
+
+**And the test defending the old behaviour described a run the Harvester cannot
+produce**: 40 hits, 12 dropped, 0 candidates, nothing already seen -- i.e. 28 company
+URLs that somehow did not become candidates on the same pass, when a hit with an
+extraction target we have not seen becomes one immediately. **Tenth instance**, and the
+first where the impossible fixture was what kept the wrong rule in place: its stated
+argument ("a partial drop rate is the template's fault") cannot occur, so it could only
+ever have been defending the defect.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

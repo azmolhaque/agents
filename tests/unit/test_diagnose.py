@@ -467,7 +467,25 @@ def test_an_unscored_company_counts_as_found_but_not_sendable(store: Any) -> Non
 # ------------------------------------------- templates that produce nothing at all
 
 
-def _harvest_run(store: Any, template_id: str, *, hits: int, candidates: int, dropped: int) -> None:
+def _harvest_run(
+    store: Any,
+    template_id: str,
+    *,
+    hits: int,
+    candidates: int,
+    dropped: int,
+    already_seen: int | None = None,
+    record_seen: bool = True,
+) -> None:
+    """One run's yield row, partitioned the way the Harvester partitions it.
+
+    Every hit is exactly one of three things, so `already_seen` is not free to be
+    anything: it is what is left after candidates and platform drops. Defaulting it
+    rather than letting a test pick made the old fixtures describe runs the Harvester
+    cannot produce -- 40 hits, 12 dropped, 0 candidates and nothing already seen, which
+    is 28 company URLs that were somehow not turned into candidates on the same pass.
+    `record_seen=False` writes a row from before the count existed.
+    """
     from cindraleads.agents.harvester import HARVEST_YIELD_METRIC
 
     with store.tx() as conn:
@@ -483,6 +501,15 @@ def _harvest_run(store: Any, template_id: str, *, hits: int, candidates: int, dr
                         "hits": hits,
                         "candidates": candidates,
                         "dropped_platform": dropped,
+                        **(
+                            {
+                                "already_seen": hits - candidates - dropped
+                                if already_seen is None
+                                else already_seen
+                            }
+                            if record_seen
+                            else {}
+                        ),
                     },
                     separators=(",", ":"),
                 ),
@@ -608,13 +635,61 @@ def test_a_template_that_found_only_known_urls_is_not_called_barren(store: Any) 
     assert found["junk"].is_exhausted is False
 
 
-def test_a_template_dropping_some_but_not_all_is_still_barren(store: Any) -> None:
-    """The bound. A partial drop rate means the query does return company URLs and
-    still converted none of them -- that is the template's problem, not the source's."""
+def test_the_verdict_follows_whichever_number_explains_the_zero(store: Any) -> None:
+    """The bound, and the case that had it backwards on the Pi.
+
+    Its predecessor asserted that a *partial* drop rate is the template's fault, on a
+    fixture of 40 hits, 12 dropped and 0 candidates with nothing already seen. The
+    Harvester cannot produce that row: a hit with an extraction target we have not seen
+    becomes a candidate on the same pass, so `candidates == 0` is always explained by
+    the drops or by the already-seen count, and a fixture that sets neither describes a
+    run that never happened.
+
+    Read 2026-09-24: `gh_orgs_dhaka` 18 hits, 1 dropped, 0 candidates -- flagged
+    "returns nothing usable, retire it" over the pair that put 29 South Asian companies
+    in a corpus that had 1.6% of them.
+    """
     from cindraleads.diagnose import harvest_yield
 
-    _harvest_run(store, "mixed", hits=40, candidates=0, dropped=12)
+    _harvest_run(store, "junk", hits=40, candidates=0, dropped=36, already_seen=4)
+    _harvest_run(store, "gh_orgs_dhaka", hits=18, candidates=0, dropped=1, already_seen=17)
+
+    by_id = {y.template_id: y for y in harvest_yield(store)}
+    assert by_id["junk"].is_barren is True
+    assert by_id["junk"].is_exhausted is False
+    assert by_id["gh_orgs_dhaka"].is_barren is False, (
+        "a template re-finding orgs we already have was told to retire itself"
+    )
+    assert by_id["gh_orgs_dhaka"].is_exhausted is True
+
+
+def test_a_run_that_predates_the_count_gets_no_verdict(store: Any) -> None:
+    """Three-valued for the same reason `evidence.reachable` is.
+
+    The advice attached to one of these buckets is "retire this template". A window
+    whose runs never recorded `already_seen` cannot say which bucket a template is in,
+    and a confident wrong answer there deletes a working source -- so it says neither,
+    and the row still prints with its numbers.
+    """
+    from cindraleads.diagnose import harvest_yield
+
+    _harvest_run(store, "older_build", hits=18, candidates=0, dropped=2, record_seen=False)
 
     y = harvest_yield(store)[0]
-    assert y.is_barren is True
+    assert y.already_seen is None
+    assert y.is_barren is False
+    assert y.is_exhausted is False
+
+
+def test_one_run_without_the_count_makes_the_window_unknown(store: Any) -> None:
+    """Summing a recorded run with an unrecorded one produces a number that looks
+    recorded and is not -- the `growth` returned `(0, 0)` shape, where a body we could
+    not read was written down as "this company has zero subdomains"."""
+    from cindraleads.diagnose import harvest_yield
+
+    _harvest_run(store, "half_known", hits=10, candidates=0, dropped=1, already_seen=9)
+    _harvest_run(store, "half_known", hits=10, candidates=0, dropped=1, record_seen=False)
+
+    y = harvest_yield(store)[0]
+    assert y.already_seen is None
     assert y.is_exhausted is False

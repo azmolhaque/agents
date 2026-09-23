@@ -718,25 +718,32 @@ def explain(
                 f"{harvested.hits:>6} {harvested.candidates:>11} "
                 f"{harvested.dropped_platform:>8}{flag}"
             )
-        barren = [r.template_id for r in report.by_harvest if r.is_barren]
+        # The share, per template, rather than "every hit" -- which was false the moment
+        # a single drop tipped a working template into this paragraph, and false in the
+        # sentence carrying the only advice in this report that deletes something.
+        barren = [
+            f"{r.template_id} ({r.dropped_platform} of {r.hits})"
+            for r in report.by_harvest
+            if r.is_barren
+        ]
         if barren:
             typer.echo(
                 f"\n  {len(barren)} template(s) found hits and produced no candidate: "
                 f"{', '.join(barren)}."
-                f"\n  Every hit was a platform URL with no company site behind it. Lower "
-                f"the weight in icp.yaml, add a site: filter, or retire them -- they cost "
-                f"credits and a plan slot on every run."
+                f"\n  Most of what they found was a platform URL with no company site "
+                f"behind it. Lower the weight in icp.yaml, add a site: filter, or retire "
+                f"them -- they cost credits and a plan slot on every run."
             )
         # Deliberately a different paragraph with different advice. Both cases convert
         # nothing; only one of them is the template's fault, and telling a working
         # template to retire is how you delete the best source you have.
-        spent = [r.template_id for r in report.by_harvest if r.is_exhausted]
+        spent = [r for r in report.by_harvest if r.is_exhausted]
         if spent:
+            names = ", ".join(f"{r.template_id} ({r.dropped_platform} of {r.hits})" for r in spent)
             typer.echo(
-                f"\n  {len(spent)} template(s) found only URLs already seen: "
-                f"{', '.join(spent)}."
-                f"\n  Nothing was dropped, so the query still works -- its source has "
-                f"stopped producing anything new. Do not retire it. Raise its "
+                f"\n  {len(spent)} template(s) found mostly URLs already seen: {names}."
+                f"\n  Little or nothing was dropped, so the query still works -- its "
+                f"source has stopped producing anything new. Do not retire it. Raise its "
                 f"`cache_ttl_hours` so it is asked less often, or leave it and wait for "
                 f"the source to move."
             )

@@ -299,6 +299,7 @@ class Harvester:
 
         payloads: list[dict[str, Any]] = []
         dropped_platform = 0
+        already_seen = 0
         for hit in outcome.hits:
             target = extraction_target(hit)
             if target is None:
@@ -310,6 +311,14 @@ class Harvester:
                 dropped_platform += 1
                 continue
             if self._seen(conn, target):
+                # Counted, because the number decides a verdict. A template that
+                # converts nothing has two possible reasons -- it returns junk, or it
+                # keeps re-finding URLs we already have -- and the advice is opposite:
+                # retire it, or leave it alone and ask it less often. This branch is
+                # where the second one happens, and it was silent, so `cindra explain`
+                # inferred it from the platform-drop share and got both `gh_orgs_*`
+                # templates backwards.
+                already_seen += 1
                 continue
             candidate_id = uuid.uuid4().hex[:16]
             conn.execute(
@@ -352,6 +361,7 @@ class Harvester:
                         "hits": len(outcome.hits),
                         "candidates": len(payloads),
                         "dropped_platform": dropped_platform,
+                        "already_seen": already_seen,
                     },
                     separators=(",", ":"),
                 ),

@@ -231,6 +231,12 @@ class HarvestYield:
     hits: int
     candidates: int
     dropped_platform: int
+    #: Hits whose URL we already had. **None means the runs in this window predate the
+    #: count**, not that it was zero -- the same three-valued discipline as
+    #: `evidence.reachable`, `SecurityTxt.present` and `ThermalWindow.measured`, and for
+    #: the same reason: the verdict here is "retire this template", and a row that
+    #: cannot answer the question must not be answered for.
+    already_seen: int | None = None
 
     @property
     def drop_rate(self) -> float:
@@ -240,21 +246,32 @@ class HarvestYield:
     def is_exhausted(self) -> bool:
         """Converted nothing because it found nothing *new*, not because it found junk.
 
-        `dropped_platform` tells the two apart and the advice is opposite. All hits
+        `dropped_platform` tells the two apart and the advice is opposite. *Most* hits
         dropped means the query returns URLs with no company behind them -- retire it.
-        Nothing dropped and nothing converted means every hit was a URL we already have,
-        so the query works and its source has stopped producing.
+        Few or none dropped and nothing converted means the hits were URLs we already
+        have, so the query works and its source has stopped producing.
 
         `hn_who_is_hiring` reached 567 hits, 0 candidates, 0 dropped: it found its 21
         companies from three monthly threads and now re-reads the same comments every
         hour. Flagged as barren it read as "retire the strongest free company-shaped
         source in the file", which would have been exactly wrong.
+
+        **Which of the two explains the zero is the question, and the Harvester was
+        not recording half the answer.** Every hit is exactly one of three things --
+        a candidate, a platform drop, or a URL we already had -- and `commit`'s
+        `if self._seen(...): continue` counted nowhere. So this asked
+        `dropped_platform == 0`, and a single platform URL among eighteen hits moved a
+        working template into the other bucket and flipped the advice to "retire it".
+        That is what happened to both `gh_orgs_*` templates on 2026-09-24: 18 hits,
+        2 dropped, 16 already had -- while the discovery table ten lines above credited
+        the pair with 29 companies and 9 sendable leads.
         """
         return (
             self.runs > 0
             and self.hits >= MIN_HITS_TO_JUDGE
             and self.candidates == 0
-            and self.dropped_platform == 0
+            and self.already_seen is not None
+            and self.already_seen >= self.dropped_platform
         )
 
     @property
@@ -271,12 +288,22 @@ class HarvestYield:
         recommendation to delete a template nobody has measured. Same reasoning as the
         Critic's `MIN_TEMPLATE_SAMPLE`: two companies and one sendable lead is not a
         50% hit rate.
+
+        `already_seen` is the second half of that argument one column over: a template
+        is junk only when the junk *accounts for* what it found. Two platform drops
+        against sixteen already-seen URLs describes a source that has stopped producing,
+        which is the opposite diagnosis and the opposite advice.
+
+        Note what this cannot be: "returned a company URL and converted none of them".
+        A hit with an extraction target that we have not seen becomes a candidate on the
+        same pass, so `candidates == 0` always has one of the other two explanations.
         """
         return (
             self.runs > 0
             and self.hits >= MIN_HITS_TO_JUDGE
             and self.candidates == 0
-            and self.dropped_platform > 0
+            and self.already_seen is not None
+            and self.dropped_platform > self.already_seen
         )
 
 
@@ -298,15 +325,28 @@ def harvest_yield(store: Store, *, days: float = 7.0) -> list[HarvestYield]:
             detail = json.loads(str(row["labels"]))
         except ValueError:
             continue
-        bucket = totals.setdefault(str(detail.get("template_id") or "(unknown)"), [0, 0, 0, 0])
+        bucket = totals.setdefault(
+            str(detail.get("template_id") or "(unknown)"), [0, 0, 0, 0, 0, 0]
+        )
         bucket[0] += 1
         bucket[1] += int(detail.get("hits") or 0)
         bucket[2] += int(detail.get("candidates") or 0)
         bucket[3] += int(detail.get("dropped_platform") or 0)
+        # A run that recorded the count and a run that predates it must not add up to
+        # a number that looks recorded. One unknown run makes the window unknown.
+        if "already_seen" in detail:
+            bucket[4] += int(detail.get("already_seen") or 0)
+        else:
+            bucket[5] += 1
 
     found = [
         HarvestYield(
-            template_id=template, runs=t[0], hits=t[1], candidates=t[2], dropped_platform=t[3]
+            template_id=template,
+            runs=t[0],
+            hits=t[1],
+            candidates=t[2],
+            dropped_platform=t[3],
+            already_seen=None if t[5] else t[4],
         )
         for template, t in totals.items()
     ]
