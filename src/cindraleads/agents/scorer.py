@@ -417,7 +417,7 @@ class Scorer:
         # is fine, and the only trace is the duration.
         #
         # Scoped to retries. A plain score job re-writes prose on purpose.
-        if _is_prose_retry(job) and _has_angle(self.store.conn, lead_id_for(domain)):
+        if _is_prose_retry(job) and _has_current_angle(self.store.conn, lead_id_for(domain)):
             log.info("scorer_prose_retry_moot", canonical_domain=domain)
             return ScoreOutcome(canonical_domain=domain)
 
@@ -557,7 +557,7 @@ class Scorer:
             penalties=sorted(result.penalties),
         )
         follow_on: list[tuple[str, dict[str, Any]]] = []
-        if outcome.retry_prose_in and not _has_angle(conn, lead_id):
+        if outcome.retry_prose_in and not _has_current_angle(conn, lead_id):
             follow_on.append(
                 (
                     SCORE_KIND,
@@ -1276,9 +1276,34 @@ def _is_prose_retry(job: Job) -> bool:
     return bool(job.payload.get(PROSE_ATTEMPT_KEY) or job.payload.get(PROSE_PAUSE_KEY))
 
 
-def _has_angle(conn: sqlite3.Connection, lead_id: str) -> bool:
-    row = conn.execute("SELECT outreach_angle FROM leads WHERE lead_id = ?", (lead_id,)).fetchone()
-    return bool(row and str(row["outreach_angle"] or "").strip())
+def _has_current_angle(conn: sqlite3.Connection, lead_id: str) -> bool:
+    """Whether this lead already has the angle a prose call would produce.
+
+    **This asked only "is the column non-empty", and that made a thermal pause terminal
+    for every repair job.** A `--reprose` lead has an angle by definition -- a wrong one,
+    written by an older build, which is the whole reason it was selected. So `commit`
+    looked at it, saw prose present, and declined to schedule the retry the pause had
+    asked for. Measured 2026-09-23: 51 thermal pauses, **not one `pauses: 2`**, `pending`
+    0, and the same fifty domains at the head of every pass. The work was not deferred;
+    it was dropped, silently, by the guard that exists to prevent waste.
+
+    The stamp is the discriminator and it was already there. `angle_version` moves only
+    when an angle is actually written, so an angle from the running build is one no
+    retry should re-decode -- which is what this guard was always for -- and a stale one
+    still needs the call that just failed.
+
+    The original case is unchanged: a lead whose prose arrived while a retry waited has
+    a *current* stamp, and the retry is still moot. That one cost 94 s of decode on a
+    3.7 tok/s box and is the reason the guard exists at all.
+    """
+    row = conn.execute(
+        "SELECT COALESCE(outreach_angle, '') AS angle, COALESCE(angle_version, '') AS stamp "
+        "FROM leads WHERE lead_id = ?",
+        (lead_id,),
+    ).fetchone()
+    if row is None or not str(row["angle"]).strip():
+        return False
+    return str(row["stamp"]) == prose_version()
 
 
 # At most this many verified quotes reach the prompt, and each is already bounded at

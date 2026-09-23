@@ -865,15 +865,22 @@ def test_a_hot_spell_does_not_spend_the_fault_budget(rig):
     assert payload[PROSE_PAUSE_KEY] == MAX_PROSE_ATTEMPTS + 2, "and it is still counted"
 
 
-def _seed_lead_with_angle(store, angle):  # type: ignore[no-untyped-def]
-    """A stored lead for `acme.io` that already carries prose."""
-    from cindraleads.agents.scorer import lead_id_for
+def _seed_lead_with_angle(store, angle, stamp=None):  # type: ignore[no-untyped-def]
+    """A stored lead for `acme.io` that already carries prose, stamped like the real one.
+
+    `angle_version` is written by the same `CASE` as the angle itself, so the pipeline
+    never produces an angle without one. Leaving it NULL here made the row read as
+    *stale* the moment the retry guard learned to ask which build wrote the text -- a
+    fixture the pipeline cannot produce, which is the shape this file records eight
+    times.
+    """
+    from cindraleads.agents.scorer import lead_id_for, prose_version
 
     with store.tx() as conn:
         conn.execute(
             "INSERT INTO leads (lead_id, canonical_domain, score, tier, recommended_offer, "
-            "outreach_angle, first_seen_at, last_updated_at, pipeline_version) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
+            "outreach_angle, angle_version, first_seen_at, last_updated_at, pipeline_version) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 lead_id_for("acme.io"),
                 "acme.io",
@@ -881,6 +888,7 @@ def _seed_lead_with_angle(store, angle):  # type: ignore[no-untyped-def]
                 "C",
                 "snapshot_free",
                 angle,
+                prose_version() if stamp is None else stamp,
                 "2026-08-20T00:00:00Z",
                 "2026-08-20T00:00:00Z",
                 "test",
@@ -947,16 +955,28 @@ def test_even_a_hot_spell_ends_eventually(rig):
     assert store.conn.execute("SELECT * FROM leads").fetchone() is not None
 
 
-def test_a_lead_that_already_has_an_angle_is_not_re_queued(rig):
-    """Otherwise every rescore of an angle-bearing lead schedules pointless work."""
-    from cindraleads.agents.scorer import _has_angle
+def test_only_an_angle_from_this_build_counts_as_already_written(rig):
+    """Otherwise every rescore of an angle-bearing lead schedules pointless work -- and
+    every *repair* of one silently schedules nothing.
+
+    The predicate used to be "is the column non-empty", which is true of every
+    `--reprose` lead by definition: it has an angle, a wrong one from an older build.
+    So a thermal pause on a repair job asked for a retry and `commit` threw it away.
+    `angle_version` is the discriminator, and it was already in the row.
+    """
+    from cindraleads.agents.scorer import _has_current_angle, prose_version
 
     build, _posts, store = rig
-    build(tier="A")  # seeds a lead with outreach_angle = 'angle'
-    assert _has_angle(store.conn, "lead1")
+    build(tier="A")  # seeds a lead with outreach_angle = 'angle' and no stamp
+    assert not _has_current_angle(store.conn, "lead1"), "an unstamped angle is not this build's"
+
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET angle_version = ?", (prose_version(),))
+    assert _has_current_angle(store.conn, "lead1")
+
     with store.tx() as conn:
         conn.execute("UPDATE leads SET outreach_angle = ''")
-    assert not _has_angle(store.conn, "lead1")
+    assert not _has_current_angle(store.conn, "lead1")
 
 
 def test_the_card_leads_with_the_heaviest_trigger():
@@ -2727,4 +2747,96 @@ def test_a_pending_retry_does_not_hide_the_rest_of_the_backlog(store):  # type: 
     ]
     assert queued == ["waiting.io", "next.io"], (
         f"the bounded pass skipped the lead that needed it, queued {queued}"
+    )
+
+
+def _stale_angle_on(store, scorer, angle, stamp):  # type: ignore[no-untyped-def]
+    """Run the Scorer once so the lead row exists, then give it an angle and a stamp.
+
+    The row is created by `commit`, so seeding it by hand first writes a pair the
+    pipeline never produces -- which is how the first version of the test above passed
+    against the very code it was written to fail on.
+    """
+    from cindraleads.agents.scorer import SCORE_KIND, lead_id_for
+
+    job = Job(job_id="seed", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
+    outcome = asyncio.run(scorer.prepare(job))
+    with store.tx() as conn:
+        scorer.commit(job, outcome, conn)
+    with store.tx() as conn:
+        updated = conn.execute(
+            "UPDATE leads SET outreach_angle = ?, angle_version = ? WHERE lead_id = ?",
+            (angle, stamp, lead_id_for("acme.io")),
+        ).rowcount
+    assert updated == 1, "the lead the Scorer writes is the one this test seeds"
+
+
+def test_a_pause_on_a_repair_job_still_schedules_its_retry(rig):  # type: ignore[no-untyped-def]
+    """The reason the repair loop was not moving: a pause on a `--reprose` lead was
+    terminal, not deferred.
+
+    `commit` scheduled the retry only when the lead had no angle at all -- and a
+    `--reprose` lead has one by definition, a wrong one from an older build, which is
+    the whole reason it was selected. So the pause asked for a retry and the guard threw
+    it away. Measured on the Pi 2026-09-23: 51 thermal pauses, **not one `pauses: 2`**,
+    `pending` 0, and the same fifty domains at the head of every pass.
+
+    `angle_version` is the discriminator and it was already in the row.
+    """
+    from cindraleads.agents.scorer import PROSE_PAUSE_KEY, SCORE_KIND, lead_id_for
+
+    _build, _posts, store = rig
+    scorer = _seed_scorer_for_retry(
+        store, reason="LLM inference is paused by the thermal governor; retry when cool"
+    )
+    # The lead row is written by `commit`, so it has to exist before it can carry a
+    # stale angle -- a hand-seeded row here would make this pass for the wrong reason.
+    _stale_angle_on(store, scorer, _UNSENDABLE, "older")
+
+    job = Job(job_id="j", kind=SCORE_KIND, payload={"canonical_domain": "acme.io"})
+    outcome = asyncio.run(scorer.prepare(job))
+    with store.tx() as conn:
+        result = scorer.commit(job, outcome, conn)
+
+    follow = [p for kind, p in result.follow_on if kind == SCORE_KIND]
+    assert follow, "the pause was dropped instead of deferred, so the repair never retries"
+    assert follow[0][PROSE_PAUSE_KEY] == 1
+    assert (
+        store.conn.execute(
+            "SELECT outreach_angle FROM leads WHERE lead_id = ?", (lead_id_for("acme.io"),)
+        ).fetchone()["outreach_angle"]
+        == _UNSENDABLE
+    ), "and the old angle survives the pause"
+
+
+def test_a_retry_is_still_moot_once_the_angle_is_current(rig):  # type: ignore[no-untyped-def]
+    """The bound, and the case the guard was written for.
+
+    A retry that fires after the angle arrived must not re-decode it: that cost 94 s on
+    a 3.7 tok/s box for a lead that was already correct. What changed is only *which*
+    angle counts -- one stamped by the running build, rather than any text at all.
+    """
+    from cindraleads.agents.scorer import (
+        PROSE_PAUSE_KEY,
+        SCORE_KIND,
+        prose_version,
+    )
+
+    _build, _posts, store = rig
+    scorer = _seed_scorer_for_retry(
+        store, reason="LLM inference is paused by the thermal governor; retry when cool"
+    )
+    _stale_angle_on(store, scorer, "An angle this build wrote.", prose_version())
+
+    job = Job(
+        job_id="j",
+        kind=SCORE_KIND,
+        payload={"canonical_domain": "acme.io", PROSE_PAUSE_KEY: 1},
+    )
+    outcome = asyncio.run(scorer.prepare(job))
+    with store.tx() as conn:
+        result = scorer.commit(job, outcome, conn)
+
+    assert [p for kind, p in result.follow_on if kind == SCORE_KIND] == [], (
+        "a retry re-decoded an angle the running build had already written"
     )

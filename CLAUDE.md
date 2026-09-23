@@ -2632,6 +2632,35 @@ not hold one of its fifty slots. The `pending`/`in_flight` half of `_SPENT` was 
 right instinct and it was looking at the wrong thing: the retry has no key to be seen
 by.
 
+**A thermal pause was terminal for every repair job, and `will_retry: true` in the log
+said otherwise 51 times.** `commit` scheduled the prose retry only `if not
+_has_angle(conn, lead_id)` -- and a `--reprose` lead **has** an angle by definition, a
+wrong one from an older build, which is the entire reason it was selected. So the pause
+asked for a retry and the guard dropped it. That is why there was never a `pauses: 2`,
+why `pending` read 0 minutes after a 50-job pass, and why the same fifty domains sat at
+the head of every pass while the backlog moved by the three that happened not to pause.
+
+**The log is written in `prepare` and the decision is made in `commit`**, so
+`will_retry: true` was a claim about `_is_recoverable` and the ladder, not about
+anything being enqueued. I read that line twice and concluded "nothing is lost". One
+decision in two places, in the one shape that makes a measurement lie rather than
+merely fail.
+
+`_has_current_angle` asks the question that was always meant: does this lead have the
+angle *this build* would write. `angle_version` moves only when an angle is actually
+written, so it separates "the prose arrived while the retry waited" -- the 94-second
+no-op the guard exists to prevent, still prevented -- from "the prose is old and wrong",
+which is the case the repair path is made of.
+
+**Its first test passed against the broken code, for the ninth time.** The `UPDATE`
+seeding the stale angle ran before the lead existed, because `commit` is what creates
+the row, so it hit zero rows and the guard fell through to "no angle at all". Seeding
+through the real Scorer first is what makes it fail against the old code, with
+`assert []` beside the production log line. And `_seed_lead_with_angle` had the same
+flaw one level down -- it wrote an angle with a NULL `angle_version`, a pair the
+pipeline cannot produce, which is exactly what made two older tests go red against a
+correct change.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
