@@ -594,3 +594,71 @@ def test_a_trigger_one_verdict_short_is_named_as_the_next_task(store: Any) -> No
     assert by_code["T6_INCIDENT"].judged == MIN_JUDGED_PER_TRIGGER - 1
     assert by_code["T6_INCIDENT"].speakable is False
     assert "needs 1 more" in render_markdown(report)
+
+
+def test_the_judge_next_report_never_names_a_lead_the_dispatcher_refuses(
+    store: Any, monkeypatch: Any, capsys: Any
+) -> None:
+    """The report exists because three hand-written queries got this wrong in a row.
+
+    Ad-hoc SQL over `leads` surfaced `arxiv.org` at Tier A 74 -- compliance veto,
+    refused by the Dispatcher since `_blocked` shipped -- because **a stored tier is not
+    a dispatch decision**, and then named `suppressed_domains`, which is not a table
+    (`suppression_list`, keyed by `kind = 'domain'`, is).
+
+    So it borrows `blocked_subjects` and `block_reason` rather than restating them. A
+    report that split the rows differently from the code would send the operator to
+    judge leads the system will never send: the verdict would be real and the lesson
+    drawn from it would be about a card that cannot exist.
+
+    Driven through the script's own `main()`, because `withheld_angles.py` reached the
+    Pi reading a `lead_id` its SELECT did not have and `reprose_selection.py` read a
+    `jobs.state` column that is called `status`. **An instrument that crashes on the box
+    is one you stop reaching for**, and both were caught by running them.
+    """
+    import json
+
+    scripts = __import__("importlib").import_module("importlib.util")
+    spec = scripts.spec_from_file_location(
+        "judge_next", Path(__file__).resolve().parents[2] / "scripts" / "judge_next.py"
+    )
+    assert spec and spec.loader
+    module = scripts.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    _corpus(store)
+    # One trigger short of the floor, so the report has something to recommend.
+    from cindraleads.feedback import record_verdict
+
+    for i in range(MIN_JUDGED_PER_TRIGGER - 1):
+        record_verdict(
+            store,
+            lead_id=_lead(store, f"seen{i}.io", triggers=("T6_INCIDENT",)),
+            verdict="good",
+            source="cli",
+            actor="zahin",
+        )
+    # Two unjudged Tier A leads carrying it: one sendable, one vetoed by compliance.
+    _lead(store, "sendable.io", tier="A", score=80, triggers=("T6_INCIDENT",))
+    vetoed = _lead(store, "vetoed.org", tier="A", score=90, triggers=("T6_INCIDENT",))
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET compliance = ? WHERE lead_id = ?",
+            (json.dumps({"passed": False, "reasons": ["not_academic"]}), vetoed),
+        )
+
+    # The pattern the other instrument tests use. `store.close` is NOT patched to a
+    # no-op: that was tried for `preview_card.py`, `monkeypatch` undid it after the
+    # rig tore down, and the rig's own close then closed nothing -- three runs of
+    # 3.13 naming the wrong test. `Store.close` clears `_conn` and the next read
+    # reopens, so letting the script close it is harmless.
+    monkeypatch.setattr(module, "Store", lambda *_a, **_k: store)
+    assert module.main(["--limit", "10"]) == 0
+
+    printed = capsys.readouterr().out
+    assert "sendable.io" in printed
+    assert "vetoed.org" not in printed, (
+        "the highest-scoring lead carrying the trigger is refused by the Dispatcher, "
+        "and judging it teaches nothing about a card that can never be sent"
+    )
+    assert "T6_INCIDENT" in printed and "needs 1 more" in printed

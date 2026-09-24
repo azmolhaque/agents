@@ -3051,6 +3051,31 @@ SPA-digest check breaks on a repeated body. That check is also what caught the f
 version of the end-to-end test, which served byte-identical HTML for `/` and `/contact`
 and so never reached `/team`.
 
+**Three hand-written queries in one session, three wrong, and the fix is not a fourth
+query.** Asked "which leads should I judge next so the Critic can argue", I composed SQL
+over `leads` from memory. It returned `arxiv.org` at Tier A 74 -- compliance veto,
+refused by the Dispatcher since `_blocked` shipped -- plus `jetbrains.com`, whose stored
+angle is the original hardcoded free-offer defect, and `schneier.com`, a security
+consultancy. **A stored tier is not a dispatch decision**, which this file already
+records, and the query did not know it. The corrected version then named
+`suppressed_domains`, which is not a table: it is `suppression_list`, keyed by
+`kind = 'domain'`, and `leads.compliance` is JSON read through
+`compliance.get("passed", True)` rather than a string column.
+
+`scripts/judge_next.py` borrows `blocked_subjects`, `block_reason`,
+`MIN_JUDGED_PER_TRIGGER` and `_trigger_means` instead of restating any of them, the way
+`withheld_angles.py` borrows the guard and `reprose_selection.py` borrows the dedupe
+key. **A report that split the rows differently from the code would send the operator
+to judge leads the system will never send** -- the verdict would be real and the lesson
+drawn from it would be about a card that cannot exist, which is a worse failure than no
+report at all.
+
+Its test drives the script's own `main()`, because `withheld_angles.py` reached the Pi
+reading a `lead_id` its SELECT did not have and `reprose_selection.py` read a
+`jobs.state` column that is called `status`. **An instrument that crashes on the box is
+one you stop reaching for**, and both were caught by running them rather than reading
+them.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
