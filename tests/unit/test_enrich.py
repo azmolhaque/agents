@@ -1021,3 +1021,71 @@ def test_the_enrich_deadline_leaves_the_worker_room_to_cancel_it() -> None:
         "the stage must give up before the worker gives up on it, or the bound is "
         "decorative and the job still fails"
     )
+
+
+# ---------------------------------------------------- the contact loop against its budget
+
+
+def test_the_contact_paths_that_cannot_be_reached_are_the_ones_we_think() -> None:
+    """Nine paths are requested against a budget of six, and the tail never runs.
+
+    `CONTACT_PATHS` grew to eight and security.txt is fetched first, so a company that
+    yields no address anywhere spends its whole per-domain allowance before `/about`,
+    `/team` and `/legal` are ever asked for. Those three were added *for* the companies
+    that reach them -- the comment above the list says they are "where a named human
+    appears" -- and for the 739 leads scoring zero reachability, every one of them
+    enriched by the current loop, they have never once been fetched.
+
+    One decision in two files with nothing checking they agree, and the sharpest
+    instance yet: the comment directly above `fetch_budget_per_domain_24h` in
+    `sources.yaml` records the *identical* contradiction in its own fix -- "the master
+    prompt said <=2 requests/domain/day but listed 5 paths to fetch, which cannot both
+    hold". It cannot both hold at nine against six either.
+
+    This pins the split rather than asserting it away, the way
+    `test_the_nonprofits_the_academic_rule_deliberately_misses` pins a rule that is
+    deliberately incomplete. Adding a tenth path, or lowering the budget, moves a path
+    across this line and fails here -- which is the point. **The budget is a politeness
+    number tied to the passive-only promise and raising it is a human's call**, so this
+    test records the cost of the current one instead of quietly changing it.
+    """
+    from cindraleads.agents.enricher import CONTACT_PATHS, SECURITY_TXT_PATH
+
+    registry = SourceRegistry.from_config()
+    budget = registry.public_web.fetch_budget_per_domain_24h
+    requested = [SECURITY_TXT_PATH, *CONTACT_PATHS]
+
+    unreachable = requested[budget:]
+    assert unreachable == ["/about", "/team", "/legal"], (
+        f"the paths a contactless company never reaches have changed: {unreachable}. "
+        f"Either the budget moved or the list did -- decide which, deliberately."
+    )
+
+
+def test_the_declared_path_allowlist_does_not_describe_what_we_fetch() -> None:
+    """`public_web_policy.paths` is parsed by the registry and read by nothing.
+
+    Twelfth built-wired-never-connected, and the one with the sharpest edge: it reads
+    as a *boundary* in the file that documents our passive-only posture, and six of the
+    eight paths the Enricher actually requests are absent from it. Nothing is breached
+    -- robots, the budget and the interval are all genuinely enforced, and every path is
+    a page the company published -- but a compliance surface that describes behaviour we
+    do not have is worse than none, because it is what someone would cite.
+
+    It cannot simply be enforced: `company_site` also re-fetches stored evidence URLs
+    during `cindra maintain`, and those are arbitrary paths on a prospect's site that no
+    allowlist could enumerate. Separating "discover on their site" from "re-read this
+    exact URL" is the real fix and it is not written yet.
+
+    So this records the gap with its size, and fails the moment either list moves --
+    including if someone wires the allowlist up without reconciling the two.
+    """
+    from cindraleads.agents.enricher import CONTACT_PATHS
+
+    declared = set(SourceRegistry.from_config().public_web.paths)
+    undeclared = sorted(p for p in CONTACT_PATHS if p not in declared)
+
+    assert undeclared == ["/contact", "/impressum", "/imprint", "/legal", "/privacy", "/team"], (
+        f"the gap between the declared allowlist and what the Enricher requests has "
+        f"changed: {undeclared}. Close it or re-record it, but do not let it drift."
+    )

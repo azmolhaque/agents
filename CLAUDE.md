@@ -2849,6 +2849,71 @@ this time between a field and the only place a human would read it. `-` in that 
 means the window contains a run from before the count existed, which is also why no
 verdict is offered beside it.
 
+**Re-enrichment is not the reachability lever, and one query said so before a day of
+decode was spent on it.** `reachability` is zero on **739 of 1071** leads and the
+counterfactual puts Tier B at 325 against 117, so it is far the largest number in the
+report. The obvious move was `cindra reconcile --force`, which re-queues enrichment.
+
+Measured 2026-09-24, leads with no contact row at all, bucketed by `companies.enriched_at`:
+
+| | leads |
+| --- | --- |
+| never looked | **0** |
+| looked, found nothing | **739** |
+| ...of those, enriched by the current contact loop (>= 09-15) | **739** |
+
+**All of them, by the build that already has the markup-`mailto:` reader, security.txt
+first, and the legal-obligation pages.** So `--force` would have spent hours of decode
+on a box with twelve minutes of nominal per six hours and found nothing. Fifth
+mechanism killed by asking for the distribution first, after the CT-certificate veto,
+the `name_similarity` rule, the `--reprose` third sort key and the `open_roles`
+threshold.
+
+The first query alone would have been *wrong*, and that is worth keeping: `enriched_at`
+records **that** we looked, never **which build** looked -- there is no
+`enrichment_version`, so the `prompt_version`/`angle_version` distinction has no
+equivalent here. The date bucket is the only discriminator available, and it only works
+because the contact-loop change has a known ship date.
+
+**What it is instead: nine paths against a budget of six.** `CONTACT_PATHS` is eight
+long and security.txt is fetched first, so a company yielding no address anywhere
+spends its whole per-domain allowance and **`/about`, `/team` and `/legal` are never
+requested at all** -- the three paths the list's own comment says are "where a named
+human appears", unreachable for precisely the 739 companies that would need them.
+
+Sharpest instance of one-decision-in-two-files yet, because **the comment directly
+above `fetch_budget_per_domain_24h: 6` records the identical contradiction in its own
+fix**: *"the master prompt said <=2 requests/domain/day but listed 5 paths to fetch,
+which cannot both hold."* It does not hold at nine against six either. Second time this
+family has recurred inside the fix written for it, after `ComplianceGate.fingerprint`.
+
+`test_the_contact_paths_that_cannot_be_reached_are_the_ones_we_think` pins the split
+rather than asserting it away: a tenth path or a lower budget moves a path across the
+line and fails there. **The budget is a politeness number tied to the passive-only
+promise, so raising it is a human's call, not a silent commit** -- and which paths
+deserve the six slots is a question the corpus can answer, by joining the 289 existing
+contacts through `contacts.evidence_id` to `evidence.url` and counting the path each
+was found on. Run that before moving either number.
+
+**And `public_web_policy.paths` is read by nothing** -- parsed into a tuple by the
+registry, never consulted by `_enforce_public_web_policy`, which enforces robots, the
+budget and the interval and not the list. Six of the eight paths the Enricher requests
+are absent from it. **Twelfth built-wired-never-connected**, and the one with the
+sharpest edge: nothing is breached -- every path is a page the company published, and
+the three real controls do run -- but it reads as a boundary in the file that documents
+our posture, and a compliance surface describing behaviour we do not have is what
+someone would cite.
+
+It cannot simply be wired up: `company_site` also re-fetches stored evidence URLs during
+`cindra maintain`, and those are arbitrary paths no allowlist could enumerate.
+Separating "discover on their site" from "re-read this exact URL" is the real fix and is
+not written. `obey_crawl_delay` is the same shape one field over -- declared, defaulted
+True, and consulted nowhere, with only `min_interval_seconds` actually holding. Both are
+recorded with their size by
+`test_the_declared_path_allowlist_does_not_describe_what_we_fetch`, which fails the
+moment either list drifts, including if someone enforces the allowlist without
+reconciling the two.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
