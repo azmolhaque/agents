@@ -2957,6 +2957,47 @@ nothing re-runs for 30 days. So the path-yield question stays open until the col
 fills -- which is the `discovered_by` shape a third time, and the reason the number is
 recorded rather than argued.
 
+**Nine leads were judged by hand and the Critic printed the same report it prints for
+zero.** 2026-09-24, the first real verdicts this project has ever had -- five good, four
+bad, typed after reading each card -- and the output was byte-identical to the
+`judged: 0` run apart from the count. **The operator did the one thing no code change
+can do and got nothing back.**
+
+The table existed. `_trigger_proposals` computes judged/good per trigger code to decide
+whether to propose, and then drops it. So `judged: 9` above no proposals has three
+readings the report cannot distinguish: every trigger is performing at the corpus rate,
+no trigger has `MIN_JUDGED_PER_TRIGGER` verdicts yet, or the rates are close but inside
+the band. **Which one it is decides whether to judge more leads or stop** -- and read as
+"judging changes nothing" it would end the only ground-truth loop here. Same shape as
+`queued 0`, the append-only `dead_letter` count and `silent: digest`: one number cannot
+tell two states apart, and the fix is always to print the other one.
+
+It is printed now, with the thresholds, because a rate without the line it is compared
+against is the `silent: digest` problem restated -- that one was fixed by printing
+`digest (36 h)` and this is the same edit one report over. Rendered against the real
+shape:
+
+    Corpus precision is 56% ... a trigger needs 4 judged leads before it is argued
+    about at all, then a rate below 33% to be lowered or above 80% to be raised.
+
+    | trigger             | judged | good | rate |                |
+    | T1_AI_SHIP          |      8 |    4 |  50% |                |
+    | T7_SURFACE_SPRAWL   |      2 |    0 |   0% | needs 2 more   |
+    | T8_HYGIENE_GAP      |      2 |    2 | 100% | needs 2 more   |
+
+Every row the proposal loop `continue`d past is in it, which is the half that matters:
+**a trigger one verdict short is the operator's next task and it was invisible**, and
+indistinguishable from one performing exactly at the corpus rate.
+
+**And the dominant trigger can never be argued about, which the table now says out
+loud.** `T1_AI_SHIP` is on 666 of 1956 live triggers and on nearly every judged lead, so
+its rate *is* the corpus rate and the comparison is a number against itself --
+constant-wearing-a-discriminator's-clothes, for the ninth time, and detected rather than
+left for the reader to notice. A row covering every judged lead prints "cannot differ
+from the corpus". Learning anything about T1 needs a different question -- does *adding*
+it change the rate -- and that is a design change, not something to build on nine
+verdicts.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

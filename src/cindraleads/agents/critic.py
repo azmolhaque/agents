@@ -113,11 +113,46 @@ class Proposal:
         )
 
 
+@dataclass(frozen=True)
+class TriggerVerdicts:
+    """How the leads carrying one trigger were judged, and whether that can say anything.
+
+    The Critic already computed this to decide whether to propose, and then dropped it.
+    So `judged: 9` was printed above no proposals, and that silence has three readings
+    the operator cannot tell apart: every trigger is performing at the corpus rate, no
+    trigger has `MIN_JUDGED_PER_TRIGGER` verdicts yet, or the rates are close but under
+    the band. **Which one it is decides whether to go and judge more leads or stop** --
+    and read as "judging changes nothing", it would end the only ground-truth loop this
+    project has.
+
+    Same shape as `queued 0`, `dead_letter` and `silent: digest`: one number cannot
+    tell two states apart, and the fix is always to print the other one.
+    """
+
+    code: str
+    judged: int
+    good: int
+    weight: float | None = None
+
+    @property
+    def rate(self) -> float:
+        return self.good / self.judged if self.judged else 0.0
+
+    @property
+    def speakable(self) -> bool:
+        return self.judged >= MIN_JUDGED_PER_TRIGGER
+
+
 @dataclass
 class Critique:
     generated_at: datetime
     corpus: int = 0
     judged: int = 0
+    # Of the judged leads, the share with a `good` and no `bad`. The baseline every
+    # per-trigger rate is compared against, and printed because a rate without it is
+    # a number with no scale.
+    corpus_precision: float = 0.0
+    trigger_verdicts: list[TriggerVerdicts] = field(default_factory=list)
     proposals: list[Proposal] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -530,6 +565,7 @@ def _feedback_disagreements(
     corpus_precision = sum(
         1 for row in judged_rows if not int(row["any_bad"]) and int(row["any_good"])
     ) / len(judged_rows)
+    report.corpus_precision = corpus_precision
 
     rows = store.conn.execute(
         # Per trigger code: how the leads carrying it were judged. Counted per lead, and
@@ -551,11 +587,22 @@ def _feedback_disagreements(
     out: list[Proposal] = []
     for row in rows:
         judged = int(row["judged"])
+        good = int(row["good"] or 0)
+        weight = cfg.triggers.get(str(row["code"]))
+        # Recorded before either threshold, so the table shows the triggers that are
+        # one verdict short as well as the ones that cleared. A trigger nobody has
+        # judged four of is the operator's next task, and it was invisible.
+        report.trigger_verdicts.append(
+            TriggerVerdicts(
+                code=str(row["code"]),
+                judged=judged,
+                good=good,
+                weight=None if weight is None else weight.weight,
+            )
+        )
         if judged < MIN_JUDGED_PER_TRIGGER:
             continue
-        good = int(row["good"] or 0)
         rate = good / judged
-        weight = cfg.triggers.get(str(row["code"]))
         if weight is None:
             continue
         cited = tuple(str(row["lead_ids"] or "").split(","))
@@ -599,6 +646,45 @@ def _feedback_disagreements(
 # ------------------------------------------------------------------------- render
 
 
+def _verdict_table(report: Critique) -> list[str]:
+    """What the verdicts bought, per trigger, including the ones still short.
+
+    Printed because the alternative is a report that says `judged: 9` and then nothing,
+    which reads as "judging changes nothing" and stops the one loop that grounds every
+    number here. The thresholds are named for the same reason a bare `silent: digest`
+    was replaced by `digest (36 h)`: a count means nothing without the line it is
+    being compared against.
+    """
+    if not report.trigger_verdicts:
+        return []
+    rows = sorted(report.trigger_verdicts, key=lambda v: (-v.judged, v.code))
+    lines = [
+        f"## what {report.judged} verdict(s) can say",
+        "",
+        f"Corpus precision is **{report.corpus_precision:.0%}** -- the share of judged "
+        f"leads with a `good` and no `bad`, and the baseline every row is measured "
+        f"against. A trigger needs **{MIN_JUDGED_PER_TRIGGER}** judged leads before it "
+        f"is argued about at all, then a rate below "
+        f"{report.corpus_precision * 0.6:.0%} to be lowered or above "
+        f"{max(0.8, report.corpus_precision * 1.4):.0%} to be raised.",
+        "",
+        "| trigger | judged | good | rate | |",
+        "| --- | ---: | ---: | ---: | --- |",
+    ]
+    for row in rows:
+        if not row.speakable:
+            note = f"needs {MIN_JUDGED_PER_TRIGGER - row.judged} more"
+        elif row.judged >= report.judged:
+            # On every judged lead, so its rate *is* the corpus rate and the comparison
+            # is a number against itself. The constant-wearing-a-discriminator's-clothes
+            # tell, detected rather than left for the reader to notice.
+            note = "on every judged lead -- cannot differ from the corpus"
+        else:
+            note = ""
+        lines.append(f"| `{row.code}` | {row.judged} | {row.good} | {row.rate:.0%} | {note} |")
+    return [*lines, ""]
+
+
 def render_markdown(report: Critique) -> str:
     """The document a human reads, edits from, and applies by hand."""
     lines = [
@@ -613,6 +699,8 @@ def render_markdown(report: Critique) -> str:
     ]
     for note in report.notes:
         lines += [f"> {note}", ""]
+
+    lines += _verdict_table(report)
 
     if not report.proposals:
         lines += ["Nothing to propose. The corpus does not disagree with the config."]

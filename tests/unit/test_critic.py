@@ -17,6 +17,7 @@ from typing import Any
 from cindraleads.agents.critic import (
     CONSTANT_OFFSET_INCIDENCE,
     MIN_CORPUS,
+    MIN_JUDGED_PER_TRIGGER,
     MIN_TEMPLATE_SAMPLE,
     Critique,
     critique,
@@ -524,3 +525,72 @@ def test_a_merely_average_template_is_left_alone(store: Any) -> None:
     assert not [p for p in report.proposals if p.target == "icp.yaml" and "Raise" in p.change], (
         "two identical templates cannot both be outperforming"
     )
+
+
+def test_verdicts_that_produce_no_proposal_still_say_what_they_bought(store: Any) -> None:
+    """`judged: 9` above no proposals has three readings and the operator got none.
+
+    Read on the Pi 2026-09-24 after nine leads were judged by hand -- five good, four
+    bad -- and the report was byte-identical to the one printed when `judged` was 0.
+    The Critic computes a per-trigger table to decide whether to propose and then drops
+    it, so the silence could mean every trigger is performing at the corpus rate, or no
+    trigger has `MIN_JUDGED_PER_TRIGGER` verdicts yet, or the rates are close but under
+    the band.
+
+    **Which one it is decides whether to go and judge more leads or stop**, and read as
+    "judging changes nothing" it would end the only ground-truth loop in the project.
+    Same shape as `queued 0`, the append-only `dead_letter` count and `silent: digest`:
+    one number cannot tell two states apart, and the fix is to print the other one.
+    """
+    from cindraleads.feedback import record_verdict
+
+    _corpus(store)
+    # T1 on every judged lead, T10 on a few -- the real corpus shape, where the
+    # dominant trigger is very nearly the corpus itself.
+    for i in range(5):
+        lead = _lead(store, f"good{i}.io", triggers=("T1_AI_SHIP", "T10_VENDOR_PRESSURE"))
+        record_verdict(store, lead_id=lead, verdict="good", source="cli", actor="zahin")
+    for i in range(4):
+        lead = _lead(store, f"bad{i}.io", triggers=("T1_AI_SHIP",))
+        record_verdict(store, lead_id=lead, verdict="bad", source="cli", actor="zahin")
+
+    report = critique(store)
+    rendered = render_markdown(report)
+
+    assert report.judged == 9
+    assert abs(report.corpus_precision - 5 / 9) < 1e-9
+
+    by_code = {v.code: v for v in report.trigger_verdicts}
+    assert by_code["T1_AI_SHIP"].judged == 9, "on every judged lead"
+    assert by_code["T1_AI_SHIP"].good == 5
+
+    # The table is in the document, with the thresholds that produced the silence.
+    assert "what 9 verdict(s) can say" in rendered
+    assert "`T1_AI_SHIP` | 9 | 5 | 56%" in rendered
+    assert "cannot differ from the corpus" in rendered, (
+        "a trigger on every judged lead IS the corpus, and comparing it against itself "
+        "is the constant-wearing-a-discriminator's-clothes tell -- say so"
+    )
+
+
+def test_a_trigger_one_verdict_short_is_named_as_the_next_task(store: Any) -> None:
+    """The row that tells the operator what to judge next, which was invisible.
+
+    A trigger with three verdicts is one away from being argued about, and nothing said
+    so -- it was dropped before the table because the proposal loop `continue`d past it.
+    So the operator could not tell a trigger nobody has judged from one performing
+    exactly at the corpus rate.
+    """
+    from cindraleads.feedback import record_verdict
+
+    _corpus(store)
+    for i in range(MIN_JUDGED_PER_TRIGGER - 1):
+        lead = _lead(store, f"rare{i}.io", triggers=("T6_INCIDENT",))
+        record_verdict(store, lead_id=lead, verdict="good", source="cli", actor="zahin")
+
+    report = critique(store)
+
+    by_code = {v.code: v for v in report.trigger_verdicts}
+    assert by_code["T6_INCIDENT"].judged == MIN_JUDGED_PER_TRIGGER - 1
+    assert by_code["T6_INCIDENT"].speakable is False
+    assert "needs 1 more" in render_markdown(report)
