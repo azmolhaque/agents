@@ -1089,3 +1089,57 @@ def test_the_declared_path_allowlist_does_not_describe_what_we_fetch() -> None:
         f"the gap between the declared allowlist and what the Enricher requests has "
         f"changed: {undeclared}. Close it or re-record it, but do not let it drift."
     )
+
+
+async def test_a_contact_cites_the_page_it_was_actually_found_on(rig, tmp_path):
+    """443 of 443 contacts in the corpus cited the homepage, and that was the code.
+
+    `extract_contacts` was handed `source_url=f"https://{domain}/"` for every address,
+    whichever page produced it, because `SiteFindings.text` is the concatenation of
+    every page fetched and the per-page fact was dropped before that call. So
+    `DiscoveredContact.source_url` -- a field that exists, is stored, and is joined
+    through `contacts.evidence_id` to `evidence.url` -- carried a constant.
+
+    Two costs. The citation on a contact pointed at a page that need not contain the
+    address, which is the Findcheap defect one table over. And it made "which path
+    actually finds contacts" unanswerable from the corpus -- the question that decides
+    how a six-fetch budget is spent across nine paths, three of which are never reached.
+
+    The loop already knew: it logs `site_contact_path` at the moment it happens, and
+    the comment above that line cites `companies.discovered_by` as the precedent while
+    committing the very defect `discovered_by` exists to prevent. journald is volatile
+    on this box, so that log is gone by the next reboot.
+
+    Driven through the real fetch loop rather than by constructing `SiteFindings`,
+    because the attribution crosses three seams -- the loop that fetches, the dataclass
+    that carries it, and the writer that stores it -- and this project's bugs live
+    exactly there.
+    """
+    build, store = rig
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "crt.sh" in url:
+            return httpx.Response(200, json=[])
+        if "rdap" in url or "greenhouse" in url or "lever" in url or "ashby" in url:
+            return httpx.Response(404, text="{}")
+        if url.endswith("/.well-known/security.txt"):
+            return httpx.Response(404, text="not found")
+        # The homepage publishes nothing; the address is a footer `mailto:` on
+        # /contact, which is the shape CLAUDE.md records as where most contacts are.
+        if url.rstrip("/").endswith("/contact"):
+            return httpx.Response(200, text='<html><a href="mailto:hello@acme.io">Talk</a></html>')
+        return httpx.Response(200, text="<html><body>Acme builds things.</body></html>")
+
+    enricher = build(probe=StubProbe({("acme.io", "MX"): ["10 mx.acme.io."]}))
+    enricher.egress.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    assert (await enricher.run(job())).ok
+
+    row = store.conn.execute(
+        "SELECT c.email, e.url FROM contacts c JOIN evidence e ON e.evidence_id = c.evidence_id"
+    ).fetchone()
+    assert row["email"] == "hello@acme.io"
+    assert row["url"] == "https://acme.io/contact", (
+        f"the contact cites {row['url']}, which is not the page it was found on"
+    )

@@ -29,7 +29,7 @@ import sqlite3
 import time
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from typing import Any
 
@@ -196,6 +196,26 @@ class SiteFindings:
     text: str = ""
     emails: tuple[str, ...] = ()
     security_txt: bool | None = None
+    # Which page each address came off, for the ones we can actually say.
+    #
+    # `DiscoveredContact.source_url` existed, was written into `evidence.url`, and
+    # carried `https://{domain}/` for every contact in the corpus -- because `text` is
+    # the concatenation of every page fetched and the per-page fact was dropped before
+    # `extract_contacts` ran. 443 of 443 contacts cited the homepage, which is the
+    # shape of a constant, and it made "which path actually finds contacts" --
+    # the question that decides what the six-fetch budget is spent on -- unanswerable
+    # from the corpus.
+    #
+    # The loop already *knew*: it logs `site_contact_path` at the moment it happens,
+    # and the comment above that line cites `companies.discovered_by` as the precedent
+    # while doing the exact thing `discovered_by` exists to prevent. journald is
+    # volatile on this box, so that log is gone by the next reboot.
+    #
+    # Only the addresses with an honest answer: `mailto:` in a page's markup, and the
+    # security.txt `Contact:` line. One parsed out of concatenated prose genuinely has
+    # no single page, and keeps the homepage as the weakest true citation rather than
+    # being assigned a page it may not appear on.
+    email_sources: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -294,8 +314,14 @@ class Enricher:
             except TimeoutError:
                 failed.append("dns")
                 log.warning("enrich_source_timed_out", domain=domain, sources=["dns"])
+        # The homepage is the fallback, not the answer. `extract_contacts` ranks every
+        # address together on purpose -- "which addresses may reach a lead card" is a
+        # compliance question with one answer -- so attribution is applied after,
+        # rather than by calling it once per page and re-ranking the merge.
+        page_of = dict(site.email_sources)
         contacts = tuple(
-            extract_contacts(
+            replace(contact, source_url=page_of.get(contact.email, contact.source_url))
+            for contact in extract_contacts(
                 site.text,
                 source_url=f"https://{domain}/",
                 company_domain=domain,
@@ -364,6 +390,7 @@ class Enricher:
 
         collected: list[str] = []
         emails: list[str] = [found.contact] if found.contact else []
+        sources: list[tuple[str, str]] = []
         seen: set[str] = set()
 
         for path in CONTACT_PATHS:
@@ -405,13 +432,20 @@ class Enricher:
             if len(emails) > before:
                 # Which page actually produced the address. Path priority above is an
                 # argument until this says otherwise -- the same reason
-                # `companies.discovered_by` exists for query templates.
+                # `companies.discovered_by` exists for query templates. Recorded as
+                # well as logged now: the log line is the same fact, and it dies with
+                # the next reboot on a box whose journald is volatile.
+                sources.extend((email, f"https://{domain}{path}") for email in emails[before:])
                 log.info("site_contact_path", canonical_domain=domain, path=path)
+
+        if found.contact:
+            sources.append((found.contact, f"https://{domain}{SECURITY_TXT_PATH}"))
 
         return SiteFindings(
             text="\n".join(collected),
             emails=(*emails, *([found.contact] if found.contact else [])),
             security_txt=found.present,
+            email_sources=tuple(sources),
         )
 
     async def _security_txt(self, domain: str) -> SecurityTxt:

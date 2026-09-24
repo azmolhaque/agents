@@ -2914,6 +2914,49 @@ recorded with their size by
 moment either list drifts, including if someone enforces the allowlist without
 reconciling the two.
 
+**The query that was supposed to settle which path deserves a fetch slot returned
+`homepage or other | 443` and nothing else, and the constant was the code.**
+`extract_contacts` was handed `source_url=f"https://{domain}/"` for every address
+whichever page produced it, because `SiteFindings.text` is the concatenation of every
+page fetched and the per-page fact was dropped before that call. **443 of 443** is the
+eighth appearance of that tell in this file, and here it meant the measurement could
+not have come out any other way.
+
+Two costs. `DiscoveredContact.source_url` exists, is stored, and is joined through
+`contacts.evidence_id` to `evidence.url` -- so **every contact in the corpus cites a
+page that need not contain the address**, which is the Findcheap defect one table over.
+And it made "which of the nine paths actually finds contacts" unanswerable from the
+corpus, which is exactly the question a six-fetch budget across nine paths needs
+answered.
+
+**The loop already knew, and threw it into a log.** It calls
+`log.info("site_contact_path", ...)` at the moment an address appears, and the comment
+directly above that line cites `companies.discovered_by` as the precedent -- while
+committing the defect `discovered_by` was built to prevent. journald is volatile on
+this box, so the one place the fact existed is gone by the next reboot.
+
+`SiteFindings.email_sources` carries it now, for the addresses that have an honest
+answer: a `mailto:` in a page's markup, and the security.txt `Contact:` line. An
+address parsed out of concatenated prose genuinely has no single page and keeps the
+homepage as the weakest true citation rather than being assigned one it may not appear
+on -- the same three-valued discipline as `evidence.reachable` and `already_seen`.
+Attribution is applied *after* `extract_contacts` rather than by calling it per page,
+because it ranks every address together on purpose: "which addresses may reach a lead
+card" is a compliance question and must have one answer.
+
+`test_a_contact_cites_the_page_it_was_actually_found_on` drives the real fetch loop and
+fails against the old code with `assert 'https://acme.io/' == 'https://acme.io/contact'`
+-- the production constant. Driven end to end rather than by constructing
+`SiteFindings`, because the fact crosses the loop that fetches it, the dataclass that
+carries it and the writer that stores it, and **a field threaded through three stages
+needs a test that drives all three.**
+
+**The corpus cannot be repaired by this.** Those 443 rows keep the homepage; only
+contacts found after the next enrichment carry a real page, and `enriched_at` means
+nothing re-runs for 30 days. So the path-yield question stays open until the column
+fills -- which is the `discovered_by` shape a third time, and the reason the number is
+recorded rather than argued.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
