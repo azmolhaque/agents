@@ -364,6 +364,83 @@ def test_a_rescored_corpus_reports_current(store: Any) -> None:
     assert report.is_current is True
 
 
+def test_a_stale_lead_the_reconciler_cannot_see_is_counted_separately(store: Any) -> None:
+    """The banner promised a rescore that `enqueue_stale_scores` can never perform.
+
+    This report counts `FROM leads`; the reconciler selects `FROM companies JOIN
+    triggers WHERE active = 1 AND decays_at > now`. So a lead whose triggers have all
+    decayed is stale *here* and invisible *there*, permanently -- and the banner said
+    "the worker is re-scoring them" over a queue reading `ready now: 0`.
+
+    Read on the Pi 2026-09-24 and the arithmetic is exact: 1071 leads scored, 1064
+    companies with a live trigger, 7 stale. Not a backlog, a floor.
+
+    The test drives the real `enqueue_stale_scores` rather than restating its query,
+    because the claim is precisely that the two disagree -- and a second copy of the
+    predicate here would agree with whichever one it was copied from.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _seed_scored_company(store)
+    _lead(store, "acme.io", score=60, tier="B", trigger=60.0)
+    with store.tx() as conn:
+        # Every trigger decayed: the company is still real, the lead still stored, and
+        # nothing in the system will ever look at it again.
+        conn.execute("UPDATE triggers SET decays_at = '2000-01-01T00:00:00Z'")
+        conn.execute("UPDATE leads SET scoring_version = 'from-an-older-build'")
+
+    report = diagnose(store)
+    queued = enqueue_stale_scores(store, JobQueue(store), limit=50)
+
+    assert report.stale_calibration == 1
+    assert report.stale_unreachable == 1, "no live trigger, so no rescore is coming"
+    assert queued == 0, "the reconciler cannot see it, which is the whole point"
+
+
+def test_a_stale_lead_with_a_live_trigger_is_not_called_unreachable(store: Any) -> None:
+    """The bound. An ordinary recalibration backlog must still read as one.
+
+    Without this the fix would be indistinguishable from marking every stale lead
+    hopeless, which would tell the operator to stop waiting for a rescore that is
+    genuinely queued and about to run.
+    """
+    from cindraleads.agents.scorer import enqueue_stale_scores
+    from cindraleads.queue import JobQueue
+
+    _seed_scored_company(store)
+    _lead(store, "acme.io", score=60, tier="B", trigger=60.0)
+    with store.tx() as conn:
+        conn.execute("UPDATE leads SET scoring_version = 'from-an-older-build'")
+
+    report = diagnose(store)
+    queued = enqueue_stale_scores(store, JobQueue(store), limit=50)
+
+    assert report.stale_calibration == 1
+    assert report.stale_unreachable == 0
+    assert queued == 1, "this one really is about to be re-scored"
+
+
+def test_a_penalty_deleted_from_the_config_is_marked_as_history(store: Any) -> None:
+    """`no_contact` was removed from `scoring.yaml` on 2026-08-18 and printed for weeks.
+
+    A stored breakdown records what the build that scored the lead applied, not what
+    the file says now. The Critic was taught to check the running config first; this
+    report -- which the Critic reads, and which the operator reads before it -- was
+    not, so `no_contact: 3 lead(s)` sat in the penalties table looking live. The only
+    honest action on such a row is a rescore; a config edit would target a key that
+    is not there.
+    """
+    _lead(store, "acme.io", score=50, tier="C", trigger=60.0, no_contact=-25.0)
+    _lead(store, "beta.io", score=50, tier="C", trigger=60.0, single_source=-15.0)
+
+    report = diagnose(store)
+
+    assert "no_contact" in report.penalty_counts, "still counted -- it really was applied"
+    assert "no_contact" in report.retired_penalties, "but it is history, not a live rule"
+    assert "single_source" not in report.retired_penalties
+
+
 def _seed_scored_company(store: Any) -> None:
     """One company with one live trigger and one piece of evidence -- the minimum the
     Scorer will write a lead for."""

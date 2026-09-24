@@ -153,10 +153,25 @@ def critique(store: Store, *, config: ScoringConfig | None = None) -> Critique:
         # Reading a stale corpus is not fatal but it is not honest either: the numbers
         # describe rules that are no longer running, so a proposal derived from them
         # argues with the past. Say so at the top rather than in a footnote.
+        # `cindra reconcile` is the right advice only for the leads it can reach.
+        # `enqueue_stale_scores` joins live triggers, so a lead whose triggers have
+        # all decayed is stale here and invisible there -- telling the operator to
+        # run a command that provably cannot touch them is the `--reprose queued 0`
+        # mistake, made by the report instead of by the command.
+        advice = (
+            "Run `cindra reconcile` and re-read before acting on the numbers below."
+            if diag.stale_calibration > diag.stale_unreachable
+            else "No rescore will reach them: they have no live trigger, which is what "
+            "the reconciler selects on. `cindra maintain` retires leads in that state."
+        )
+        stuck = (
+            f" {diag.stale_unreachable} of those have no live trigger."
+            if diag.stale_unreachable
+            else ""
+        )
         report.notes.append(
             f"{diag.stale_calibration} of {len(leads)} leads were scored under an older "
-            f"calibration. Run `cindra reconcile` and re-read before acting on the "
-            f"numbers below."
+            f"calibration.{stuck} {advice}"
         )
 
     report.proposals += _constant_offset_penalties(diag, leads, cfg)

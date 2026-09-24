@@ -2807,6 +2807,48 @@ the line now says. **Asking for `--hours 6` against a 6 h floor was my advice an
 the wrong advice** -- the code made it look like a fault, but nothing about that boundary
 was ever going to work.
 
+**`cindra explain` told the operator to wait for a rescore that can never run, and the
+arithmetic for why was sitting in `cindra status` on the same screen.** Read
+2026-09-24: *"7 of 1071 lead(s) were scored by a DIFFERENT calibration ... The worker
+is re-scoring them"* -- above `ready now: 0, deferred: 0, failed: 0`. Nothing was
+queued and nothing would be.
+
+This report counts `FROM leads`. `enqueue_stale_scores` selects `FROM companies JOIN
+triggers WHERE t.active = 1 AND t.decays_at > now`. **So a lead whose triggers have all
+decayed is stale here and invisible there, permanently** -- the shape this file already
+records one consumer over ("not stale, *invisible*"), arriving in the report that tells
+the operator what to do about it. `cindra status` printed the proof beside it:
+**1071 leads scored, 1064 companies with >= 1 live trigger, 7 stale.** The difference
+is exact, and it is a floor rather than a backlog.
+
+The banner now prints both numbers -- the `no_job_lost` and `reprose_backlog`
+discipline -- and only claims a rescue for the leads the reconciler can actually reach.
+The Critic reads the same flag and had the same wrong advice in its own caveat, so it
+got the same split: recommending `cindra reconcile` for leads that command provably
+cannot touch is the `--reprose queued 0` mistake made by the report instead of by the
+command. `_domains_with_a_live_trigger` asks the membership question the same way the
+reconciler asks it, because a second copy of the predicate would agree with whichever
+one it was copied from.
+
+**And the penalties table printed a rule deleted from the config a month ago.**
+`no_contact: 3 lead(s) ( 0%)` -- removed from `scoring.yaml` on 2026-08-18. The Critic
+was taught to check the running config first *because of this exact key*, and the fix
+stopped there: `explain` is the report the Critic reads and the operator reads before
+it, and it had no idea the rule was gone. Counted still, because those leads really did
+pay it, and marked `[retired -- not in scoring.yaml]`, because **the only honest action
+on a retired penalty is a rescore and a config edit would target a key that is not
+there.** `evidence_expired` is exempt by name: the Scorer writes it without
+`scoring.yaml` ever computing it, so its absence is design rather than history.
+
+**`already_seen` decided the verdict and was printed nowhere.** Added two commits
+earlier to tell a barren template from an exhausted one, fed straight into
+`is_barren`/`is_exhausted`, and left out of the table -- so `hn_who_is_hiring` rendered
+as `139 hits, 0 candidates, 0 dropped` and the operator was left with exactly the
+question the count exists to answer. **Eleventh instance of built-wired-never-connected**,
+this time between a field and the only place a human would read it. `-` in that column
+means the window contains a run from before the count existed, which is also why no
+verdict is offered beside it.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

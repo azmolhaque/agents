@@ -604,14 +604,31 @@ def explain(
         # straight after a calibration change reads the corpus exactly as the old
         # rules left it -- and every number below describes a config that is no
         # longer running.
+        reachable = report.stale_calibration - report.stale_unreachable
         typer.echo(
             f"\n  !! {report.stale_calibration} of {report.total} lead(s) were scored by a "
             f"DIFFERENT calibration than the one\n"
-            f"     running now. Everything below describes the old rules. The worker is "
-            f"re-scoring\n"
-            f"     them (~18 s each); re-run this once `cindra status` shows the score "
-            f"queue drained."
+            f"     running now. Everything below describes the old rules."
         )
+        if reachable:
+            typer.echo(
+                f"     {reachable} will be re-scored (~18 s each); re-run this once "
+                f"`cindra status`\n"
+                f"     shows the score queue drained."
+            )
+        # Both numbers, always -- the `no_job_lost` discipline. The old line asserted
+        # a rescue for every stale lead, and `enqueue_stale_scores` joins live triggers,
+        # so a lead whose triggers have all decayed is stale to this report and
+        # invisible to that one. Permanently. The operator was told to wait for work
+        # that was never queued, and the queue read `ready now: 0` while it said so.
+        if report.stale_unreachable:
+            typer.echo(
+                f"     {report.stale_unreachable} of them have no live trigger, so no "
+                f"rescore is coming: the\n"
+                f"     reconciler only sees companies with one. They keep the old "
+                f"numbers until a\n"
+                f"     new trigger arrives, and `cindra maintain` is what retires them."
+            )
     typer.echo("\ntiers")
     for tier in ("A", "B", "C", "REJECT"):
         now = report.tiers.get(tier, 0)
@@ -654,9 +671,14 @@ def explain(
     for name, count in sorted(report.penalty_counts.items(), key=lambda kv: -kv[1]):
         share = 100.0 * count / report.total
         promoted = report.promoted_by_lifting.get(name, 0)
+        # A stored breakdown is what the build that scored that lead applied, and the
+        # file has moved since. Unmarked, `no_contact` -- deleted on 2026-08-18 --
+        # read as a live rule three leads were still paying, and the only honest
+        # action on it is a rescore rather than a config edit.
+        retired = "  [retired -- not in scoring.yaml]" if name in report.retired_penalties else ""
         typer.echo(
             f"  {name:>16}: {count:>4} lead(s) ({share:4.0f}%)  "
-            f"lifting it alone promotes {promoted}"
+            f"lifting it alone promotes {promoted}{retired}"
         )
 
     if report.penalty_counts.get("single_source"):
@@ -702,17 +724,27 @@ def explain(
         # above. Two were doing that at weights 98 and 94, spending SerpAPI credits
         # hourly for zero candidates.
         typer.echo("\nharvest yield by template (last 7 days, worst first)")
-        typer.echo(f"  {'template':<24} {'runs':>5} {'hits':>6} {'candidates':>11} {'dropped':>8}")
+        typer.echo(
+            f"  {'template':<24} {'runs':>5} {'hits':>6} {'candidates':>11} "
+            f"{'dropped':>8} {'seen':>6}"
+        )
         for harvested in report.by_harvest:
             flag = ""
             if harvested.is_barren:
                 flag = "  <-- returns nothing usable"
             elif harvested.is_exhausted:
                 flag = "  <-- nothing new; source has stopped producing"
+            # The column that decides the verdict, printed. It was recorded, fed
+            # `is_barren`/`is_exhausted`, and shown nowhere -- so a row reading
+            # `139 hits, 0 candidates, 0 dropped` left the operator with exactly the
+            # question the count was added to answer. `-` is "this window contains a
+            # run from before the count existed", which is why no verdict is offered
+            # beside it either.
+            seen = "-" if harvested.already_seen is None else str(harvested.already_seen)
             typer.echo(
                 f"  {harvested.template_id[:24]:<24} {harvested.runs:>5} "
                 f"{harvested.hits:>6} {harvested.candidates:>11} "
-                f"{harvested.dropped_platform:>8}{flag}"
+                f"{harvested.dropped_platform:>8} {seen:>6}{flag}"
             )
         # The share, per template, rather than "every hit" -- which was false the moment
         # a single drop tipped a working template into this paragraph, and false in the

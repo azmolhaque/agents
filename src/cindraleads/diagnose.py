@@ -105,6 +105,23 @@ class ScoreDiagnosis:
     # the old rules left it, and the fix looks like it did nothing.
     stale_calibration: int = 0
 
+    # Of those, the ones no reconciler can ever reach. `enqueue_stale_scores` selects
+    # `FROM companies JOIN triggers WHERE active = 1 AND decays_at > now`, and this
+    # report counts `FROM leads` -- so a lead whose triggers have all decayed or been
+    # retired is stale here and **invisible** there, permanently. The banner said "the
+    # worker is re-scoring them" over a queue reading `ready now: 0`, which is a claim
+    # about what should happen printed as a claim about what is.
+    #
+    # Measured on the Pi 2026-09-24 and the arithmetic is exact: 1071 leads scored,
+    # 1064 companies with >= 1 live trigger, 7 stale. Not a backlog -- a floor.
+    stale_unreachable: int = 0
+
+    # Penalties in a stored breakdown that the running `scoring.yaml` no longer
+    # defines. The Critic learned to check the running config first; this report --
+    # which the Critic reads and the operator reads before it -- did not, so
+    # `no_contact`, deleted 2026-08-18, still printed as though it were live.
+    retired_penalties: set[str] = field(default_factory=set)
+
     # Per-template discovery yield. The answer to "which query finds real companies",
     # which no amount of scoring analysis can reach.
     by_template: list[TemplateYield] = field(default_factory=list)
@@ -174,6 +191,30 @@ def read_leads(store: Store, cfg: ScoringConfig) -> list[LeadRow]:
             )
         )
     return rows
+
+
+# Markers the Scorer writes straight into `score_breakdown` without `scoring.yaml`
+# ever computing them, so their absence from the config is by design rather than
+# history. `evidence_expired` is the live one: `retire_unevidenced_leads` writes it,
+# and a config entry would claim an arithmetic that does not run.
+_COMPUTED_MARKERS: frozenset[str] = frozenset({"evidence_expired"})
+
+
+def _domains_with_a_live_trigger(store: Store) -> set[str]:
+    """The domains `enqueue_stale_scores` can see, asked the same way it asks.
+
+    Deliberately not a count of triggers: the reconciler's `FROM companies JOIN
+    triggers WHERE t.active = 1 AND t.decays_at > now` is the *membership test* that
+    decides whether a stale lead is work-in-progress or a permanent floor, and this
+    report had no idea that test existed.
+    """
+    rows = store.conn.execute(
+        "SELECT DISTINCT c.canonical_domain AS domain FROM companies c "
+        "JOIN triggers t ON t.canonical_domain = c.canonical_domain "
+        "WHERE t.active = 1 AND t.decays_at > ?",
+        (to_iso(utcnow()),),
+    ).fetchall()
+    return {str(row["domain"]) for row in rows}
 
 
 def evidence_breadth(store: Store) -> dict[str, int]:
@@ -411,9 +452,15 @@ def diagnose(
     # The Critic reads the same field and discounted its own proposals on it.
     fingerprint = calibration_version(cfg, gate or ComplianceGate.from_config())
 
+    # Which domains the reconciler can actually see. Asked once, because the answer is
+    # one query and the alternative is asking it per lead.
+    reachable = _domains_with_a_live_trigger(store)
+
     for lead in leads:
         if lead.scoring_version != fingerprint:
             result.stale_calibration += 1
+            if lead.domain not in reachable:
+                result.stale_unreachable += 1
         result.tiers[lead.tier] = result.tiers.get(lead.tier, 0) + 1
         for name, value in lead.components.items():
             result.component_means[name] = result.component_means.get(name, 0.0) + value
@@ -422,6 +469,12 @@ def diagnose(
         for name, cost in lead.penalties.items():
             result.penalty_counts[name] = result.penalty_counts.get(name, 0) + 1
             result.penalty_cost[name] = result.penalty_cost.get(name, 0.0) + cost
+            # Against the running config, never a literal. A stored breakdown records
+            # what the build that scored that lead applied, and the file has moved
+            # since -- so a penalty absent from `penalties` today is history, and
+            # printing it unmarked invites a proposal to edit a key that is not there.
+            if name not in cfg.penalties and name not in _COMPUTED_MARKERS:
+                result.retired_penalties.add(name)
 
     for name in result.component_means:
         result.component_means[name] /= len(leads)
