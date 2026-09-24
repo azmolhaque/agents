@@ -785,3 +785,44 @@ def test_a_run_too_short_to_judge_reports_n_a_rather_than_passing(store: Any) ->
     assert report.criteria["throughput"] is None, "too little running time to judge"
     assert report.passed is False, "an unmeasurable criterion never passes the run"
     assert "too short to judge" in render_markdown(report)
+
+
+def test_a_worker_that_never_stopped_is_credited_the_whole_window(store: Any) -> None:
+    """The pairwise sum dropped one beat's worth, and at the floor that was decisive.
+
+    n beats yield n-1 intervals, and the window edges eat one more, so a worker beating
+    every 60 s through a flawless `--hours 6` run scored **5.97** against a 6.0 floor
+    and reported `n/a` -- read on the Pi 2026-09-24 as `6.0 h running of 6 h elapsed
+    ... under 6 h running`, a line contradicting itself because one decimal rounded the
+    shortfall away.
+
+    A beat is not a point. It says "alive now, due again in
+    `WORKER_HEARTBEAT_SECONDS`", so it attests the interval it opens -- bounded by that
+    promise and by the window, never beyond either.
+    """
+    _beats_over(store, from_min=8 * 60, to_min=0, worker_id="pi:aaaa1111:100")
+    _timers_alive(store)
+
+    report = assess_run(store, hours=6)
+
+    # Within a second of the full window: the clock moves between the last beat and
+    # the read, and that difference is the only thing left uncounted.
+    assert 6.0 - report.covered_hours < 1 / 3600, report.covered_hours
+
+
+def test_the_window_is_not_credited_for_time_before_the_worker_existed(store: Any) -> None:
+    """The other half, and the reason the edge credit is positive evidence.
+
+    Crediting the sliver before the first beat is only honest when a beat *outside* the
+    window proves the worker spanned the boundary. A window opening four hours before
+    the worker's first beat must be credited nothing for those hours -- otherwise the
+    fix for an under-count becomes a rate whose denominator includes time nothing ran,
+    which is the defect `covered_hours` was introduced to remove.
+    """
+    _beats_over(store, from_min=2 * 60, to_min=0, worker_id="pi:aaaa1111:100")
+    _timers_alive(store)
+
+    report = assess_run(store, hours=6)
+
+    assert report.covered_hours <= 2.0 + 1 / 3600, report.covered_hours
+    assert report.criteria["throughput"] is None

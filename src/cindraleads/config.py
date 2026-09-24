@@ -21,6 +21,7 @@ from cindraleads.errors import ConfigError
 
 __all__ = [
     "MAX_STAGE_SECONDS",
+    "WORKER_HEARTBEAT_SECONDS",
     "Settings",
     "find_repo_root",
     "load_prompt",
@@ -39,6 +40,13 @@ __all__ = [
 # has now paid for three times (`WatchdogSec` against the lease, the prose bound
 # against its budget, `MAX_STAGE_SECONDS` against `TimeoutStopSec`).
 MAX_STAGE_SECONDS = 900.0
+
+# How often the worker writes a heartbeat row. It lives here for the same reason
+# `MAX_STAGE_SECONDS` does: the worker sets the cadence and `cindra acceptance`
+# reconstructs coverage from it, so a second copy is the drift this project keeps
+# paying for. A beat attests one of these -- it says "alive now, and due again in
+# `WORKER_HEARTBEAT_SECONDS`" -- which is what makes it an interval and not a point.
+WORKER_HEARTBEAT_SECONDS = 60.0
 
 # The rationale header every prompt file carries. Stripped before the model sees it.
 _COMMENT_BLOCK = re.compile(r"<!--.*?-->", re.DOTALL)

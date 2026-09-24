@@ -39,7 +39,7 @@ from cindraleads.agents import (
     enqueue_unextracted,
     reprose_backlog,
 )
-from cindraleads.config import MAX_STAGE_SECONDS, settings
+from cindraleads.config import MAX_STAGE_SECONDS, WORKER_HEARTBEAT_SECONDS, settings
 from cindraleads.dedupe import canonical_domain
 from cindraleads.errors import CindraError, LeaseLost
 from cindraleads.logging import configure_logging, get_logger
@@ -66,10 +66,6 @@ SELFTEST_KIND = "selftest.sideeffect"
 # process that cannot possibly succeed -- no token, no optional extra -- stops instead
 # of restart-looping and burying the reason in a scrolling journal.
 EX_CONFIG = 78
-
-# How often the worker records that it is alive. Well under the 15 minute silence
-# budget in `HEARTBEAT_UNITS`, and far above the 50 ms poll interval.
-WORKER_HEARTBEAT_SECONDS = 60.0
 
 # Read once, at import, so it describes the code this process actually loaded rather
 # than whatever is on disk by the time a heartbeat fires.

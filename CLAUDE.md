@@ -2771,6 +2771,42 @@ The old predicate is not argued against here, it was run: same database, both
 predicates, a healthy box with the hourly timers minutes old and the daily pair 9 and 14
 hours old. Old says silent on both dailies, new says silent on neither.
 
+**`covered_hours` dropped a beat's worth, and the line reporting it contradicted
+itself.** Read 2026-09-24 over a window in which the worker never once stopped:
+*`0.0 Tier A+B/day over 6.0 h running of 6 h elapsed ... under 6 h running, too short
+to judge`*. Six is not under six. Both halves were wrong and neither was the other's
+fault.
+
+The arithmetic: `covered_hours` summed *intervals between* beats, so n beats yield n-1
+intervals, and the window edges eat another. A perfect 60-second cadence through
+`--hours 6` scored **5.97** against a 6.0 floor and could never clear it -- exactly the
+"criterion a correct system cannot satisfy" family, at one specific input. **A beat is
+not a point**: it says "alive now, due again in `WORKER_HEARTBEAT_SECONDS`", so it
+attests the interval it *opens*, bounded by that promise and by the window.
+
+Both edges are credited and both on positive evidence. The trailing sliver is capped at
+one beat and at `now`; the leading one is credited **only** when a beat outside the
+window sits close enough to the first beat inside it to be an ordinary beat -- so a
+worker that started two hours ago is credited 2.0 h of a 6 h window and not a second
+more. Without that, a fix for an under-count becomes a rate whose denominator includes
+darkness, which is what `covered_hours` was introduced to remove.
+
+`WORKER_HEARTBEAT_SECONDS` moved from `cli.py` to `config.py`, the `MAX_STAGE_SECONDS`
+treatment: the worker sets the cadence and `acceptance` reconstructs coverage from it,
+so a second copy is the same drift again.
+
+The printout was the other half and it is the part that cost the reading. `5.97` printed
+as `6.0` **inside the sentence explaining why 5.97 was too small** -- rounding a number
+in the clause that justifies a comparison against it is how a true statement is made to
+read as a bug. Two decimals now, and the shortfall named outright.
+
+**Exact equality is still unreachable and that is not worth engineering.** A perfect run
+now measures 6.0 h minus the microseconds between the last beat and the read. A floor
+equal to the window is a demand for 100% coverage; the answer is a longer window, which
+the line now says. **Asking for `--hours 6` against a 6 h floor was my advice and it was
+the wrong advice** -- the code made it look like a fault, but nothing about that boundary
+was ever going to work.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

@@ -39,7 +39,7 @@ from datetime import datetime, timedelta
 from itertools import pairwise
 from typing import Any
 
-from cindraleads.config import MAX_STAGE_SECONDS
+from cindraleads.config import MAX_STAGE_SECONDS, WORKER_HEARTBEAT_SECONDS
 from cindraleads.metrics import (
     HEARTBEAT_METRIC,
     HEARTBEAT_UNITS,
@@ -228,7 +228,7 @@ def assess_run(
     # Read here rather than inside `_liveness`, so a test states the box's uptime by
     # patching one function and nothing has to remember to pass an argument. A
     # parameter no caller supplies is the shape this project has paid for ten times.
-    _liveness(report, store, stamp, beats, now=at, uptime=uptime_seconds())
+    _liveness(report, store, beats, now=at, uptime=uptime_seconds())
     _throughput(report, store, stamp)
     report.thermal = _thermal(beats)
     return report
@@ -302,7 +302,6 @@ def _job_integrity(report: AcceptanceReport, store: Store, stamp: str) -> None:
 def _liveness(
     report: AcceptanceReport,
     store: Store,
-    stamp: str,
     beats: list[tuple[datetime, dict[str, Any]]],
     *,
     now: datetime,
@@ -348,20 +347,61 @@ def _liveness(
     # Time the worker was demonstrably alive: every inter-beat interval short enough
     # to be an ordinary beat. Gaps of any kind are excluded -- an outage is not uptime,
     # whoever caused it -- so this is a floor on running time rather than an estimate.
+    #
+    # Plus the interval the *last* beat opens, which the pairwise sum drops. n beats
+    # yield n-1 intervals, so one beat's worth of real running was silently uncounted
+    # every time, and at the boundary that is the difference between a judgeable window
+    # and `n/a`: a worker beating every 60 s through a perfect `--hours 6` run scored
+    # 5.97 against a floor of 6.0 and could never clear it. A beat is not a point, it
+    # says "alive now, due again in `WORKER_HEARTBEAT_SECONDS`" -- so it attests the
+    # interval it opens, bounded by that promise and by the end of the window, and
+    # never beyond either.
+    #
+    # And the sliver before the *first* beat, when a beat sitting just outside the
+    # window proves the worker was already running across the boundary. That one is
+    # positive evidence like every other exemption here -- the earlier beat has to
+    # exist and be close enough to be an ordinary beat, so a window that opens three
+    # hours before the worker started is credited nothing. Without both edges the
+    # window start silently eats a beat as well, and `--hours 6` still could not reach
+    # a 6 h floor: **exact equality was unreachable by construction.**
     report.covered_hours = (
         sum(
             (later - earlier).total_seconds()
             for (earlier, _b), (later, _a) in pairwise(beats)
             if (later - earlier).total_seconds() <= HEARTBEAT_GAP_SECONDS
         )
-        / 3600.0
-    )
+        + _edge_before(store, beats, since=report.since)
+        + (
+            min(WORKER_HEARTBEAT_SECONDS, max(0.0, (now - beats[-1][0]).total_seconds()))
+            if beats
+            else 0.0
+        )
+    ) / 3600.0
 
     builds = {d.get("source_mtime") for _, d in beats if d.get("source_mtime")}
     report.builds_seen = len(builds)
     report.worker_restarts = sum(1 for _, d in beats if d.get("exiting"))
 
     _silent_units(report, store, now=now, uptime=uptime)
+
+
+def _edge_before(
+    store: Store, beats: list[tuple[datetime, dict[str, Any]]], *, since: datetime
+) -> float:
+    """Seconds of running between the window opening and its first beat, or zero.
+
+    Credited only when a beat *outside* the window sits close enough to the first one
+    inside it to be an ordinary beat -- then the worker demonstrably spanned the
+    boundary and the interval is measured, not assumed. No earlier beat, or one too far
+    back, and this is zero: the window may simply predate the worker.
+    """
+    if not beats:
+        return 0.0
+    first = beats[0][0]
+    previous = _last_beat_at_or_before(store, "worker", since)
+    if previous is None or (first - previous).total_seconds() > HEARTBEAT_GAP_SECONDS:
+        return 0.0
+    return max(0.0, (first - since).total_seconds())
 
 
 def _silent_units(
@@ -531,12 +571,19 @@ def render_markdown(report: AcceptanceReport) -> str:
         # Both numbers, always: the rate and the hours it was measured over. A rate
         # divided by uptime with the uptime hidden is unfalsifiable, and hours lost to
         # power is the number that argues for a UPS rather than for a code change.
+        # Two decimals, and the shortfall named, because one decimal made this line
+        # contradict itself: `5.97` printed as `6.0` under a clause reading "under 6 h
+        # running, too short to judge", so the report said the window both met the
+        # floor and missed it. Rounding a number in the same sentence that explains a
+        # comparison against it is how a true statement is made to read as a bug.
         "throughput": (
-            f"{report.leads_per_day:.1f} Tier A+B/day over {report.covered_hours:.1f} h "
+            f"{report.leads_per_day:.1f} Tier A+B/day over {report.covered_hours:.2f} h "
             f"running of {report.window_hours:g} h elapsed "
             f"(target {LEADS_PER_DAY_TARGET}); {report.dispatched_total} dispatched in total"
             + (
-                f" -- under {MIN_THROUGHPUT_HOURS:g} h running, too short to judge"
+                f" -- {MIN_THROUGHPUT_HOURS - report.covered_hours:.2f} h short of the "
+                f"{MIN_THROUGHPUT_HOURS:g} h floor, too short to judge; ask for a "
+                f"longer window"
                 if report.covered_hours < MIN_THROUGHPUT_HOURS
                 else ""
             )
