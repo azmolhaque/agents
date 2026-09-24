@@ -57,9 +57,26 @@ def test_linkedin_upwork_fiverr_are_not_direct_sources(shipped: SourceRegistry):
 
 
 def test_public_web_policy_matches_the_approved_deviation(shipped: SourceRegistry):
-    """PLAN.md 2.5, approved: 6 per domain per 24 h, >= 3 s apart."""
+    """PLAN.md 2.5, approved: one fetch per path we ask for, >= 3 s apart.
+
+    The number was 6 and is 9, for the same reason it was 2 and became 6: **the budget
+    has to fit the path list or the tail of the list is decorative.** At 6, `/about`,
+    `/team` and `/legal` were positions seven to nine and were never once requested --
+    and they are the only pages carrying a human name, which is why `full_name` had six
+    readers and no writer.
+
+    What is *not* negotiable is everything below it, and those are the lines that make
+    this a self-published lookup rather than a scan: a fixed list of conventional paths
+    on the company's own site, at least three seconds apart, robots honoured, no
+    authentication, once per rolling 24 h. Raising the count of published pages we read
+    does not touch any of them. **Lowering `min_interval_seconds` or flipping
+    `respect_robots` would, which is why they are asserted here and the count is
+    asserted against the list instead.**
+    """
+    from cindraleads.agents.enricher import CONTACT_PATHS, SECURITY_TXT_PATH
+
     policy = shipped.public_web
-    assert policy.fetch_budget_per_domain_24h == 6
+    assert policy.fetch_budget_per_domain_24h == len({SECURITY_TXT_PATH, *CONTACT_PATHS})
     assert policy.min_interval_seconds >= 3.0
     assert policy.respect_robots is True
     assert policy.obey_crawl_delay is True

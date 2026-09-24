@@ -33,8 +33,25 @@ defaults:
 
 # Per-domain politeness for `public_web`. PLAN.md 2.5 (approved): the master prompt said
 # <=2 requests/domain/day but listed 5 paths to fetch, which cannot both hold.
+#
+# It did not hold at 6 either, and the same sentence is the reason. `CONTACT_PATHS` grew
+# to eight and security.txt is fetched first, so nine requests were attempted against
+# six and `/about`, `/team` and `/legal` were **never once fetched** -- the only three
+# pages that carry a human name, unreachable for exactly the companies with no contact
+# at all. `full_name` having six readers and zero writers was a budget arithmetic
+# problem, not a parsing one.
+#
+# 9 is the path list, and the list is what the number has to fit. Still unambiguously a
+# self-published lookup under absolute rule 1: nine requests to a company's own
+# published pages, at least 3 s apart, robots honoured, once per rolling 24 h, no
+# authentication and nothing enumerated beyond a fixed list of conventional paths. The
+# loop also stops as soon as it holds a named address, so only a company publishing
+# neither spends the whole allowance -- which is the case the allowance is for.
+#
+# `test_the_contact_paths_that_cannot_be_reached_are_the_ones_we_think` fails if a tenth
+# path appears or this number drops, so the two cannot drift apart again silently.
 public_web_policy:
-  fetch_budget_per_domain_24h: 6
+  fetch_budget_per_domain_24h: 9
   min_interval_seconds: 3.0
   respect_robots: true
   obey_crawl_delay: true

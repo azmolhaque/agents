@@ -431,13 +431,21 @@ async def test_resolving_a_candidate_that_was_never_extracted_fails_cleanly(rig)
 
 
 async def test_a_candidate_past_the_domain_budget_is_deferred_not_discarded(rig):
-    """The per-domain budget is 6 per rolling 24 h, so the 7th URL on one domain is
-    fetchable tomorrow. Marking it "skipped" would drop real work permanently, and
-    silently — the job would complete successfully with nothing to show."""
+    """One URL past the per-domain allowance is fetchable tomorrow, so it defers.
+
+    Marking it "skipped" would drop real work permanently and silently -- the job would
+    complete successfully with nothing to show.
+
+    **The budget is read, not restated.** This test pinned `6`, so raising the budget to
+    fit the path list broke a test about the *deferral mechanism* for a reason that has
+    nothing to do with deferral. A test that copies a constant fails on the day someone
+    changes it deliberately, which is how a suite gets edited to agree rather than read.
+    """
     extractor, _resolver, _backend, store = rig()
+    budget = extractor.egress.registry.public_web.fetch_budget_per_domain_24h
     queue = JobQueue(store)
     # Spend the domain's whole allowance, then queue one more.
-    for i in range(7):
+    for i in range(budget + 1):
         seed_candidate(store, f"c{i}", f"https://acmehealth.io/p{i}")
         with store.tx() as conn:
             queue.enqueue(
@@ -451,8 +459,8 @@ async def test_a_candidate_past_the_domain_budget_is_deferred_not_discarded(rig)
     statuses = [
         r["status"] for r in rows(store, "SELECT status FROM candidates ORDER BY candidate_id")
     ]
-    assert statuses.count("extracted") == 6, "the budget allowed exactly six"
-    assert "skipped" not in statuses, "the seventh must not be thrown away"
+    assert statuses.count("extracted") == budget, "the budget allowed exactly its own size"
+    assert "skipped" not in statuses, "the one past it must not be thrown away"
 
     deferred = rows(
         store,
@@ -486,15 +494,21 @@ async def test_a_robots_denial_is_permanent_not_deferred(rig):
 
 
 async def test_deferral_gives_up_eventually(rig):
-    """A domain that stays over budget must not be re-queued forever."""
+    """A domain that stays over budget must not be re-queued forever.
+
+    The allowance is read rather than restated, for the reason above: this test is
+    about `MAX_DEFERRALS`, and a copied `6` made it fail on a budget change it has no
+    opinion about.
+    """
     from cindraleads.agents.extractor import MAX_DEFERRALS
 
     extractor, _resolver, _backend, store = rig()
-    for i in range(6):
+    budget = extractor.egress.registry.public_web.fetch_budget_per_domain_24h
+    for i in range(budget):
         seed_candidate(store, f"c{i}", f"https://acmehealth.io/p{i}")
     queue = JobQueue(store)
     with store.tx() as conn:
-        for i in range(6):
+        for i in range(budget):
             queue.enqueue(
                 EXTRACT_KIND,
                 {"candidate_id": f"c{i}", "url": f"https://acmehealth.io/p{i}"},

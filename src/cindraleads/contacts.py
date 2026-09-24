@@ -32,6 +32,8 @@ __all__ = [
     "classify_email",
     "emails_from_markup",
     "extract_contacts",
+    "human_name",
+    "named_emails_from_markup",
     "persona_for",
     "security_txt_contact",
 ]
@@ -62,6 +64,146 @@ _MAILTO = re.compile(r"""mailto:\s*([A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\
 # so this costs no request at all. It is also the *most* relevant address we can find:
 # it is the mailbox the company nominated for exactly this conversation.
 _SECURITY_TXT_CONTACT = re.compile(r"^\s*contact:\s*(?:mailto:)?\s*(\S+@\S+?)\s*$", re.I | re.M)
+
+# The company's own label on its own `mailto:` link: `<a href="mailto:x">Sarah Chen</a>`.
+#
+# This is the only honest route to a name, and the reason is measured. Deriving one
+# from the local part was tried and reverted: against the real corpus it produced 13
+# names of which **seven were role mailboxes wearing a separator** -- `cyber.security@`,
+# `analyst-relations@`, `customer-service@` -- a 54% false-positive rate, and "Hi
+# Cyber," to the FT is the same defect as "Hi Jdoe" that the strictness existed to
+# prevent. No regex separates a given name from a role word without a name list.
+#
+# Anchor text is different in kind. It is not an inference about an address, it is the
+# page saying who the address belongs to, in markup the company wrote.
+_MAILTO_LABELLED = re.compile(
+    r"""<a\b[^>]*?href=["']?mailto:\s*"""
+    r"""([A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24})"""
+    r"""[^>]*>(?P<label>[^<]{1,80})</a>""",
+    re.I | re.S,
+)
+
+# Labels that are a call to action rather than a person. Checked per token as well as
+# whole, because "Contact Sales" and "Security Team" are both two capitalised words and
+# neither is anybody's name.
+_NOT_A_NAME: frozenset[str] = frozenset(
+    {
+        "contact",
+        "contacts",
+        "email",
+        "e-mail",
+        "mail",
+        "us",
+        "me",
+        "team",
+        "sales",
+        "support",
+        "help",
+        "info",
+        "hello",
+        "hi",
+        "here",
+        "click",
+        "get",
+        "touch",
+        "talk",
+        "reach",
+        "out",
+        "write",
+        "send",
+        "message",
+        "enquiries",
+        "inquiries",
+        "press",
+        "media",
+        "security",
+        "privacy",
+        "legal",
+        "careers",
+        "jobs",
+        "hr",
+        "admin",
+        "office",
+        "billing",
+        "accounts",
+        "abuse",
+        "webmaster",
+        "postmaster",
+        "questions",
+        "feedback",
+        "now",
+        "today",
+        "our",
+        "the",
+        "a",
+        "an",
+        "and",
+        "or",
+        "please",
+        "more",
+        "learn",
+        "book",
+        "call",
+        "chat",
+        "demo",
+        "contactez",
+    }
+)
+
+# A name is two to four tokens. One is ambiguous with a role word ("Security") and five
+# is a sentence. Every token must be capitalised, which is what rejects "get in touch"
+# without needing it in the list.
+_NAME_TOKEN = re.compile("^[A-Z][A-Za-z'\u2019-]{1,29}$")
+
+
+def human_name(label: str) -> str | None:
+    """A person's name out of a `mailto:` anchor's own text, or None.
+
+    **Fails closed, and the asymmetry is the whole design.** A missing name costs a
+    card its greeting; a wrong one greets a stranger as "Hi Cyber," which is worse than
+    cold. So every rule here rejects rather than guesses, and a label that is anything
+    other than obviously a name returns None.
+
+    Deliberately Latin-only in the token pattern. `ব্রেইন স্টেশন` is a real company name
+    and `হাসিন হায়দার` a real person's, but "is this token capitalised" has no meaning
+    in a script without case -- so an Indic or CJK label cannot be checked by this rule
+    and must not be accepted by it. That is a recorded gap rather than a silent one:
+    `test_a_name_in_a_script_without_case_is_not_guessed_at` pins it.
+    """
+    text = " ".join((label or "").replace("&nbsp;", " ").split())
+    if not text or "@" in text or any(ch.isdigit() for ch in text):
+        return None
+    tokens = text.split()
+    if not 2 <= len(tokens) <= 4:
+        return None
+    if not all(_NAME_TOKEN.match(token) for token in tokens):
+        return None
+    if any(token.strip("'\u2019-").lower() in _NOT_A_NAME for token in tokens):
+        return None
+    return text
+
+
+def named_emails_from_markup(html: str) -> dict[str, str]:
+    """Addresses whose own link text names a human, as `{email: name}`.
+
+    Separate from `emails_from_markup` rather than folded into it, because that
+    function has other callers and its contract -- addresses in document order -- is
+    the one they want. An address with no usable label simply does not appear here,
+    which is the same three-valued discipline as `already_seen` and
+    `evidence.reachable`: absent means "no answer", not "no name".
+    """
+    if not html:
+        return {}
+    out: dict[str, str] = {}
+    for match in _MAILTO_LABELLED.finditer(html):
+        email = match.group(1).lower().rstrip(".,;")
+        if email in out:
+            continue
+        name = human_name(match.group("label"))
+        if name:
+            out[email] = name
+    return out
+
 
 ROLE_LOCAL_PARTS: frozenset[str] = frozenset(
     {

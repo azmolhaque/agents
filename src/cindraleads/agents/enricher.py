@@ -35,11 +35,18 @@ from typing import Any
 
 import httpx
 
-from cindraleads.config import MAX_STAGE_SECONDS, Settings, settings
+from cindraleads.config import (
+    CONTACT_PATHS,
+    MAX_STAGE_SECONDS,
+    SECURITY_TXT_PATH,
+    Settings,
+    settings,
+)
 from cindraleads.contacts import (
     DiscoveredContact,
     emails_from_markup,
     extract_contacts,
+    named_emails_from_markup,
     persona_for,
     security_txt_contact,
 )
@@ -87,29 +94,10 @@ SPRAWL_TOTAL = 25
 SPRAWL_GROWTH = 8
 SPRAWL_WINDOW_DAYS = 30
 
-# Pages that may carry a human contact, ordered by expected yield per fetch. The order
-# is load-bearing: the loop stops as soon as it has an address, because the only thing
-# that reads the collected text is `extract_contacts`.
-#
-# `/privacy`, `/imprint` and `/impressum` are new and are the highest-yield additions
-# available: a privacy notice must name a controller contact under GDPR Art. 13, and an
-# Impressum is legally mandatory in DE/AT/CH and always carries an email. They are
-# obligations rather than marketing pages, so they are populated even on sites that
-# publish nothing else useful -- exactly the companies `reachability` scores zero.
-#
-# `/about` and `/team` stay, below them, because they are where a *named* human appears
-# and a named contact outscores a role account.
-CONTACT_PATHS = (
-    "/",
-    "/contact",
-    "/privacy",
-    "/imprint",
-    "/impressum",
-    "/about",
-    "/team",
-    "/legal",
-)
-SECURITY_TXT_PATH = "/.well-known/security.txt"
+# `CONTACT_PATHS`, `SECURITY_TXT_PATH` and the per-domain budget live in `config`,
+# because three files were deciding one thing: `sources.yaml` set a budget,
+# `PublicWebPolicy` defaulted to a different one, and the list was here. The order
+# and the reasoning for it are documented beside the tuple.
 
 TRIGGER_DECAY_DAYS = {"T7_SURFACE_SPRAWL": 60, "T8_HYGIENE_GAP": 60}
 
@@ -216,6 +204,18 @@ class SiteFindings:
     # no single page, and keeps the homepage as the weakest true citation rather than
     # being assigned a page it may not appear on.
     email_sources: tuple[tuple[str, str], ...] = ()
+    # `{email: name}` for the addresses whose own `mailto:` link text names a human.
+    #
+    # `full_name` had six readers and no writer: `has_named_contact` is +10 of the
+    # reachability component, `_recipient_name` hands it to the outreach prompt as
+    # `recipient`, and the worklist sorts and displays on it. **443 contacts, 0 names**,
+    # so every angle opened cold and that bonus had never once fired -- the fifth
+    # built-wired-never-connected and the last one still open.
+    #
+    # The pages that carry a name are `/about` and `/team`, which is why the budget had
+    # to move first: at six fetches they were positions seven and eight and were never
+    # requested at all.
+    email_names: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -319,8 +319,13 @@ class Enricher:
         # compliance question with one answer -- so attribution is applied after,
         # rather than by calling it once per page and re-ranking the merge.
         page_of = dict(site.email_sources)
+        name_of = dict(site.email_names)
         contacts = tuple(
-            replace(contact, source_url=page_of.get(contact.email, contact.source_url))
+            replace(
+                contact,
+                source_url=page_of.get(contact.email, contact.source_url),
+                full_name=name_of.get(contact.email) or contact.full_name,
+            )
             for contact in extract_contacts(
                 site.text,
                 source_url=f"https://{domain}/",
@@ -391,6 +396,7 @@ class Enricher:
         collected: list[str] = []
         emails: list[str] = [found.contact] if found.contact else []
         sources: list[tuple[str, str]] = []
+        names: dict[str, str] = {}
         seen: set[str] = set()
 
         for path in CONTACT_PATHS:
@@ -403,7 +409,21 @@ class Enricher:
             # `/` is exempt: it is fetched even when security.txt already gave an
             # address, because a role account is not a named human and `reachability`
             # scores those differently.
-            if emails and path != "/":
+            #
+            # **"An address in hand" stopped being the finish line.** That claim above
+            # rested on `site.text` having exactly one consumer, which was true until a
+            # later page could attach a *name* to an address an earlier one published
+            # -- and `has_named_contact` is +10 of the reachability component while
+            # `_recipient_name` decides whether the angle opens with a person or cold.
+            # `/about` and `/team` are the only pages that carry one, and they sit
+            # after the legal-obligation pages precisely because an unnamed address is
+            # still a lead and no address is not.
+            #
+            # So the line is now "an address *and* a name for one", and everything the
+            # old break protected still holds: the per-domain budget is the ceiling,
+            # the SPA digest check below breaks on a repeated body, and a company that
+            # publishes an address and never a name simply spends its own allowance.
+            if emails and names and path != "/":
                 log.debug("site_contact_found_early", canonical_domain=domain, at=path)
                 break
             try:
@@ -437,6 +457,12 @@ class Enricher:
                 # the next reboot on a box whose journald is volatile.
                 sources.extend((email, f"https://{domain}{path}") for email in emails[before:])
                 log.info("site_contact_path", canonical_domain=domain, path=path)
+            # Every page, not only the ones that added an address: a team page can label
+            # an address a contact page already published, and the label is the fact we
+            # came for. First label wins, in path order, so `/contact` beats `/team` for
+            # the same address and neither overwrites the other silently.
+            for email, name in named_emails_from_markup(result.body).items():
+                names.setdefault(email, name)
 
         if found.contact:
             sources.append((found.contact, f"https://{domain}{SECURITY_TXT_PATH}"))
@@ -446,6 +472,7 @@ class Enricher:
             emails=(*emails, *([found.contact] if found.contact else [])),
             security_txt=found.present,
             email_sources=tuple(sources),
+            email_names=tuple(names.items()),
         )
 
     async def _security_txt(self, domain: str) -> SecurityTxt:

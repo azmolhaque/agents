@@ -20,7 +20,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from cindraleads.errors import ConfigError
 
 __all__ = [
+    "CONTACT_PATHS",
+    "FETCH_BUDGET_PER_DOMAIN_24H",
     "MAX_STAGE_SECONDS",
+    "SECURITY_TXT_PATH",
     "WORKER_HEARTBEAT_SECONDS",
     "Settings",
     "find_repo_root",
@@ -47,6 +50,43 @@ MAX_STAGE_SECONDS = 900.0
 # paying for. A beat attests one of these -- it says "alive now, and due again in
 # `WORKER_HEARTBEAT_SECONDS`" -- which is what makes it an interval and not a point.
 WORKER_HEARTBEAT_SECONDS = 60.0
+
+# The conventional paths the Enricher asks a prospect's own site for, in the order it
+# asks. security.txt is first and is a fixed one-fetch cost: RFC 9116 makes `Contact:`
+# mandatory, so it answers a published fact either way, and it also feeds
+# `hygiene_gaps` -- running it after the loop meant an exhausted budget silently cost a
+# trigger as well as a contact.
+#
+# Then the company's own pages. `/privacy`, `/imprint` and `/impressum` outrank
+# `/about` and `/team` because they are **legal obligations** -- GDPR Art. 13 requires
+# a controller contact and an Impressum is mandatory in DE/AT/CH -- so they are
+# populated even on sites that publish nothing else, which is exactly the companies
+# scoring zero reachability. `/about` and `/team` come after because an unnamed address
+# is still a lead and no address is not, and they are the only pages that carry a
+# human name.
+#
+# **It lives here because three files were deciding it.** `sources.yaml` set a budget,
+# `PublicWebPolicy` defaulted to a different one, and `enricher.py` held the list --
+# so the shipped config said 9, a registry built without the key got 6, and a test rig
+# silently exercised a configuration the product does not have. The budget is derived
+# from this tuple rather than written down beside it, which is the third time this
+# project has had to do that after `MAX_STAGE_SECONDS` and `WORKER_HEARTBEAT_SECONDS`.
+SECURITY_TXT_PATH = "/.well-known/security.txt"
+CONTACT_PATHS: tuple[str, ...] = (
+    "/",
+    "/contact",
+    "/privacy",
+    "/imprint",
+    "/impressum",
+    "/about",
+    "/team",
+    "/legal",
+)
+
+# One fetch per path we ask for, per domain, per rolling 24 h. Not a spare number: a
+# budget smaller than the list makes the tail of the list decorative, and at 6 the
+# three pages carrying a human name were never once requested.
+FETCH_BUDGET_PER_DOMAIN_24H = len({SECURITY_TXT_PATH, *CONTACT_PATHS})
 
 # The rationale header every prompt file carries. Stripped before the model sees it.
 _COMMENT_BLOCK = re.compile(r"<!--.*?-->", re.DOTALL)

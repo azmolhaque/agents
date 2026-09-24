@@ -854,21 +854,40 @@ def counting_rig(tmp_path: Path):  # type: ignore[no-untyped-def]
         store.close()
 
 
-async def test_the_site_loop_stops_once_it_has_an_address(counting_rig):
-    """The whole page loop exists to find a contact -- `site.text` has exactly one
-    consumer, `extract_contacts` -- yet it always ran every path. Those fetches cannot
-    change the outcome and they spend a per-domain budget of 6 per rolling 24 h that
-    tomorrow's evidence re-check also needs.
+async def test_the_site_loop_keeps_going_for_a_name_it_does_not_have(counting_rig):
+    """ "An address in hand" stopped being the finish line, and the reason is measured.
 
-    `/` is still fetched after security.txt yields one, because a role account is not a
-    named human and `reachability` prices those differently.
+    The old break rested on `site.text` having exactly one consumer, which was true
+    until a later page could attach a **name** to an address an earlier one published.
+    `has_named_contact` is +10 of the reachability component and `_recipient_name`
+    decides whether the angle opens with a person or cold -- and the corpus had 443
+    contacts and 0 names, so that bonus had never once fired.
+
+    `Get in touch` is not a name, so this page answers half the question and the loop
+    must carry on to the pages that carry the other half.
     """
     enricher, fetched = counting_rig({"/": '<a href="mailto:hello@acme.io">Get in touch</a>'})
 
     findings = await enricher._site("acme.io")
 
     assert "hello@acme.io" in findings.emails
-    assert "/contact" not in fetched, "no page is fetched once an address is in hand"
+    assert dict(findings.email_names) == {}, "'Get in touch' must never become a name"
+    assert "/about" in fetched, "an unnamed address is not a reason to stop looking"
+
+
+async def test_the_site_loop_stops_once_it_has_a_named_address(counting_rig):
+    """And the bound, which is the half that keeps the budget meaningful.
+
+    Every page after a *named* address can only spend a per-domain allowance that
+    tomorrow's evidence re-check also needs. `/` is still fetched after security.txt
+    yields one, because a role account is not a named human.
+    """
+    enricher, fetched = counting_rig({"/": '<a href="mailto:sarah@acme.io">Sarah Chen</a>'})
+
+    findings = await enricher._site("acme.io")
+
+    assert dict(findings.email_names) == {"sarah@acme.io": "Sarah Chen"}
+    assert "/contact" not in fetched, "nothing is fetched once a named address is held"
     assert "/about" not in fetched
 
 
@@ -1027,27 +1046,23 @@ def test_the_enrich_deadline_leaves_the_worker_room_to_cancel_it() -> None:
 
 
 def test_the_contact_paths_that_cannot_be_reached_are_the_ones_we_think() -> None:
-    """Nine paths are requested against a budget of six, and the tail never runs.
+    """Every path the loop asks for must fit the budget, and none did.
 
-    `CONTACT_PATHS` grew to eight and security.txt is fetched first, so a company that
-    yields no address anywhere spends its whole per-domain allowance before `/about`,
-    `/team` and `/legal` are ever asked for. Those three were added *for* the companies
-    that reach them -- the comment above the list says they are "where a named human
-    appears" -- and for the 739 leads scoring zero reachability, every one of them
-    enriched by the current loop, they have never once been fetched.
+    `CONTACT_PATHS` grew to eight, security.txt is fetched first, and the budget was
+    six -- so a company yielding no address anywhere spent its whole allowance before
+    `/about`, `/team` and `/legal` were ever requested. Those three are the only pages
+    carrying a human name, and `full_name` had six readers and zero writers: **443
+    contacts, 0 names.** It was budget arithmetic, not a missing parser.
 
-    One decision in two files with nothing checking they agree, and the sharpest
-    instance yet: the comment directly above `fetch_budget_per_domain_24h` in
-    `sources.yaml` records the *identical* contradiction in its own fix -- "the master
-    prompt said <=2 requests/domain/day but listed 5 paths to fetch, which cannot both
-    hold". It cannot both hold at nine against six either.
+    The sharpest one-decision-in-two-files instance in this project, because the comment
+    directly above `fetch_budget_per_domain_24h` records the *identical* contradiction
+    in its own fix -- "the master prompt said <=2 requests/domain/day but listed 5 paths
+    to fetch, which cannot both hold". It did not hold at nine against six either.
 
-    This pins the split rather than asserting it away, the way
-    `test_the_nonprofits_the_academic_rule_deliberately_misses` pins a rule that is
-    deliberately incomplete. Adding a tenth path, or lowering the budget, moves a path
-    across this line and fails here -- which is the point. **The budget is a politeness
-    number tied to the passive-only promise and raising it is a human's call**, so this
-    test records the cost of the current one instead of quietly changing it.
+    Now the number is the list. This fails if a tenth path appears or the budget drops,
+    which is the only thing standing between the two and drifting apart a third time --
+    and it fails **loudly about a politeness number tied to the passive-only promise**,
+    so whoever moves it has to say why.
     """
     from cindraleads.agents.enricher import CONTACT_PATHS, SECURITY_TXT_PATH
 
@@ -1055,10 +1070,11 @@ def test_the_contact_paths_that_cannot_be_reached_are_the_ones_we_think() -> Non
     budget = registry.public_web.fetch_budget_per_domain_24h
     requested = [SECURITY_TXT_PATH, *CONTACT_PATHS]
 
-    unreachable = requested[budget:]
-    assert unreachable == ["/about", "/team", "/legal"], (
-        f"the paths a contactless company never reaches have changed: {unreachable}. "
-        f"Either the budget moved or the list did -- decide which, deliberately."
+    assert requested[budget:] == [], (
+        f"{len(requested)} paths are requested against a budget of {budget}, so "
+        f"{requested[budget:]} can never be fetched. Either raise the budget "
+        f"deliberately or shorten the list -- a path nothing asks for is worse than "
+        f"no path, because the comment above it claims we look there."
     )
 
 
@@ -1142,4 +1158,110 @@ async def test_a_contact_cites_the_page_it_was_actually_found_on(rig, tmp_path):
     assert row["email"] == "hello@acme.io"
     assert row["url"] == "https://acme.io/contact", (
         f"the contact cites {row['url']}, which is not the page it was found on"
+    )
+
+
+@pytest.mark.parametrize(
+    "label, expected",
+    [
+        ("Sarah Chen", "Sarah Chen"),
+        ("Noah Van Der Berg", "Noah Van Der Berg"),
+        ("O'Neill Murphy", "O'Neill Murphy"),
+        # Calls to action, which is what most mailto links actually say.
+        ("Get in touch", None),
+        ("Contact Us", None),
+        ("Email Us", None),
+        ("Contact Sales", None),
+        ("Security Team", None),
+        ("Talk To Us", None),
+        # Not a name by shape.
+        ("hello@acme.io", None),
+        ("Sarah", None),
+        ("Book A Demo Today Now", None),
+        ("Support 24", None),
+        ("", None),
+    ],
+)
+def test_a_name_is_only_taken_when_the_page_plainly_gives_one(label, expected) -> None:
+    """Fails closed, and the asymmetry is the design.
+
+    A missing name costs a card its greeting; a wrong one greets a stranger as "Hi
+    Cyber,". Deriving names from the local part was tried against the real corpus and
+    reverted at a **54% false-positive rate** -- seven of thirteen were role mailboxes
+    wearing a separator. Anchor text is a different kind of evidence: not an inference
+    about an address, but the page saying whose address it is, in markup the company
+    wrote.
+    """
+    from cindraleads.contacts import human_name
+
+    assert human_name(label) == expected
+
+
+def test_a_name_in_a_script_without_case_is_not_guessed_at() -> None:
+    """A recorded gap rather than a silent one, like the nonprofit half of `not_academic`.
+
+    `হাসিন হায়দার` is a real person's name and `ব্রেইন স্টেশন` a real company's, but
+    "is this token capitalised" has no meaning in a script without case -- so the rule
+    that makes this safe in Latin cannot judge them at all. Accepting them would mean
+    accepting any two Bengali words, including `যোগাযোগ করুন` ("get in touch").
+
+    This is the 40% of the ICP's geography, so the gap is worth naming: a BD prospect
+    gets a cold opening until a rule exists that can read the script.
+    """
+    from cindraleads.contacts import human_name
+
+    assert human_name("হাসিন হায়দার") is None
+    assert human_name("যোগাযোগ করুন") is None
+
+
+async def test_a_published_name_reaches_the_contacts_table(rig, tmp_path):
+    """`full_name`: six readers, zero writers, 443 contacts and 0 names.
+
+    `has_named_contact` is +10 of the reachability component, `_recipient_name` hands it
+    to the outreach prompt as `recipient`, and the worklist sorts and displays on it --
+    and nothing ever assigned a value, so every angle opened cold and that bonus had
+    never once fired. Fifth built-wired-never-connected and the last one still open.
+
+    It was budget arithmetic, not a missing parser: `/about` and `/team` are the only
+    pages that carry a name and they sat at positions seven and eight against a budget
+    of six, so they were **never requested at all**.
+
+    Driven end to end for the same reason the source-url test is: the fact crosses the
+    loop that fetches it, the dataclass that carries it, the `replace()` that attaches
+    it and the INSERT that stores it, and **a field threaded through three stages needs
+    a test that drives all three.**
+    """
+    build, store = rig
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if "crt.sh" in url:
+            return httpx.Response(200, json=[])
+        if "rdap" in url or "greenhouse" in url or "lever" in url or "ashby" in url:
+            return httpx.Response(404, text="{}")
+        if url.endswith("/.well-known/security.txt"):
+            return httpx.Response(404, text="not found")
+        # The homepage publishes an address behind a button and no name; the team page
+        # names the human. Under the old budget /team was never fetched.
+        if url.rstrip("/").endswith("/team"):
+            return httpx.Response(
+                200, text='<html><a href="mailto:sarah@acme.io">Sarah Chen</a></html>'
+            )
+        # Distinct bodies per path, or the SPA-mirror digest check stops the loop
+        # before /team -- which is correct behaviour and would hide the defect.
+        return httpx.Response(
+            200,
+            text=f'<html><p>{url}</p><a href="mailto:sarah@acme.io">Get in touch</a></html>',
+        )
+
+    enricher = build(probe=StubProbe({("acme.io", "MX"): ["10 mx.acme.io."]}))
+    enricher.egress.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    assert (await enricher.run(job())).ok
+
+    row = store.conn.execute("SELECT email, full_name FROM contacts").fetchone()
+    assert row["email"] == "sarah@acme.io"
+    assert row["full_name"] == "Sarah Chen", (
+        "the name is on /team, which is only reachable because the budget is the "
+        "length of the path list"
     )

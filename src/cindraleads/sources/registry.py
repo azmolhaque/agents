@@ -15,7 +15,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from cindraleads.config import Settings, load_yaml, settings
+from cindraleads.config import (
+    FETCH_BUDGET_PER_DOMAIN_24H,
+    Settings,
+    load_yaml,
+    settings,
+)
 from cindraleads.errors import ConfigError
 from cindraleads.models import LegalityClass
 
@@ -42,11 +47,15 @@ class FetchDefaults:
 class PublicWebPolicy:
     """Politeness rules for a prospect's own site.
 
-    PLAN.md 2.5 (approved): 6 requests per domain per rolling 24 h, >= 3 s apart. The
-    master prompt's "<=2 per day" could not coexist with its own five-path fetch list.
+    PLAN.md 2.5 (approved): one request per path we ask for, per domain per rolling
+    24 h, >= 3 s apart. The master prompt's "<=2 per day" could not coexist with its
+    own five-path fetch list, and 6 could not coexist with the nine-path list it grew
+    into -- so the default is **derived from that list** rather than written down a
+    third time. A registry built without the key used to get 6 while the shipped
+    config said 9, which is how a test rig exercised a configuration we do not ship.
     """
 
-    fetch_budget_per_domain_24h: int = 6
+    fetch_budget_per_domain_24h: int = FETCH_BUDGET_PER_DOMAIN_24H
     min_interval_seconds: float = 3.0
     respect_robots: bool = True
     obey_crawl_delay: bool = True

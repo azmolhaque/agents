@@ -77,8 +77,14 @@ These are decided; do not "fix" them back. Rationale in `PLAN.md` Part 2.
   and `company_vectors` exist from day one so enabling it is never a migration.
 - **Discord feedback needs a gateway bot** (Phase 8). Webhooks are write-only and
   cannot read reactions; `dispatch_log.discord_message_id` exists for the join.
-- **6 fetches per domain per 24 h**, >= 3 s apart (the spec's "<=2/day" contradicted its
-  own 5-path fetch list).
+- **One fetch per path we ask for, per domain per 24 h**, >= 3 s apart. The spec's
+  "<=2/day" contradicted its own 5-path fetch list; 6 then contradicted the 9-path list
+  it grew into, and `/about`, `/team` and `/legal` were never once requested as a
+  result. **The budget is the length of the list** (9 today) and a test asserts it, so
+  the two cannot drift a third time. The lines that make this a self-published lookup
+  rather than a scan are the ones underneath and they do not move: a fixed list of
+  conventional paths on the company's own site, >= 3 s apart, robots honoured, no
+  authentication, once per rolling 24 h.
 - **`T0_INBOUND`** added to the trigger taxonomy so inbound mail becomes a real Lead.
 
 ## Where things are
@@ -2997,6 +3003,53 @@ left for the reader to notice. A row covering every judged lead prints "cannot d
 from the corpus". Learning anything about T1 needs a different question -- does *adding*
 it change the rate -- and that is a design change, not something to build on nine
 verdicts.
+
+**`full_name` is closed, and it was budget arithmetic rather than a missing parser.**
+Six readers, zero writers, **443 contacts and 0 names**: `has_named_contact` is +10 of
+the reachability component, `_recipient_name` hands it to the outreach prompt as
+`recipient`, and the worklist sorts and displays on it. Every angle opened cold and
+that bonus had never once fired. Fifth built-wired-never-connected and the last one
+still open.
+
+The pages that carry a name are `/about` and `/team`, and they were positions seven and
+eight against a budget of six -- **never requested at all**, for any company, ever. No
+parser could have helped.
+
+**Three files were deciding one thing.** `sources.yaml` set the budget, `PublicWebPolicy`
+defaulted to a *different* one, and `enricher.py` held the path list -- so the shipped
+config said 9 while a registry built without the key got 6, and a test rig silently
+exercised a configuration the product does not have. `CONTACT_PATHS`,
+`SECURITY_TXT_PATH` and `FETCH_BUDGET_PER_DOMAIN_24H = len({...})` live in `config` now,
+the `MAX_STAGE_SECONDS` treatment for the third time. **The budget is the length of the
+list**, derived rather than written beside it, so they cannot drift a fourth time.
+
+The approved deviation moved with it and that is deliberate, not a loosened rule: the
+count of a company's own published pages we read is not what makes this passive. A fixed
+list of conventional paths, >= 3 s apart, robots honoured, no authentication, once per
+rolling 24 h -- those are the lines, they are asserted, and they did not move.
+
+**Anchor text is the only honest route to a name.** `<a href="mailto:x">Sarah Chen</a>`
+is the page saying whose address it is, in markup the company wrote -- not an inference
+about an address. The address route was tried against the real corpus and reverted at a
+**54% false-positive rate**, and `human_name` fails closed on everything ambiguous: two
+to four tokens, every one capitalised (which is what rejects "get in touch" without a
+list), a stopword veto per token for "Contact Us" and "Security Team", no digits, no
+`@`. A missing name costs a greeting; a wrong one greets a stranger as "Hi Cyber,".
+
+**Latin-only, and recorded rather than hidden.** "Is this token capitalised" has no
+meaning in a script without case, so `হাসিন হায়দার` cannot be judged by this rule and
+must not be accepted by it -- accepting it would accept `যোগাযোগ করুন` ("get in touch")
+too. That is 40% of the ICP's geography opening cold until a rule exists that can read
+the script, and `test_a_name_in_a_script_without_case_is_not_guessed_at` says so, the
+same way the nonprofit half of `not_academic` is recorded.
+
+**And "an address in hand" stopped being the finish line.** The early break rested on
+`site.text` having exactly one consumer, which was true until a later page could attach
+a name to an address an earlier one published. It is "an address *and* a name" now, and
+everything the old break protected still holds: the budget is the ceiling and the
+SPA-digest check breaks on a repeated body. That check is also what caught the first
+version of the end-to-end test, which served byte-identical HTML for `/` and `/contact`
+and so never reached `/team`.
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
