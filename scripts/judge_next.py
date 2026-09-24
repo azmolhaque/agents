@@ -30,6 +30,7 @@ import sys
 from cindraleads.agents.critic import MIN_JUDGED_PER_TRIGGER
 from cindraleads.agents.dispatcher import _trigger_means, block_reason, blocked_subjects
 from cindraleads.config import settings
+from cindraleads.dedupe import display_name_or_domain
 from cindraleads.store import Store
 
 #: Tiers a human would actually email. Tier C goes out in the digest and is judged
@@ -105,7 +106,13 @@ def _candidates(store: Store, codes: list[str], limit: int) -> list[dict[str, ob
             {
                 "lead_id": str(row["lead_id"]),
                 "domain": str(row["canonical_domain"]),
-                "name": str(row["display_name"] or row["canonical_domain"]),
+                # `display_name_or_domain`, not `name or domain`. The literal
+                # four-character string "null" is truthy, survives every
+                # `IS NOT NULL` filter in the system, and this report printed
+                # `null · culture.sbs` on its first real run -- in the script
+                # written to stop restating predicates the code already owns.
+                # Fourth reader; the other three were already correct.
+                "name": display_name_or_domain(row["display_name"], str(row["canonical_domain"])),
                 "tier": str(row["tier"]),
                 "score": int(row["score"]),
                 "codes": codes_here,

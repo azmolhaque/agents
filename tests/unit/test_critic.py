@@ -618,13 +618,7 @@ def test_the_judge_next_report_never_names_a_lead_the_dispatcher_refuses(
     """
     import json
 
-    scripts = __import__("importlib").import_module("importlib.util")
-    spec = scripts.spec_from_file_location(
-        "judge_next", Path(__file__).resolve().parents[2] / "scripts" / "judge_next.py"
-    )
-    assert spec and spec.loader
-    module = scripts.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _judge_next_module()
 
     _corpus(store)
     # One trigger short of the floor, so the report has something to recommend.
@@ -662,3 +656,57 @@ def test_the_judge_next_report_never_names_a_lead_the_dispatcher_refuses(
         "and judging it teaches nothing about a card that can never be sent"
     )
     assert "T6_INCIDENT" in printed and "needs 1 more" in printed
+
+
+def test_the_judge_next_report_does_not_greet_a_company_as_null(
+    store: Any, monkeypatch: Any, capsys: Any
+) -> None:
+    """`null · culture.sbs` was in this report's first real run on the Pi.
+
+    The literal four-character string is truthy, so `name or domain` passes it
+    straight through -- which is precisely why `display_name_or_domain` exists and
+    why the worklist, the card and the prose prompt all call it. The script written
+    to stop restating predicates the code already owns restated this one.
+
+    Fourth reader now, and the assertion is on the rendered output rather than the
+    helper, because the helper was never broken -- the caller was.
+    """
+    module = _judge_next_module()
+
+    _corpus(store)
+    from cindraleads.feedback import record_verdict
+
+    for i in range(MIN_JUDGED_PER_TRIGGER - 1):
+        record_verdict(
+            store,
+            lead_id=_lead(store, f"seen{i}.io", triggers=("T6_INCIDENT",)),
+            verdict="good",
+            source="cli",
+            actor="zahin",
+        )
+    _lead(store, "culture.sbs", tier="B", score=63, triggers=("T6_INCIDENT",))
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE companies SET display_name = 'null' WHERE canonical_domain = ?",
+            ("culture.sbs",),
+        )
+
+    monkeypatch.setattr(module, "Store", lambda *_a, **_k: store)
+    assert module.main(["--limit", "5"]) == 0
+
+    printed = capsys.readouterr().out
+    assert "culture.sbs" in printed
+    assert "null ·" not in printed, "the placeholder must never reach a human"
+
+
+def _judge_next_module() -> Any:
+    """Load the script as a module, once, for every test that drives it."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "judge_next", Path(__file__).resolve().parents[2] / "scripts" / "judge_next.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module

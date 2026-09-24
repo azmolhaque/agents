@@ -3076,6 +3076,18 @@ reading a `lead_id` its SELECT did not have and `reprose_selection.py` read a
 one you stop reaching for**, and both were caught by running them rather than reading
 them.
 
+**And its first real run printed `null · culture.sbs`.** The script written to stop
+restating predicates the code already owns restated `display_name_or_domain` as
+`name or domain` -- and the literal four-character string is truthy, which is the entire
+reason that function exists and why the worklist, the card and the prose prompt all
+call it. Fourth reader, and the only one that got it wrong, in the commit arguing for
+borrowing. **The lesson does not transfer by being written down**; it transfers by
+there being one function and no second way to spell it.
+
+The test asserts the *rendered output*, not the helper, because the helper was never
+broken -- the caller was, and a test on `display_name_or_domain` would have passed
+against the defect.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
