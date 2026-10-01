@@ -37,6 +37,7 @@ import re
 import sys
 from collections import Counter
 
+from cindraleads.agents.dispatcher import block_reason, blocked_subjects
 from cindraleads.config import settings
 from cindraleads.scoring import ScoringConfig
 from cindraleads.store import Store
@@ -46,9 +47,10 @@ from cindraleads.store import Store
 #: about an AI company -- and the Site Tell angle carries four.
 MARKER_HITS = 2
 
-#: Words that carry no offer identity. Short and deliberately so: the derivation below
-#: already removes everything two offers share, so this only has to drop the filler
-#: that survives because exactly one phrase happens to use it.
+#: Words that carry no offer identity wherever they appear. The derivation below
+#: subtracts everything the rest of the prompt uses, but a phrase that is the only one
+#: to say "as" or "two" would otherwise donate those as markers -- and `as` really was
+#: in `snapshot_free`'s set on the first real run.
 _FILLER = frozenset(
     {
         "a",
@@ -72,6 +74,40 @@ _FILLER = frozenset(
         "from",
         "starting",
         "one",
+        "as",
+        "is",
+        "are",
+        "be",
+        "will",
+        "we",
+        "us",
+        "our",
+        "they",
+        "their",
+        "them",
+        "re",
+        "two",
+        "three",
+        "later",
+        "than",
+        "but",
+        "if",
+        "so",
+        "by",
+        "about",
+        "into",
+        "over",
+        "up",
+        "out",
+        "all",
+        "any",
+        "each",
+        "more",
+        "most",
+        "like",
+        "run",
+        "runs",
+        "running",
     }
 )
 
@@ -83,13 +119,26 @@ def _tokens(text: str) -> set[str]:
 
 
 def distinctive_markers(scoring: ScoringConfig) -> dict[str, set[str]]:
-    """Per offer, the tokens no other offer's phrasing uses.
+    """Per offer, the tokens nothing else in the prompt uses.
 
-    Both currencies, because `offer_phrase` picks by country and an angle written for
-    a BD lead was handed the Taka wording. Prices are tokenised too and drop out on
-    their own: every paid phrase names one, so no digit string is distinctive except
-    the amounts, which is correct -- quoting another offer's price is exactly the thing
-    worth seeing.
+    **The first real run got this wrong and the distribution said so.** Markers were
+    derived by subtracting only what *other offers* share, and the report then flagged
+    274 of 1141 angles. Three sample rows settled it: `matterhaul.com` reproduces its
+    `snapshot_free` text faithfully and matched `ai_llm_assessment` on `ai` and
+    `agent` -- words from the **trigger** phrases T1_AI_SHIP and T11_STACK_RISK, which
+    sit in the same prompt and appear in nearly every angle this corpus produces. The
+    report was measuring "does this angle mention AI", which for an AI-company corpus
+    is a constant, the tenth appearance of that tell here.
+
+    So the subtraction is against everything the model is handed beside the offer: the
+    other offers, every trigger `means` phrase and every `ai_surface` phrase, in both
+    currencies because `offer_phrase` picks by country. What survives is a word that
+    can only have come from this offer's own text.
+
+    An offer may legitimately end up with nothing left -- the paid phrases name the
+    free Snapshot on purpose, so `free`, `first`, `attack`, `surface` and `snapshot`
+    are shared by design. The report prints that rather than pretending, because a
+    marker set this cannot distinguish is a question it must not answer.
     """
     phrases: dict[str, set[str]] = {}
     for slug, offer in scoring.offers.items():
@@ -98,8 +147,17 @@ def distinctive_markers(scoring: ScoringConfig) -> dict[str, set[str]]:
             for key in ("means", "means_bd")  # both currencies
         )
         phrases[slug] = _tokens(text)
+
+    # Everything else the prompt says, which an honest angle may quote freely.
+    elsewhere: set[str] = set()
+    for rule in scoring.triggers.values():
+        elsewhere |= _tokens(
+            " ".join(str(getattr(rule, key, "") or "") for key in ("means", "means_bd"))
+        )
+    elsewhere |= _tokens(" ".join(scoring.surface_phrases(tuple(scoring.surfaces))))
+
     return {
-        slug: own - set().union(*(other for s, other in phrases.items() if s != slug))
+        slug: own - elsewhere - set().union(*(other for s, other in phrases.items() if s != slug))
         for slug, own in phrases.items()
     }
 
@@ -125,15 +183,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  {slug:<20} {' '.join(sorted(marks)) or '(none -- cannot be detected)'}")
 
         rows = store.conn.execute(
-            "SELECT l.lead_id, l.canonical_domain, l.tier, l.score, "
+            "SELECT l.lead_id, l.canonical_domain, l.tier, l.score, l.compliance, "
             "  l.recommended_offer, l.outreach_angle "
             "FROM leads l WHERE l.archived = 0 AND l.outreach_angle <> '' "
             "ORDER BY l.score DESC"
         ).fetchall()
 
+        # Borrowed from the Dispatcher rather than restated, and read once per scan
+        # rather than per row -- the `_is_unsendable` 759x lesson. `pypi.org` reached
+        # the first run of this report at Tier B 65: a host blocked for canonicalization
+        # whose company row predates the block, so it keeps a tier and an angle that
+        # nothing will ever send. Counting its prose teaches nothing about a card that
+        # cannot exist, which is what `judge_next.py` exists to stop.
+        suppressed, quarantined = blocked_subjects(store.conn)
+
         pairs: Counter[tuple[str, str]] = Counter()
         examples: dict[tuple[str, str], list[str]] = {}
+        blocked = 0
         for row in rows:
+            if block_reason(row, suppressed, quarantined):
+                blocked += 1
+                continue
             own = str(row["recommended_offer"])
             for named in offers_named(str(row["outreach_angle"]), markers):
                 if named == own:
@@ -145,9 +215,10 @@ def main(argv: list[str] | None = None) -> int:
                     f"      {str(row['outreach_angle'])[:240]}"
                 )
 
-        total = len(rows)
+        total = len(rows) - blocked
         affected = sum(pairs.values())
         print(f"\n# {affected} of {total} stored angle(s) name an offer the lead was not given")
+        print(f"  ({blocked} dispatchable-by-tier lead(s) skipped: the Dispatcher refuses them)")
         if not pairs:
             print("\nNothing to guard. The one case that prompted this report is gone or")
             print("was never representative -- either way a mechanism is not worth building.")

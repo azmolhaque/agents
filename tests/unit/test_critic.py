@@ -729,6 +729,73 @@ def _invented_offers_module() -> Any:
     return module
 
 
+def test_a_trigger_phrase_word_is_never_an_offer_marker() -> None:
+    """The first real run flagged **274 of 1141** angles, and three sample rows said
+    the markers were wrong rather than the corpus.
+
+    `matterhaul.com` reproduces its `snapshot_free` text faithfully and matched
+    `ai_llm_assessment` on `ai` and `agent` -- words from the T1_AI_SHIP and
+    T11_STACK_RISK `means` phrases, which sit in the same prompt and appear in nearly
+    every angle an AI-company corpus produces. The report was asking "does this angle
+    mention AI", which here is a constant.
+
+    So the subtraction is against everything else the model is handed, not only the
+    other offers. Against the old derivation this fails with `ai` and `agent` still in
+    `ai_llm_assessment`'s set.
+    """
+    from cindraleads.scoring import ScoringConfig
+
+    module = _invented_offers_module()
+    scoring = ScoringConfig.load()
+    markers = module.distinctive_markers(scoring)
+
+    elsewhere: set[str] = set()
+    for rule in scoring.triggers.values():
+        elsewhere |= module._tokens(str(getattr(rule, "means", "") or ""))
+    elsewhere |= module._tokens(" ".join(scoring.surface_phrases(tuple(scoring.surfaces))))
+
+    for slug, marks in markers.items():
+        assert not (marks & elsewhere), (
+            f"{slug} claims words the trigger or surface phrases also use: "
+            f"{sorted(marks & elsewhere)}"
+        )
+    assert {"ai", "agent"} <= elsewhere, "the words that caused the 274 must be excluded"
+
+
+def test_an_angle_that_reproduces_its_own_offer_is_not_flagged() -> None:
+    """The three false positives from the first run, verbatim off the Pi.
+
+    Each reproduces `snapshot_free` correctly and was reported as naming the paid
+    assessment. A guard built on that derivation would have withheld a quarter of the
+    corpus for saying "AI".
+    """
+    from cindraleads.scoring import ScoringConfig
+
+    module = _invented_offers_module()
+    markers = module.distinctive_markers(ScoringConfig.load())
+
+    faithful = (
+        "Matterhaul published a mail-authentication policy with DMARC p=none; you "
+        "announced an AI feature involving an agent that calls tools on a user's "
+        "behalf; I'd like to run your first external attack-surface and exposed-secrets "
+        "Snapshot free as a founding-cohort client, with a verified report, a "
+        "walkthrough call and a re-check two weeks later."
+    )
+    assert module.offers_named(faithful, markers) == ["snapshot_free"], (
+        "an angle quoting its own offer names only that offer"
+    )
+
+    invented = (
+        "I'd like to run an AI/LLM security assessment covering prompt injection, "
+        "chain-of-thought attacks, and model hallucination for your chatbot, under a "
+        "signed RoE. Your first external attack-surface and exposed-secrets Snapshot "
+        "is free as a founding-cohort client."
+    )
+    assert "ai_llm_assessment" in module.offers_named(invented, markers), (
+        "the real defect must survive the correction"
+    )
+
+
 def test_an_offer_the_two_phrases_share_is_never_distinctive() -> None:
     """The load-bearing half: `snapshot_free` and `ai_llm_assessment` both name a
     Snapshot and an attack surface, on purpose -- the paid phrase leads with the free
@@ -744,7 +811,11 @@ def test_an_offer_the_two_phrases_share_is_never_distinctive() -> None:
     shared = {"snapshot", "surface", "free"}
     for slug, marks in markers.items():
         assert not (marks & shared), f"{slug} claims a word another offer uses: {marks & shared}"
-    assert {"llm", "injection"} <= markers["ai_llm_assessment"], markers["ai_llm_assessment"]
+    # `llm` was asserted here before the trigger phrases joined the subtraction, and
+    # it is exactly the word that produced 274 false positives: T11_STACK_RISK says
+    # "publish code using an LLM agent framework", so every angle naming that trigger
+    # carried it. What is left is wording only this offer's own text uses.
+    assert {"injection", "assessment"} <= markers["ai_llm_assessment"], markers["ai_llm_assessment"]
 
 
 def test_the_report_names_a_lead_whose_angle_invented_an_engagement(

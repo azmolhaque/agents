@@ -3218,7 +3218,43 @@ marker present in every paid angle would be `single_source` at 96% in a new cost
 
 A guard here withholds an angle, so a wrong match costs a card its text. That is the
 trade `_free_claim_is_backed` makes, and the reason it keys on the price rather than
-on the word -- **so the distribution decides, and it has not been read yet.**
+on the word.
+
+**Its first run flagged 274 of 1141, and that was the instrument being wrong.** Three
+sample rows settled it in the time it took to read them: `matterhaul.com`,
+`jigjoy.ai` and `mcpscore.dev` each reproduce their `snapshot_free` text faithfully
+and matched `ai_llm_assessment` on **`ai`** and **`agent`** -- words from the
+T1_AI_SHIP and T11_STACK_RISK `means` phrases, which sit in the same prompt and appear
+in nearly every angle an AI-company corpus produces. `as` was in `snapshot_free`'s
+marker set. The report was asking *"does this angle mention AI"*, and at 24% of a
+corpus selected for shipping AI that is a constant, not a discriminator -- **the tenth
+appearance of that tell here, this time in the measurement I had just written to
+settle a question.**
+
+The derivation subtracted what other *offers* share and nothing else. It now subtracts
+everything the model is handed beside the offer: the other offers, every trigger
+`means`, every `ai_surface` phrase. Replayed against the three false positives, each
+resolves to its own offer alone, and `getsitetell.com` still names the engagement
+nobody gave it. An offer left with no markers prints as undetectable rather than as
+clean.
+
+**Three genuine cases are visible in that sample and the true rate is not yet known**:
+`getsitetell.com` and `agentgrid.sh`, both opening "an AI/LLM security assessment
+covering prompt injection, *[items the config does not name]*" against a free-Snapshot
+offer, and `riffn.io`, whose offer is `gig`. **Re-run the corrected report before
+deciding anything** -- and the first number it prints is the one that decides whether a
+guard is worth having.
+
+`test_a_trigger_phrase_word_is_never_an_offer_marker` fails against the old derivation
+naming `ai`, `agent`, `llm`, `mcp` and `security`, and an older assertion in the same
+file had to go with it: it pinned `llm` as a marker, which was true when written and
+is exactly the word that produced the 274.
+
+`pypi.org` also reached that run at **Tier B 65** with a stored angle -- a host in
+`PLATFORM_HOSTS` whose company row predates the block, so it keeps a tier nothing will
+send. The report borrows `block_reason`/`blocked_subjects` and skips those, counting
+them beside the total: prose on a card that cannot exist is the thing `judge_next.py`
+was built to stop recommending.
 
 **And `description` carried `to improve可信`** -- Chinese spliced into an English
 sentence the model wrote, on a second company after Riffn's `实时`. It reaches the
