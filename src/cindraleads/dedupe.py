@@ -310,6 +310,39 @@ PLATFORM_HOSTS: frozenset[str] = frozenset(
         "replit.app",
         "glitch.me",
         "onrender.com",
+        "workers.dev",
+        "deno.dev",
+        "web.app",
+        "firebaseapp.com",
+        "azurewebsites.net",
+        "hf.space",
+        "gradio.app",
+        # `itch.io` was named in a maintenance pass -- `reactorcore.itch.io`, a game
+        # host -- and never added, which is the half-a-change this list keeps paying
+        # for one card at a time.
+        "itch.io",
+        # ---- AI model and MCP server registries --------------------------------
+        #
+        # The merging shape in the category this project harvests hardest. Found on a
+        # call list: `Smithery · smithery.ai`, Tier B 64, evidence
+        # `smithery.ai/servers/silly-geese/estonian-mcp` -- somebody else's MCP server
+        # listing, read as Smithery announcing an AI feature four days ago. Every
+        # server on that registry would have collapsed onto one row, and `gh_mcp_servers`
+        # is a live template pointing at exactly this.
+        #
+        # `huggingface.co` was already blocked for this reason, so these are the same
+        # judgement applied consistently rather than a new rule: the registry is a real
+        # company, and a URL with somebody else's slug in the path is not about it.
+        "smithery.ai",
+        "mcp.so",
+        "glama.ai",
+        "pulsemcp.com",
+        "mcpservers.org",
+        "replicate.com",
+        "ollama.com",
+        "civitai.com",
+        "modelscope.cn",
+        "kaggle.com",
         # A DOI resolves to somebody else's article, so every paper in existence
         # canonicalizes here. `nature.com` was already blocked and the redirect walked
         # straight past it.

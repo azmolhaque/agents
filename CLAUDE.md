@@ -3134,6 +3134,35 @@ scenario in the fixture was not the scenario in the argument, and the behaviour 
 pinned was the duplicate. It marks the job `done` now, keeps what it uniquely guards,
 and still passes against the old code because the nonce behaviour did not move.
 
+**`Smithery · smithery.ai` reached Tier B 64 on a call list, cited by somebody else's
+MCP server listing.** The evidence URL is `smithery.ai/servers/silly-geese/estonian-mcp`
+and the card reads "Smithery announced an AI feature or assistant four days ago" -- a
+registry read as the company. The `teamtailor.com` shape in the one category this
+project harvests hardest: `gh_mcp_servers` is a live template pointing straight at it,
+and every server on that registry would have merged onto one row.
+
+This is the half of `PLATFORM_HOSTS` with a **closed** membership rule -- does the host
+put unrelated organisations behind a path or a subdomain -- and AI model and MCP
+registries were simply absent from it, though `huggingface.co` had been blocked on
+exactly this reasoning. Added with the registries beside them and the shared-apex hosts
+the earlier pass missed: `workers.dev`, `deno.dev`, `web.app`, `firebaseapp.com`,
+`azurewebsites.net`, `hf.space`, `gradio.app`. **`itch.io` was named in a maintenance
+pass -- `reactorcore.itch.io`, a game host -- and never added**, which is the
+half-a-change this list keeps paying for one dispatched card at a time.
+
+Adding a host is still half a change: `suppress_platform_companies` in `cindra maintain`
+re-runs the rule over the rows the old list already produced.
+
+**The dispatch silence was correct, and reading it cost nothing because the commands
+own the predicates.** 0 dispatched in 72 h against 204 candidates harvested in 7 days
+read as a broken pipeline. `cindra digest --dry-run` answers it in one line --
+`pending below Tier B: 0`, with 21 compliance vetoes and 1 quarantine logged as
+`digest_skipped` -- and `cindra worklist` shows 66 reachable Tier A/B leads that were
+all dispatched before 2026-09-26. **Nothing is broken: no new lead has crossed a tier
+floor in five days**, which is the discovery and reachability problem the report
+already names, not a dispatch fault. The ad-hoc SQL that would have been written to ask
+this is the third thing `judge_next.py` exists to stop.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

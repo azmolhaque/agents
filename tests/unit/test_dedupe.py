@@ -313,6 +313,16 @@ def test_a_host_that_merges_many_companies_is_refused() -> None:
         "https://someproject.js.org/",
         # A DOI resolves to somebody else's article, so every paper lands here.
         "https://doi.org/10.1038/s41591-026-04694-y",
+        # Off a real call list: `Smithery · smithery.ai` at Tier B 64, cited by
+        # somebody else's MCP server listing and read as Smithery shipping an AI
+        # feature four days ago. `gh_mcp_servers` points straight at this host, so
+        # every server on the registry would have merged onto one row.
+        "https://smithery.ai/servers/silly-geese/estonian-mcp",
+        "https://replicate.com/someone/some-model",
+        "https://ollama.com/library/qwen3",
+        "https://someone.hf.space/",
+        "https://somegame.itch.io/",
+        "https://someapp.workers.dev/",
     )
     for url in merging:
         assert canonical_domain(url) is None, url
