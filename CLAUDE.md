@@ -3238,12 +3238,29 @@ resolves to its own offer alone, and `getsitetell.com` still names the engagemen
 nobody gave it. An offer left with no markers prints as undetectable rather than as
 clean.
 
-**Three genuine cases are visible in that sample and the true rate is not yet known**:
-`getsitetell.com` and `agentgrid.sh`, both opening "an AI/LLM security assessment
-covering prompt injection, *[items the config does not name]*" against a free-Snapshot
-offer, and `riffn.io`, whose offer is `gig`. **Re-run the corrected report before
-deciding anything** -- and the first number it prints is the one that decides whether a
-guard is worth having.
+**Corrected, it reads 195 of 1064 -- 18.2% -- and every sample row is real.**
+`getsitetell.com`, `agentgrid.sh`, `pentad.ai`, `kr-asia.com`, `cactuscompute.com`, all
+the same shape: a lead offered `snapshot_free` whose angle pitches *"an AI/LLM security
+assessment covering prompt injection, chain-of-thought attacks, and model
+hallucination"* -- or memory compaction, or model input validation, or toolchain
+injection. **None of those scope items appears in any offer text in `scoring.yaml`.**
+The model is handed a free Snapshot and the fact that the prospect shipped an agent,
+and manufactures a paid engagement with invented contents and no price.
+
+One in five angles promises work nobody quoted. That is not noise, and it is the same
+class as the original hardcoded-free defect: a money commitment in writing to a
+stranger.
+
+**Which half to build is decided by one column, and the report now prints it.** A
+withheld angle **this build would write again** is a prompt problem -- the guard
+refuses it and `--reprose` rewrites it into the same refusal, which is the "wrong
+prescription twice" trap already recorded above. One from an older build is a backlog,
+and a guard plus a repair pass is the whole fix. The line reads `N written by THIS
+build, M by an older one`, the same two-number discipline as `reprose_backlog`.
+
+(`kr-asia.com` in that list is KrASIA, a publisher -- its angle opens *"Spun announced
+a funding round"*, a third company. The TechCrunch shape again, found by a report
+looking for something else.)
 
 `test_a_trigger_phrase_word_is_never_an_offer_marker` fails against the old derivation
 naming `ai`, `agent`, `llm`, `mcp` and `security`, and an older assertion in the same

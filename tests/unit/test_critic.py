@@ -863,6 +863,9 @@ def test_the_report_names_a_lead_whose_angle_invented_an_engagement(
     printed = capsys.readouterr().out
     assert "getsitetell.com" in printed
     assert "lead was offered snapshot_free · angle names ai_llm_assessment" in printed
+    # The split that decides what to build. A count alone cannot tell a prompt problem
+    # from a backlog, and `--reprose` on the first is the wrong prescription twice.
+    assert "written by THIS build" in printed
     assert "sim.ai" not in printed, (
         "an angle that reproduces its own offer text must not be counted -- the whole "
         "corpus does that, and a report that flags it is a constant"
