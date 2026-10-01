@@ -15,7 +15,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from cindraleads.agents.enricher import ENRICH_KIND, SCORE_KIND, Enricher, enqueue_unenriched
+from cindraleads.agents.enricher import (
+    ENRICH_KIND,
+    SCORE_KIND,
+    Enricher,
+    enqueue_unenriched,
+    outstanding_reenrichments,
+)
 from cindraleads.contacts import (
     classify_email,
     emails_from_markup,
@@ -449,6 +455,76 @@ def test_a_stale_enrichment_is_redone(rig):
     assert enqueue_unenriched(store, JobQueue(store)) == 1
 
 
+def _seed_companies(store, count: int, *, enriched_at: str | None = None) -> None:
+    """`count` companies beyond the rig's own, all old enough to be reconciled."""
+    with store.tx() as conn:
+        for i in range(count):
+            conn.execute(
+                "INSERT INTO companies (canonical_domain, display_name, ai_surface, "
+                "tech_signals, first_seen_at, last_updated_at, enriched_at) "
+                "VALUES (?,?,'[]','[]',?,?,?)",
+                (f"c{i}.io", f"C{i}", "2026-08-15T00:00:00Z", "2026-08-15T00:00:00Z", enriched_at),
+            )
+
+
+def test_a_forced_re_enrichment_is_bounded_per_pass(rig):
+    """The last unbounded reconciler, and `--force` makes its predicate every company.
+
+    Each enrich job returns a `score.company` follow-on, so an unbounded pass is also a
+    corpus-wide rescore -- the 2389-job outage that `DEFAULT_RESCORE_LIMIT` ended, one
+    reconciler over, queued by the same 30-minute timer. Against the shipped code this
+    reads `assert 121 == 50`.
+    """
+    _build, store = rig
+    _seed_companies(store, 120, enriched_at="2099-01-01T00:00:00Z")
+    assert enqueue_unenriched(store, JobQueue(store), force=True, limit=50) == 50
+
+
+def test_a_second_forced_pass_does_not_queue_the_same_company_twice(rig):
+    """`force` nonces the dedupe key, so the key cannot be what stops a duplicate.
+
+    The bound is on work *outstanding*: a pass that finds 50 already waiting adds
+    nothing, rather than adding 50 more of the same domains every half hour. Against
+    the shipped code the second pass queues all 121 again.
+    """
+    _build, store = rig
+    _seed_companies(store, 120, enriched_at="2099-01-01T00:00:00Z")
+    queue = JobQueue(store)
+    first = enqueue_unenriched(store, queue, force=True, limit=50)
+    second = enqueue_unenriched(store, queue, force=True, limit=50)
+    assert (first, second) == (50, 0)
+    assert outstanding_reenrichments(store) == 50
+
+
+def test_a_company_already_being_enriched_is_not_queued_again(rig):
+    """Liveness against the job table, and the parenthesisation that makes it apply.
+
+    `AND` binds tighter than `OR`, so pasting the two-armed unforced predicate in front
+    of the liveness check would read as `enriched_at IS NULL OR (enriched_at < ? AND
+    NOT EXISTS ...)` -- and every company never enriched at all, which is the whole
+    first wave, would be queued a second time.
+    """
+    _build, store = rig
+    queue = JobQueue(store)
+    with store.tx() as conn:
+        queue.enqueue(ENRICH_KIND, {"canonical_domain": "acme.io"}, conn=conn)
+    assert enqueue_unenriched(store, queue) == 0
+
+
+def test_the_resolvers_own_enrichment_is_not_counted_against_the_backfill_bound(rig):
+    """A freshly resolved company must never wait behind a corpus-wide backfill.
+
+    The Resolver enqueues enrichment directly as a follow-on. That job carries no
+    `backfill` flag, so it is not what the bound is counting -- otherwise 50 new leads
+    in a day would silently stop the reconciler for that day.
+    """
+    _build, store = rig
+    queue = JobQueue(store)
+    with store.tx() as conn:
+        queue.enqueue(ENRICH_KIND, {"canonical_domain": "fresh.io"}, conn=conn)
+    assert outstanding_reenrichments(store) == 0
+
+
 # ------------------------------------------------- what T8 is allowed to claim
 
 
@@ -715,7 +791,14 @@ def test_forced_reconciliation_re_enriches_a_company_already_enriched(store, tmp
 
 def test_forcing_twice_in_a_day_is_not_swallowed_by_the_dedupe_bucket(store):
     """The key is day-bucketed, so under `--force` today's completed job is precisely
-    what would block the re-enrichment. A nonce makes it unmatchable, as scoring does."""
+    what would block the re-enrichment. A nonce makes it unmatchable, as scoring does.
+
+    The first version left the first job **pending** and asserted the second pass
+    queued another -- a state that is not the one the docstring argues about, and the
+    behaviour it pinned is the duplicate the outstanding-work bound exists to prevent.
+    A job that has run is what `--force` has to get past; a job still in the queue is
+    the work itself, and queueing a second copy of it only makes the backlog longer.
+    """
     queue = JobQueue(store)
     now = to_iso(utcnow())
     with store.tx() as conn:
@@ -726,6 +809,8 @@ def test_forcing_twice_in_a_day_is_not_swallowed_by_the_dedupe_bucket(store):
         )
 
     assert enqueue_unenriched(store, queue, force=True) == 1
+    with store.tx() as conn:
+        conn.execute("UPDATE jobs SET status = 'done' WHERE kind = ?", (ENRICH_KIND,))
     assert enqueue_unenriched(store, queue, force=True) == 1
 
 

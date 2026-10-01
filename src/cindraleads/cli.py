@@ -26,6 +26,7 @@ import typer
 
 from cindraleads import PIPELINE_VERSION, __version__
 from cindraleads.agents import (
+    DEFAULT_REENRICH_LIMIT,
     DEFAULT_RESCORE_LIMIT,
     DISPATCH_KIND,
     ENRICH_KIND,
@@ -37,6 +38,7 @@ from cindraleads.agents import (
     enqueue_stale_scores,
     enqueue_unenriched,
     enqueue_unextracted,
+    outstanding_reenrichments,
     reprose_backlog,
 )
 from cindraleads.config import MAX_STAGE_SECONDS, WORKER_HEARTBEAT_SECONDS, settings
@@ -826,7 +828,13 @@ def reconcile(
 
     The data cannot tell a job that worked from one that did not, so this is the human
     override. It is not the default: rescoring costs ~18 s of Pi inference per company,
-    and re-enrichment spends real fetches against the 6-per-domain daily budget.
+    and re-enrichment spends real fetches against the per-domain daily budget, which is
+    the length of `CONTACT_PATHS` rather than a number written down beside it.
+
+    **Both halves of `--force` are bounded per pass**, and the enrichment half only
+    since this was written: it selected every company and queued every one of them, each
+    spawning a score job behind it. That is what put 2389 jobs in front of a worker
+    doing ~13 s a job, one reconciler before the bound that fixed it.
 
     `--reprose` is the second human override, for the case `--force` does not reach: a
     lead whose angle is *present but wrong*. Nothing in the system can find one. The
@@ -853,10 +861,16 @@ def reconcile(
             # than merely late work: a candidate whose extract job died never became a
             # company, so no other reconciler here can see it.
             stranded = enqueue_unextracted(store, runtime.queue)
-            # Then the ones that ran under a prompt since fixed. Bounded, because
-            # unlike the three around it this one has a whole corpus to work through
-            # and no reason to be in a hurry about it.
+            # Then the ones that ran under a prompt since fixed. Bounded, because it
+            # has a whole corpus to work through and no reason to be in a hurry about
+            # it. (This comment used to say "unlike the three around it", which was
+            # false of `enqueue_unenriched` under `--force` from the day that flag
+            # shipped.)
             superseded = enqueue_stale_extractions(store, runtime.queue, config=cfg)
+            # Bounded too, as of the pass that found it was not. Under `--force` its
+            # predicate is "every company", and each job it queues spawns a score job
+            # behind it -- the 2389-job shape, from the one reconciler that never got
+            # `DEFAULT_RESCORE_LIMIT`'s treatment.
             fresh = enqueue_unenriched(store, runtime.queue, force=force)
             # Bounded only when reprosing. The ordinary predicates select a handful;
             # this one selects every lead an older build wrote an angle for, which at
@@ -878,9 +892,15 @@ def reconcile(
         # while the repair that matters is a fraction of it and the ordering puts it
         # at the front of the first pass.
         remaining, unsendable = reprose_backlog(store) if reprose else (0, 0)
+        # Beside the enrichment count for the same reason the reprose backlog is beside
+        # its own: `0 for enrichment` is both "nothing to do" and "the previous passes
+        # filled the budget and the worker has not drained it", and which it is decides
+        # whether to wait or go looking for a bug.
+        enriching = outstanding_reenrichments(store)
         typer.echo(
             f"queued {stranded} for extraction, {superseded} for re-extraction, "
-            f"{fresh} for enrichment, {stale} for (re)scoring"
+            f"{fresh} for enrichment ({enriching} of max {DEFAULT_REENRICH_LIMIT} "
+            f"outstanding), {stale} for (re)scoring"
             + (" (forced past dedupe)" if force else "")
             + (
                 f" (reprose, max {REPROSE_LIMIT} a pass, unsendable angles first; "

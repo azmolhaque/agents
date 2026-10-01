@@ -75,18 +75,36 @@ from cindraleads.store import Store
 from cindraleads.textextract import extract_text
 
 __all__ = [
+    "DEFAULT_REENRICH_LIMIT",
     "ENRICH_DEADLINE_SECONDS",
     "ENRICH_KIND",
     "SCORE_KIND",
     "EnrichOutcome",
     "Enricher",
     "enqueue_unenriched",
+    "outstanding_reenrichments",
 ]
 
 log = get_logger("cindraleads.enricher")
 
 ENRICH_KIND = "enrich.company"
 SCORE_KIND = "score.company"
+
+# Re-enrichments a single reconcile pass may leave outstanding. The last of the four
+# reconcilers to get one: `enqueue_stale_extractions` is bounded by
+# `DEFAULT_RESTALE_LIMIT`, `enqueue_stale_scores` by `DEFAULT_RESCORE_LIMIT`,
+# `enqueue_unextracted` selects stranded candidates and is self-limiting -- and this one
+# took the whole corpus, which under `--force` is *every* company by construction.
+#
+# **The cost is downstream, which is why it read as cheap.** The enrich stage runs no
+# model, so a job looks like a few HTTP fetches. But `commit` always returns a
+# `score.company` follow-on, and a score job may decode ~18 s of prose; and the stage
+# itself asks for nine paths >= 3 s apart, so a company is ~30 s of wall clock before
+# anything is written. A corpus-wide pass is therefore hours of inference arriving
+# behind hours of politeness delay, which is precisely the shape of the 2389-job
+# outage `DEFAULT_RESCORE_LIMIT` was introduced to end -- one reconciler over, with
+# the same 30-minute timer behind it.
+DEFAULT_REENRICH_LIMIT = 50
 
 # Rapid growth is the trigger, not size. An established company with 200 subdomains is
 # normal; twelve new hosts this month is a change worth a conversation.
@@ -714,8 +732,32 @@ def _trigger(conn: sqlite3.Connection, domain: str, code: str, evidence_id: str,
     return trigger_id
 
 
+def outstanding_reenrichments(store: Store) -> int:
+    """Re-enrichment jobs this reconciler has queued that have not finished.
+
+    One function and two readers -- the bound below, and the line `cindra reconcile`
+    prints -- because a count that drifted from the work the command queues is a
+    confident wrong number, which is how `832 of 833` was read as a finding about the
+    corpus for a week. Same rule as `_stale_rows` serving both `--reprose` and
+    `reprose_backlog`.
+    """
+    return int(
+        store.conn.execute(
+            "SELECT COUNT(*) AS n FROM jobs WHERE kind = ? "
+            "AND status IN ('pending', 'in_flight') "
+            "AND json_extract(payload, '$.backfill') = 1",
+            (ENRICH_KIND,),
+        ).fetchone()["n"]
+    )
+
+
 def enqueue_unenriched(
-    store: Store, queue: Any, *, stale_after_days: int = 30, force: bool = False
+    store: Store,
+    queue: Any,
+    *,
+    stale_after_days: int = 30,
+    force: bool = False,
+    limit: int = DEFAULT_REENRICH_LIMIT,
 ) -> int:
     """Queue enrichment for companies never enriched, or enriched long ago.
 
@@ -730,7 +772,29 @@ def enqueue_unenriched(
     enriched, which would have kept `reachability = 0` until the 30-day sweep reached
     them. Same shape as `RETIREMENT_RULES` -- editing a rule leaves the rows the old one
     wrote, and something has to re-run it over them.
+
+    **Bounded, and the bound is on work outstanding rather than on work added.** This
+    was the last unbounded reconciler, and `--force` means "every company" by
+    construction: 1100 enrich jobs, each spawning a score job that may decode ~18 s of
+    prose, queued by a timer that fires every 30 minutes. That is the 2389-job outage
+    exactly, from the one reconciler that never got the fix. Topping *up* to `limit`
+    drains the corpus in the same total time while never putting more than `limit`
+    backfills in front of new work -- the `enqueue_stale_extractions` pattern, and the
+    comment beside that call claiming "unlike the three around it" was by then false.
+    A freshly resolved company is unaffected either way: the Resolver enqueues its
+    enrichment directly as a follow-on, which carries no `backfill` flag and is not
+    selected here.
+
+    Liveness is checked against the job table as well as the dedupe key, because under
+    `force` the key is nonced and therefore cannot dedupe anything. Without it a second
+    forced pass queues a second copy of every job the first one did -- the key is
+    deliberately unmatchable, so nothing else would have stopped it.
     """
+    outstanding = outstanding_reenrichments(store)
+    budget = limit - outstanding
+    if budget <= 0:
+        return 0
+
     now = utcnow()
     params: list[Any] = []
     where = "1=1"
@@ -738,8 +802,17 @@ def enqueue_unenriched(
         where = "enriched_at IS NULL OR enriched_at < ?"
         params.append(to_iso(now - timedelta(days=stale_after_days)))
     rows = store.conn.execute(
-        f"SELECT canonical_domain FROM companies WHERE {where} ORDER BY last_updated_at DESC",
-        params,
+        # The predicate is parenthesised. `AND` binds tighter than `OR`, so pasting a
+        # two-armed `where` straight in front of the liveness check would read as
+        # `enriched_at IS NULL OR (enriched_at < ? AND NOT EXISTS ...)` and queue a
+        # duplicate for every company that had never been enriched at all.
+        f"SELECT canonical_domain FROM companies c WHERE ({where}) "
+        "  AND NOT EXISTS ("
+        "    SELECT 1 FROM jobs j WHERE j.kind = ? "
+        "      AND j.status IN ('pending', 'in_flight') "
+        "      AND json_extract(j.payload, '$.canonical_domain') = c.canonical_domain) "
+        "ORDER BY last_updated_at DESC LIMIT ?",
+        (*params, ENRICH_KIND, budget),
     ).fetchall()
 
     queued = 0
@@ -760,7 +833,15 @@ def enqueue_unenriched(
             existing = conn.execute(
                 "SELECT 1 FROM jobs WHERE dedupe_key = ? LIMIT 1", (key,)
             ).fetchone()
-            queue.enqueue(ENRICH_KIND, {"canonical_domain": domain}, dedupe_key=key, conn=conn)
+            queue.enqueue(
+                ENRICH_KIND,
+                # What makes the next pass able to see this one's work. A reconciled
+                # enrichment is otherwise indistinguishable from the Resolver's
+                # follow-on, and the whole bound rests on telling them apart.
+                {"canonical_domain": domain, "backfill": True},
+                dedupe_key=key,
+                conn=conn,
+            )
             if existing is None:
                 queued += 1
     return queued

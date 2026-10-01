@@ -7,7 +7,13 @@ convention.
 """
 
 from cindraleads.agents.dispatcher import DISPATCH_KIND, Dispatcher
-from cindraleads.agents.enricher import ENRICH_KIND, Enricher, enqueue_unenriched
+from cindraleads.agents.enricher import (
+    DEFAULT_REENRICH_LIMIT,
+    ENRICH_KIND,
+    Enricher,
+    enqueue_unenriched,
+    outstanding_reenrichments,
+)
 from cindraleads.agents.extractor import (
     Extractor,
     enqueue_stale_extractions,
@@ -25,6 +31,7 @@ from cindraleads.agents.scorer import (
 from cindraleads.agents.scout import QueryTemplate, Scout, ScoutConfig
 
 __all__ = [
+    "DEFAULT_REENRICH_LIMIT",
     "DEFAULT_RESCORE_LIMIT",
     "DISPATCH_KIND",
     "ENRICH_KIND",
@@ -45,5 +52,6 @@ __all__ = [
     "enqueue_stale_scores",
     "enqueue_unenriched",
     "enqueue_unextracted",
+    "outstanding_reenrichments",
     "reprose_backlog",
 ]

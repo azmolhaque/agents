@@ -3088,6 +3088,52 @@ The test asserts the *rendered output*, not the helper, because the helper was n
 broken -- the caller was, and a test on `display_name_or_domain` would have passed
 against the defect.
 
+**Three of four reconcilers were bounded, and the unbounded one is the one `--force`
+turns into a corpus-wide pass.** `enqueue_stale_extractions` has `DEFAULT_RESTALE_LIMIT`,
+`enqueue_stale_scores` has `DEFAULT_RESCORE_LIMIT`, `enqueue_unextracted` selects
+stranded candidates and is self-limiting -- and `enqueue_unenriched` took every row its
+predicate returned, which under `--force` is **every company**. The comment beside its
+call site read "Bounded, because *unlike the three around it*..." and was false of the
+line directly beneath it. Fifth instance of a comment describing a property its own
+neighbour does not provide, after `ComplianceGate.fingerprint`, the Scorer's ordering,
+`is_exhausted` and `lead_for_message`.
+
+**It read as cheap because the cost is downstream.** The enrich stage runs no model, so
+a job looks like a few HTTP fetches -- but `commit` always returns a `score.company`
+follow-on, and a score job may decode ~18 s of prose. ~1100 companies is therefore hours
+of inference arriving behind nine fetches per company at >= 3 s apart, queued by a timer
+that fires every 30 minutes. **That is the 2389-job outage exactly**, from the one
+reconciler that never got the fix that ended it -- and it was about to be run, because
+`reachability` is zero on 778 of 1141 leads and is the largest number in `cindra explain`.
+
+Bounded on work **outstanding** rather than work added, the `enqueue_stale_extractions`
+pattern: a pass that finds the budget full adds nothing instead of adding another 50
+every half hour. The jobs carry a `backfill` flag so the next pass can see them, and the
+Resolver's own follow-on deliberately does not -- a freshly resolved company must never
+be what the bound is counting, or 50 new leads in a day would silently stop the
+reconciler for that day.
+
+**`--force` nonces the dedupe key, so the key cannot be what stops a duplicate.** The
+liveness check against `pending`/`in_flight` is what does, and it has to be
+parenthesised against the unforced predicate: `AND` binds tighter than `OR`, so pasting
+`enriched_at IS NULL OR enriched_at < ?` in front of it would read as `enriched_at IS
+NULL OR (enriched_at < ? AND NOT EXISTS ...)` and queue a second copy for every company
+never enriched at all -- which is the entire first wave.
+
+`outstanding_reenrichments` has exactly two readers, the bound and the line `cindra
+reconcile` prints, because `0 for enrichment` is both "nothing to do" and "the budget is
+full and the worker has not drained it". Same two-state problem as `queued 0`, the
+append-only `dead_letter` count and `silent: digest`, and the same fix: print the other
+number.
+
+**And an existing test was pinning the duplicate.**
+`test_forcing_twice_in_a_day_is_not_swallowed_by_the_dedupe_bucket` left the first job
+*pending* and asserted a second pass queued another -- while its docstring argues about
+"today's **completed** job", which is the state `--force` exists to get past. The
+scenario in the fixture was not the scenario in the argument, and the behaviour it
+pinned was the duplicate. It marks the job `done` now, keeps what it uniquely guards,
+and still passes against the old code because the nonce behaviour did not move.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still
