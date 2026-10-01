@@ -3187,16 +3187,45 @@ mechanical.** Recorded rather than fixed, because each needs a measurement first
   LDBD "LDBD announced", then both switch to "you". The Pamir defect, which was closed
   in the *config* phrases (`test_no_offer_phrase_speaks_about_the_reader_in_the_third_person`)
   and never in what the model does with `display_name`.
-- **`Site Tell` paraphrased the offer and dropped the price**: *"an AI/LLM security
-  assessment covering prompt injection, chain-of-thought attacks, and model
-  hallucination for your chatbot"* -- three of those four items are invented, the
-  config phrase names "data leakage, agent tool abuse and the MCP tool surface", and no
-  price survives. It carries no `NOT SENDABLE` marker, which means its
-  `recommended_offer` is `snapshot_free` and the guard correctly allows a free claim --
-  while the paid engagement beside it goes unpriced. **Read the lead before concluding
-  that**, with `scripts/preview_angle.py getsitetell.com`.
 - **1 of 5 rows is clean** (`Sim · sim.ai`), which is the number that matters and the
   one to re-measure after a `--reprose` pass rather than argue about.
+
+**An angle offered an engagement the config never gave that lead, and reading the
+prompt is what found it.** I had called `Site Tell` a dropped-price defect. The
+rendered prompt says otherwise: its offer is `snapshot_free` and the text handed to
+the model is *"your first external attack-surface and exposed-secrets Snapshot free as
+a founding-cohort client, with a verified report, a walkthrough call and a re-check
+two weeks later"* -- the whole offer, with nothing paid in it and so no price to drop.
+The stored angle opens *"I'd like to run an AI/LLM security assessment covering prompt
+injection, chain-of-thought attacks, and model hallucination for your chatbot."*
+
+**A fabricated engagement, not a mispriced one.** Rule 3 says add nothing to the offer
+text; a prospect replying yes has been promised work nobody quoted. And no guard can
+see it: the offer *is* `snapshot_free`, so the free claim is backed and
+`_free_claim_is_backed` passes correctly, while `ai_llm_assessment` never appears as a
+slug for the leak guard to match. Same family as the original hardcoded-free defect --
+a commitment about money in writing -- arriving by the one route every existing guard
+is blind to.
+
+`scripts/invented_offers.py` counts it before anything is built, the call that killed
+the CT-certificate veto, the `name_similarity` rule, the `--reprose` third sort key,
+the `open_roles` threshold and re-enrichment as the reachability lever. **The
+distinctive tokens are derived, never listed**: each offer's markers are the words no
+*other* offer's phrasing uses, so "snapshot", "attack-surface" and "free" -- which the
+paid phrase deliberately shares with the free one -- can never produce a match.
+`test_an_offer_the_two_phrases_share_is_never_distinctive` is that half, because a
+marker present in every paid angle would be `single_source` at 96% in a new costume.
+
+A guard here withholds an angle, so a wrong match costs a card its text. That is the
+trade `_free_claim_is_backed` makes, and the reason it keys on the price rather than
+on the word -- **so the distribution decides, and it has not been read yet.**
+
+**And `description` carried `to improve可信`** -- Chinese spliced into an English
+sentence the model wrote, on a second company after Riffn's `实时`. It reaches the
+prose prompt as fact. Still recorded rather than patched for the reason already given:
+a description may legitimately name a non-Latin product, and `looks_corrupted` tests
+Indic ranges and would not fire here anyway. Two of two previewed is a sample worth
+writing down, not a rate.
 
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already

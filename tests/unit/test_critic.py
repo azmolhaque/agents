@@ -710,3 +710,89 @@ def _judge_next_module() -> Any:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+# ------------------------------------------------- an offer nobody authorised
+
+
+def _invented_offers_module() -> Any:
+    """Load the script as a module, the way the other instrument tests do."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "invented_offers",
+        Path(__file__).resolve().parents[2] / "scripts" / "invented_offers.py",
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_an_offer_the_two_phrases_share_is_never_distinctive() -> None:
+    """The load-bearing half: `snapshot_free` and `ai_llm_assessment` both name a
+    Snapshot and an attack surface, on purpose -- the paid phrase leads with the free
+    first step so the ask stays small. A marker set that kept those words would flag
+    every paid angle as naming the free offer, which is the report's own version of
+    `single_source` at 96%: a match present everywhere discriminates nothing.
+    """
+    from cindraleads.scoring import ScoringConfig
+
+    module = _invented_offers_module()
+    markers = module.distinctive_markers(ScoringConfig.load())
+
+    shared = {"snapshot", "surface", "free"}
+    for slug, marks in markers.items():
+        assert not (marks & shared), f"{slug} claims a word another offer uses: {marks & shared}"
+    assert {"llm", "injection"} <= markers["ai_llm_assessment"], markers["ai_llm_assessment"]
+
+
+def test_the_report_names_a_lead_whose_angle_invented_an_engagement(
+    store: Any, monkeypatch: Any, capsys: Any
+) -> None:
+    """Site Tell, read off the Pi through `preview_angle.py`: the prompt was handed
+    `snapshot_free`, whose text is the free Snapshot and nothing else, and the stored
+    angle offers *"an AI/LLM security assessment covering prompt injection,
+    chain-of-thought attacks, and model hallucination for your chatbot"*.
+
+    Rule 3 says add nothing to the offer text. No guard sees this -- the offer is
+    `snapshot_free`, so the free claim is backed and `_free_claim_is_backed` passes --
+    and a prospect replying yes has been promised work nobody quoted.
+    """
+    module = _invented_offers_module()
+
+    invented = _lead(store, "getsitetell.com", tier="B", score=62)
+    honest = _lead(store, "sim.ai", tier="B", score=63)
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE leads SET outreach_angle = ? WHERE lead_id = ?",
+            (
+                "I'd like to run an AI/LLM security assessment covering prompt "
+                "injection, chain-of-thought attacks, and model hallucination for "
+                "your chatbot, under a signed RoE. Your first external "
+                "attack-surface and exposed-secrets Snapshot is free as a "
+                "founding-cohort client.",
+                invented,
+            ),
+        )
+        conn.execute(
+            "UPDATE leads SET outreach_angle = ? WHERE lead_id = ?",
+            (
+                "You announced an AI feature five weeks ago. I'd like to run your "
+                "first external attack-surface and exposed-secrets Snapshot free as "
+                "a founding-cohort client, with a verified report, a walkthrough "
+                "call and a re-check two weeks later.",
+                honest,
+            ),
+        )
+
+    monkeypatch.setattr(module, "Store", lambda *_a, **_k: store)
+    assert module.main([]) == 0
+
+    printed = capsys.readouterr().out
+    assert "getsitetell.com" in printed
+    assert "lead was offered snapshot_free · angle names ai_llm_assessment" in printed
+    assert "sim.ai" not in printed, (
+        "an angle that reproduces its own offer text must not be counted -- the whole "
+        "corpus does that, and a report that flags it is a constant"
+    )
