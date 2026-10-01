@@ -672,10 +672,31 @@ class Scorer:
         customer asking them for a pentest report.
 
         A derived trigger carries no date. See `DERIVED_TRIGGERS`.
+
+        **One phrase per code, not per row.** `triggers` has no uniqueness constraint on
+        `(canonical_domain, code)`, so a company can hold two live rows for the same
+        code -- different evidence, same claim -- and this emitted the identical
+        sentence twice. Off a real call list: *"ThunderPhone announced an AI feature
+        four weeks ago; you published code using an LLM agent framework four weeks ago;
+        you announced an AI feature four weeks ago."* A cold email that repeats itself
+        inside one sentence reads as broken automation to the one reader it has.
+
+        A `means` phrase is what the prospect recognises, and two rows that produce the
+        same phrase are the same thing said about them -- so saying it twice is never
+        right, whatever the rows underneath are. The freshest sighting wins, because the
+        phrase carries an age and the most recent one is what they most recently did;
+        before this the duplicate rows were sorted only by weight, so even *which* date
+        appeared was whatever the query happened to return.
         """
         from cindraleads.agents.dispatcher import TRIGGER_ORDER
 
-        ordered = sorted(triggers, key=lambda t: -TRIGGER_ORDER.get(str(t.code), 0))
+        freshest: dict[str, Any] = {}
+        for trig in triggers:
+            seen = freshest.get(str(trig.code))
+            if seen is None or trig.observed_at > seen.observed_at:
+                freshest[str(trig.code)] = trig
+
+        ordered = sorted(freshest.values(), key=lambda t: -TRIGGER_ORDER.get(str(t.code), 0))
         parts: list[str] = []
         for trig in ordered:
             rule = self.scoring.triggers.get(trig.code)

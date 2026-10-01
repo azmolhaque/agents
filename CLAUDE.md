@@ -3163,6 +3163,41 @@ floor in five days**, which is the discovery and reachability problem the report
 already names, not a dispatch fault. The ad-hoc SQL that would have been written to ask
 this is the third thing `judge_next.py` exists to stop.
 
+**A card said the same thing twice in one sentence.** ThunderPhone, Tier B 69, top of
+the call list: *"ThunderPhone announced an AI feature four weeks ago; you published
+code using an LLM agent framework four weeks ago; **you announced an AI feature four
+weeks ago**."* Clauses one and three are the same claim.
+
+`_trigger_phrases` emitted one phrase per `triggers` **row**, and the table has no
+uniqueness constraint on `(canonical_domain, code)` -- so two live rows for one code,
+different evidence and the same claim, hand the model the identical sentence twice. One
+phrase per *code* now, freshest sighting winning because the phrase carries an age;
+before this even *which* date appeared was whatever the weight sort happened to leave
+first, since equal codes tie.
+
+**Not in `prose_version`, deliberately.** Moving that hash invalidates ~1150 angles for
+hours of decode on a box running 1.7 h a day, and this is a quality defect rather than
+an unsafe one -- nothing false is claimed, no price is wrong, no guard would withhold
+it. `--reprose` territory, the same call as the `snapshot_free` pronoun fix.
+
+**Three defects still open on that same call list, all in prose and none of them
+mechanical.** Recorded rather than fixed, because each needs a measurement first:
+
+- **Third person then second, still.** ThunderPhone opens "ThunderPhone announced" and
+  LDBD "LDBD announced", then both switch to "you". The Pamir defect, which was closed
+  in the *config* phrases (`test_no_offer_phrase_speaks_about_the_reader_in_the_third_person`)
+  and never in what the model does with `display_name`.
+- **`Site Tell` paraphrased the offer and dropped the price**: *"an AI/LLM security
+  assessment covering prompt injection, chain-of-thought attacks, and model
+  hallucination for your chatbot"* -- three of those four items are invented, the
+  config phrase names "data leakage, agent tool abuse and the MCP tool surface", and no
+  price survives. It carries no `NOT SENDABLE` marker, which means its
+  `recommended_offer` is `snapshot_free` and the guard correctly allows a free claim --
+  while the paid engagement beside it goes unpriced. **Read the lead before concluding
+  that**, with `scripts/preview_angle.py getsitetell.com`.
+- **1 of 5 rows is clean** (`Sim · sim.ai`), which is the number that matters and the
+  one to re-measure after a `--reprose` pass rather than argue about.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

@@ -623,6 +623,41 @@ def test_the_strongest_trigger_is_offered_first():
     assert phrases.startswith(heaviest), f"strongest trigger must lead: {phrases}"
 
 
+def test_two_rows_for_one_code_do_not_say_the_same_thing_twice():
+    """`triggers` has no uniqueness constraint on `(canonical_domain, code)`, so a
+    company can hold two live rows making the same claim from different evidence.
+
+    Off a real call list, ThunderPhone at Tier B 69: *"ThunderPhone announced an AI
+    feature four weeks ago; you published code using an LLM agent framework four weeks
+    ago; you announced an AI feature four weeks ago."* Clauses one and three are the
+    same sentence. A cold email that repeats itself reads as broken automation to the
+    one reader it gets.
+
+    The freshest sighting wins, because the phrase carries an age. Against the old code
+    the phrase appears twice and the date shown is whichever row the sort happened to
+    leave first.
+    """
+    from datetime import timedelta
+
+    from cindraleads.models import utcnow
+    from cindraleads.scoring import TriggerObservation
+
+    scorer = _phrase_scorer()
+    now = utcnow()
+
+    phrases = scorer._trigger_phrases(
+        [
+            TriggerObservation(code="T1_AI_SHIP", observed_at=now - timedelta(days=400)),
+            TriggerObservation(code="T11_STACK_RISK", observed_at=now - timedelta(days=28)),
+            TriggerObservation(code="T1_AI_SHIP", observed_at=now - timedelta(days=28)),
+        ]
+    )
+
+    means = scorer.scoring.triggers["T1_AI_SHIP"].means
+    assert phrases.count(means) == 1, f"one phrase per code: {phrases}"
+    assert "months ago" not in phrases, f"the freshest sighting is the one shown: {phrases}"
+
+
 def test_an_offer_slug_leaks_the_same_way_a_trigger_code_does():
     """`Offer` is a `Literal` of four identifiers handed to the prose prompt with
     nothing that knows what they mean -- exactly where `T1_AI_SHIP` stood before
