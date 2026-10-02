@@ -3280,6 +3280,61 @@ a description may legitimately name a non-Latin product, and `looks_corrupted` t
 Indic ranges and would not fire here anyway. Two of two previewed is a sample worth
 writing down, not a rate.
 
+**`201 written by THIS build, 0 by an older one` -- so the guard was the wrong half
+on its own.** Read 2026-10-02, 201 of 1083. The prompt is producing these now, and a
+guard alone would silence a fifth of the corpus while `--reprose` rewrote every one of
+them into the same refusal: the "wrong prescription twice" trap, foreseen by the split
+and avoided by it.
+
+**100%/0% is also the shape this file calls a constant nine times, and here it is
+half of one.** `prose_version()` has not moved since 2026-09-22 and `--reprose` ran
+several passes since, so nearly every angle in the corpus is current-stamped and the
+column could not have reported much else. It does not change the conclusion -- zero
+older-build means there is no legacy population to blame -- but the split added less
+than its wording suggests.
+
+**Rule 3 governs money, and the model was not making a money claim.** It reproduces
+the price when there is one and it adds none when there is not; what it does is name a
+*service* the offer text never mentions. Nothing in the prompt said the offer text is
+the complete list of what we propose, so *"I'd like to run an AI/LLM security
+assessment covering prompt injection, chain-of-thought attacks, and model
+hallucination"* against a free-Snapshot offer broke no rule that was written.
+
+Sharper still: **the prompt contains that exact sentence as its own worked example and
+diagnoses it as a price defect** -- "names the paid engagement first with 'free'
+trailing after it". A model reading that learns to fix the ordering, not to stop
+inventing the engagement. Rule 3 now says the offer text is the complete list: name no
+assessment, review, engagement, check or deliverable it does not name, and no scope
+item it does not list; a prospect having shipped an agent is a reason to write, never a
+licence to propose work nobody quoted.
+
+**Both halves, because a rule in the prompt is a preference** -- the sixth time that
+sentence is written here, after `means`, the offer slugs, the free-offer flag, the
+recency guard and the Bengali field. `NAMES_ANOTHER_OFFER` is the code half, and the
+prompt edit moves `prose_version`, so the corpus re-proses through `--reprose` at 50 a
+pass with the unsendable ones ranked first. The 201 lose their angle until they are
+rewritten, which is correct: they promise unquoted work, and that is the same trade
+`_free_claim_is_backed` already makes.
+
+**The derivation moved into `scoring.py` before the guard could use it.** The report
+measured the problem and the guard acts on it, so two copies of the marker set would
+be the defect this project keeps paying for -- `preview_angle.py`'s `format()` kwargs,
+`missing_trigger_weights` restated in its own test, `display_name_or_domain` spelled
+out a fourth time. It is a `cached_property` on `ScoringConfig` rather than a free
+function, because every caller runs it over a whole corpus and the tokenising walks
+every offer, trigger and surface phrase -- the `_is_unsendable` 759x lesson taken one
+step earlier. `functools.cached_property` writes through `__dict__`, which a frozen
+dataclass permits.
+
+**`offer` is keyword-only with no default, and that is the guard on the guard.** Give
+it one and a caller that forgets compares the angle against nothing -- thirteenth
+instance of built-wired-never-connected, pre-empted rather than discovered. Making it
+required is what found the fourth call site: `scripts/withheld_angles.py` failed the
+moment the suite ran, with `TypeError: missing 1 required keyword-only argument`.
+`test_every_caller_of_the_angle_guard_names_the_lead_s_own_offer` asserts the *property*
+-- no default, and every `ast`-visible call passes it -- rather than counting readers,
+because a hand-maintained count is how that same check went wrong before.
+
 **Known hardware gaps:** root is on microSD (no NVMe present), and sustained
 inference reaches ~80 C with the fan at ~6000 RPM. Two unclean shutdowns have already
 put 13k NUL bytes in the JSONL log; `PRAGMA integrity_check` on the database still

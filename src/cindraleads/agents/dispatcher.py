@@ -44,7 +44,7 @@ from cindraleads.errors import ConfigError
 from cindraleads.logging import get_logger
 from cindraleads.metrics import snapshot
 from cindraleads.models import Job, Offer, StageResult, from_iso, to_iso, utcnow
-from cindraleads.scoring import ScoringConfig
+from cindraleads.scoring import ScoringConfig, offers_named
 from cindraleads.store import Store
 
 __all__ = [
@@ -470,11 +470,13 @@ def _card_data(lead: dict[str, Any]) -> CardData:
             allow_free=_free_claim_is_backed(
                 str(lead["outreach_angle"] or ""), offer_slug, country
             ),
+            offer=offer_slug,
         ),
         bengali_angle=_bengali(
             lead["bengali_angle"],
             lead["lead_id"],
             allow_free=_free_claim_is_backed(str(lead["bengali_angle"] or ""), offer_slug, country),
+            offer=offer_slug,
         ),
         surface_notes=tuple(surface),
         compliance_basis=str(compliance.get("basis", "legitimate_interest_b2b")),
@@ -706,9 +708,16 @@ def block_reason(
 #: prints them.
 LEAKS_INTERNAL_CODE = "names our internal taxonomy"
 UNBACKED_FREE_CLAIM = "promises free without naming the price"
+NAMES_ANOTHER_OFFER = "offers an engagement this lead was never given"
 
 
-def angle_withheld_reason(text: str, *, allow_free: bool) -> str:
+def angle_withheld_reason(
+    text: str,
+    *,
+    allow_free: bool,
+    offer: str,
+    config: ScoringConfig | None = None,
+) -> str:
     """Why this prose must not be sent, or `""` when it may be.
 
     **One predicate, two readers, and the second one was missing.** `_publishable`
@@ -729,10 +738,42 @@ def angle_withheld_reason(text: str, *, allow_free: bool) -> str:
         return LEAKS_INTERNAL_CODE
     if not allow_free and _FREE_CLAIM.search(text):
         return UNBACKED_FREE_CLAIM
+    if _names_an_offer_we_did_not_make(text, offer, config):
+        return NAMES_ANOTHER_OFFER
     return ""
 
 
-def _publishable(text: str | None, lead_id: Any = "", *, allow_free: bool = False) -> Any:
+def _names_an_offer_we_did_not_make(
+    text: str, offer: str, config: ScoringConfig | None = None
+) -> bool:
+    """Does this angle propose an engagement the config never gave this lead.
+
+    Measured on the Pi on 2026-10-02: **195 of 1064 stored angles, all written by the
+    current build**, and 194 of them one shape -- a lead offered `snapshot_free`
+    whose angle opens *"I'd like to run an AI/LLM security assessment covering prompt
+    injection, chain-of-thought attacks, and model hallucination"*. None of those
+    scope items appears in any offer text in `scoring.yaml`. The model is handed a
+    free Snapshot and the fact that the prospect shipped an agent, and manufactures a
+    paid engagement with invented contents and no price.
+
+    **Same class as the original hardcoded-free defect -- a money commitment in
+    writing to a stranger -- and no existing guard could see it.** The offer *is*
+    `snapshot_free`, so the free claim is backed and `_free_claim_is_backed` passes
+    correctly; `ai_llm_assessment` never appears as a slug for the leak guard to
+    match. A prospect replying yes has been promised work nobody quoted.
+
+    An offer with no distinctive markers cannot be detected and is skipped rather
+    than guessed at -- the paid phrases name the free Snapshot on purpose, so some
+    overlap is by design and an empty set means "no opinion", never "clean".
+    """
+    cfg = config or ScoringConfig.load()
+    named = offers_named(text, cfg.offer_markers)
+    return any(slug != offer for slug in named)
+
+
+def _publishable(
+    text: str | None, lead_id: Any = "", *, allow_free: bool = False, offer: str = ""
+) -> Any:
     """Prose, or nothing, if it names something only we should see or promises a price
     we do not offer.
 
@@ -751,7 +792,7 @@ def _publishable(text: str | None, lead_id: Any = "", *, allow_free: bool = Fals
     # `allow_free` is "the config says a free claim belongs in this angle" rather than
     # "this lead's offer is free" -- a *paid* phrase deliberately names the free first
     # Snapshot, and keying on the offer alone withheld 98% of paid leads.
-    reason = angle_withheld_reason(str(text), allow_free=allow_free)
+    reason = angle_withheld_reason(str(text), allow_free=allow_free, offer=offer)
     if reason == LEAKS_INTERNAL_CODE:
         log.warning(
             "card_prose_withheld",
@@ -769,7 +810,9 @@ def _publishable(text: str | None, lead_id: Any = "", *, allow_free: bool = Fals
     return text
 
 
-def _bengali(text: str | None, lead_id: Any = "", *, allow_free: bool = False) -> Any:
+def _bengali(
+    text: str | None, lead_id: Any = "", *, allow_free: bool = False, offer: str = ""
+) -> Any:
     """The Bengali angle, which by default does not reach a card at all.
 
     Everything `_publishable` withholds, plus the whole field unless
@@ -792,7 +835,7 @@ def _bengali(text: str | None, lead_id: Any = "", *, allow_free: bool = False) -
     if not settings().dispatch_bengali_angle:
         log.info("card_bengali_withheld", lead_id=str(lead_id), why="not reviewed by a human")
         return None
-    return _publishable(text, lead_id, allow_free=allow_free)
+    return _publishable(text, lead_id, allow_free=allow_free, offer=offer)
 
 
 def digest_pages(cards: list[CardData]) -> list[list[dict[str, Any]]]:

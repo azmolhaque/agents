@@ -141,8 +141,13 @@ def worklist(
         _trigger_means,
         angle_withheld_reason,
     )
+    from cindraleads.scoring import ScoringConfig
 
     means = _trigger_means()
+    # Hoisted for the same reason `means` is, and for the `_is_unsendable` 759x
+    # one: the guard reads `offer_markers`, which walks every offer, trigger and
+    # surface phrase, and this loop runs over the whole call list.
+    scoring = ScoringConfig.load()
 
     items: list[WorkItem] = []
     unreachable = 0
@@ -184,7 +189,10 @@ def worklist(
                         angle,
                         str(row["recommended_offer"] or ""),
                         str(row["country"] or "") or None,
+                        scoring,
                     ),
+                    offer=str(row["recommended_offer"] or ""),
+                    config=scoring,
                 ),
                 trigger=trigger,
                 trigger_means=means.get(trigger, ""),

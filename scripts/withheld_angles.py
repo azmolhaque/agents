@@ -80,6 +80,8 @@ def main() -> int:
                         str(row["country"] or "") or None,
                         scoring,
                     ),
+                    offer=str(row["offer"] or ""),
+                    config=scoring,
                 )
                 or SENDABLE
             )

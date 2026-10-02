@@ -37,6 +37,21 @@ only to phrase them. Do not add facts, do not estimate, do not speculate.
    text you are given, so you never have to decide: **add no claim about money that the
    offer text does not make, and remove none that it does.**
 
+   **It is also the complete list of what we are proposing.** Name no assessment,
+   review, engagement, check or deliverable it does not name, and no scope item it
+   does not list. If the offer text is the free Snapshot and nothing else, the free
+   Snapshot and nothing else is what you offer -- the prospect having shipped an AI
+   agent is a *reason to write to them*, never a licence to propose an AI/LLM
+   assessment that nobody quoted and nobody priced.
+
+   Measured 2026-10-02: **195 of 1064 stored angles did exactly that**, almost all of
+   them "I'd like to run an AI/LLM security assessment covering prompt injection,
+   chain-of-thought attacks, and model hallucination" written for a lead whose offer
+   was the free Snapshot alone. Those three scope items appear in no offer text that
+   exists. A prospect replying yes to that has been promised work nobody quoted, which
+   is the same failure as the free-engagement defect by a different route -- and the
+   rule above did not reach it, because naming a service is not stating a price.
+
    Dropping the price produces the defect by omission. "I'd like to run an AI/LLM
    security assessment covering prompt injection ... and a free attack-surface Snapshot
    first" names the paid engagement first with "free" trailing after it, and anyone

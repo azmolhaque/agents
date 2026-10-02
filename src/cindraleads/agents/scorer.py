@@ -930,7 +930,10 @@ def _is_unsendable(row: sqlite3.Row, config: ScoringConfig | None = None) -> boo
     country = str(row["country"] or "") or None
     return bool(
         angle_withheld_reason(
-            angle, allow_free=_free_claim_is_backed(angle, offer, country, config)
+            angle,
+            allow_free=_free_claim_is_backed(angle, offer, country, config),
+            offer=offer,
+            config=config,
         )
     )
 

@@ -33,140 +33,19 @@ Reads the database and writes nothing.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from collections import Counter
 
 from cindraleads.agents.dispatcher import block_reason, blocked_subjects
 from cindraleads.agents.scorer import prose_version
 from cindraleads.config import settings
-from cindraleads.scoring import ScoringConfig
+from cindraleads.scoring import ScoringConfig, offers_named
 from cindraleads.store import Store
 
-#: How many of an offer's distinctive tokens an angle must carry before this counts it
-#: as naming that offer. One is too loose -- "agent" alone appears in ordinary prose
-#: about an AI company -- and the Site Tell angle carries four.
-MARKER_HITS = 2
-
-#: Words that carry no offer identity wherever they appear. The derivation below
-#: subtracts everything the rest of the prompt uses, but a phrase that is the only one
-#: to say "as" or "two" would otherwise donate those as markers -- and `as` really was
-#: in `snapshot_free`'s set on the first real run.
-_FILLER = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "the",
-        "of",
-        "in",
-        "on",
-        "at",
-        "to",
-        "for",
-        "with",
-        "after",
-        "it",
-        "that",
-        "or",
-        "your",
-        "you",
-        "first",
-        "from",
-        "starting",
-        "one",
-        "as",
-        "is",
-        "are",
-        "be",
-        "will",
-        "we",
-        "us",
-        "our",
-        "they",
-        "their",
-        "them",
-        "re",
-        "two",
-        "three",
-        "later",
-        "than",
-        "but",
-        "if",
-        "so",
-        "by",
-        "about",
-        "into",
-        "over",
-        "up",
-        "out",
-        "all",
-        "any",
-        "each",
-        "more",
-        "most",
-        "like",
-        "run",
-        "runs",
-        "running",
-    }
-)
-
-_WORD = re.compile(r"[a-z0-9]+")
-
-
-def _tokens(text: str) -> set[str]:
-    return {t for t in _WORD.findall(text.lower()) if t not in _FILLER and len(t) > 1}
-
-
-def distinctive_markers(scoring: ScoringConfig) -> dict[str, set[str]]:
-    """Per offer, the tokens nothing else in the prompt uses.
-
-    **The first real run got this wrong and the distribution said so.** Markers were
-    derived by subtracting only what *other offers* share, and the report then flagged
-    274 of 1141 angles. Three sample rows settled it: `matterhaul.com` reproduces its
-    `snapshot_free` text faithfully and matched `ai_llm_assessment` on `ai` and
-    `agent` -- words from the **trigger** phrases T1_AI_SHIP and T11_STACK_RISK, which
-    sit in the same prompt and appear in nearly every angle this corpus produces. The
-    report was measuring "does this angle mention AI", which for an AI-company corpus
-    is a constant, the tenth appearance of that tell here.
-
-    So the subtraction is against everything the model is handed beside the offer: the
-    other offers, every trigger `means` phrase and every `ai_surface` phrase, in both
-    currencies because `offer_phrase` picks by country. What survives is a word that
-    can only have come from this offer's own text.
-
-    An offer may legitimately end up with nothing left -- the paid phrases name the
-    free Snapshot on purpose, so `free`, `first`, `attack`, `surface` and `snapshot`
-    are shared by design. The report prints that rather than pretending, because a
-    marker set this cannot distinguish is a question it must not answer.
-    """
-    phrases: dict[str, set[str]] = {}
-    for slug, offer in scoring.offers.items():
-        text = " ".join(
-            str(offer.get(key) or "")
-            for key in ("means", "means_bd")  # both currencies
-        )
-        phrases[slug] = _tokens(text)
-
-    # Everything else the prompt says, which an honest angle may quote freely.
-    elsewhere: set[str] = set()
-    for rule in scoring.triggers.values():
-        elsewhere |= _tokens(
-            " ".join(str(getattr(rule, key, "") or "") for key in ("means", "means_bd"))
-        )
-    elsewhere |= _tokens(" ".join(scoring.surface_phrases(tuple(scoring.surfaces))))
-
-    return {
-        slug: own - elsewhere - set().union(*(other for s, other in phrases.items() if s != slug))
-        for slug, own in phrases.items()
-    }
-
-
-def offers_named(angle: str, markers: dict[str, set[str]]) -> list[str]:
-    """Every offer whose distinctive tokens this angle carries, its own included."""
-    seen = _tokens(angle)
-    return sorted(slug for slug, marks in markers.items() if len(seen & marks) >= MARKER_HITS)
+#: The derivation and the threshold live in `cindraleads.scoring`, because the
+#: dispatch guard asks the same question and a marker set computed twice is the defect
+#: this project keeps paying for. This report is what measured the problem; the guard
+#: is what acts on it, and they must not be able to disagree.
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -175,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     scoring = ScoringConfig.load()
-    markers = distinctive_markers(scoring)
+    markers = scoring.offer_markers
 
     store = Store(settings().db_path)
     try:

@@ -19,9 +19,11 @@ is what stops the pipeline re-dispatching the same stale prospect every week.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, get_args
@@ -32,11 +34,13 @@ from cindraleads.models import EmailStatus, EmployeeBand, Offer, Tier, TriggerCo
 
 __all__ = [
     "ARITHMETIC_VERSION",
+    "OFFER_MARKER_HITS",
     "ScoreInput",
     "ScoreResult",
     "ScoringConfig",
     "TriggerObservation",
     "decayed_weight",
+    "offers_named",
     "recommended_offer",
     "tier_for",
 ]
@@ -116,6 +120,19 @@ class ScoringConfig:
                 return local
         phrase = str(entry.get("means") or "").strip()
         return phrase or "a scoped external security review, priced before any work starts"
+
+    @functools.cached_property
+    def offer_markers(self) -> dict[str, frozenset[str]]:
+        """Per offer, the words nothing else in the prose prompt uses. See
+        `_derive_offer_markers`.
+
+        Cached on the instance because every caller runs it over a whole corpus, and
+        the tokenising walks every offer, trigger and surface phrase. That is the
+        `_is_unsendable` 759x lesson taken one step earlier: a hoisted config now
+        also hoists this. `functools.cached_property` writes through `__dict__`, which
+        a frozen dataclass permits.
+        """
+        return _derive_offer_markers(self)
 
     def offer_label(self, offer: str) -> str:
         """The offer in a few words, for the human deciding whether to send.
@@ -581,3 +598,125 @@ def missing_trigger_weights(cfg: ScoringConfig, taxonomy: tuple[TriggerCode, ...
     exactly like a trigger that never fires.
     """
     return [code for code in taxonomy if code not in cfg.triggers]
+
+
+#: How many of an offer's distinctive words an angle must carry before it counts as
+#: naming that offer. One is too loose; the real cases carry three or four.
+OFFER_MARKER_HITS = 2
+
+#: Words that carry no offer identity wherever they appear. The derivation below
+#: subtracts everything else the prose prompt says, but a phrase that happens to be the
+#: only one using "as" or "two" would otherwise donate those -- and `as` really was in
+#: `snapshot_free`'s marker set on the first run of this.
+_OFFER_FILLER = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "the",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "with",
+        "after",
+        "it",
+        "that",
+        "or",
+        "your",
+        "you",
+        "first",
+        "from",
+        "starting",
+        "one",
+        "as",
+        "is",
+        "are",
+        "be",
+        "will",
+        "we",
+        "us",
+        "our",
+        "they",
+        "their",
+        "them",
+        "re",
+        "two",
+        "three",
+        "later",
+        "than",
+        "but",
+        "if",
+        "so",
+        "by",
+        "about",
+        "into",
+        "over",
+        "up",
+        "out",
+        "all",
+        "any",
+        "each",
+        "more",
+        "most",
+        "like",
+        "run",
+        "runs",
+        "running",
+    }
+)
+
+_OFFER_WORD = re.compile(r"[a-z0-9]+")
+
+
+def _offer_tokens(text: str) -> set[str]:
+    return {t for t in _OFFER_WORD.findall(text.lower()) if t not in _OFFER_FILLER and len(t) > 1}
+
+
+def _derive_offer_markers(cfg: ScoringConfig) -> dict[str, frozenset[str]]:
+    """Per offer, the words nothing else in the prose prompt uses.
+
+    The guard and `scripts/invented_offers.py` ask the same question, so the
+    derivation lives here rather than in either of them -- a marker set computed twice
+    is the defect this project keeps paying for, and the report is what measured the
+    problem in the first place.
+
+    **The subtraction is against the whole prompt, not just the other offers**, and
+    the first version got that wrong. Markers derived only against sibling offers kept
+    `ai`, `agent`, `llm`, `mcp` and `security` -- words from the T1_AI_SHIP and
+    T11_STACK_RISK `means` phrases, which sit in the same prompt and appear in nearly
+    every angle an AI-company corpus produces. 274 of 1141 angles were flagged, most of
+    them faithfully reproducing their own offer, because the question being asked had
+    become "does this angle mention AI".
+
+    An offer may legitimately be left with nothing: the paid phrases name the free
+    first Snapshot on purpose, so `free`, `first`, `attack`, `surface` and `snapshot`
+    are shared by design. An empty set means this offer cannot be detected, which the
+    callers must treat as "no opinion" rather than "clean".
+    """
+    phrases = {
+        slug: _offer_tokens(" ".join(str(offer.get(key) or "") for key in ("means", "means_bd")))
+        for slug, offer in cfg.offers.items()
+    }
+
+    elsewhere: set[str] = set()
+    for rule in cfg.triggers.values():
+        elsewhere |= _offer_tokens(
+            " ".join(str(getattr(rule, key, "") or "") for key in ("means", "means_bd"))
+        )
+    elsewhere |= _offer_tokens(" ".join(cfg.surface_phrases(tuple(cfg.surfaces))))
+
+    return {
+        slug: frozenset(
+            own - elsewhere - set().union(*(other for s, other in phrases.items() if s != slug))
+        )
+        for slug, own in phrases.items()
+    }
+
+
+def offers_named(angle: str, markers: dict[str, frozenset[str]]) -> list[str]:
+    """Every offer whose distinctive words this angle carries, its own included."""
+    seen = _offer_tokens(angle)
+    return sorted(slug for slug, marks in markers.items() if len(seen & marks) >= OFFER_MARKER_HITS)

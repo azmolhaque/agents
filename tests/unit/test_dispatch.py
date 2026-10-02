@@ -2840,3 +2840,110 @@ def test_a_retry_is_still_moot_once_the_angle_is_current(rig):  # type: ignore[n
     assert [p for kind, p in result.follow_on if kind == SCORE_KIND] == [], (
         "a retry re-decoded an angle the running build had already written"
     )
+
+
+# ------------------------------------- an engagement nobody gave this lead
+
+
+def test_an_angle_that_proposes_an_engagement_the_lead_was_not_offered_is_withheld():  # type: ignore[no-untyped-def]
+    """Site Tell, read off the Pi through `preview_angle.py` and then counted.
+
+    Its offer is `snapshot_free` and the text the prompt handed the model is the free
+    Snapshot and nothing else -- no paid step, so no price to drop. The stored angle
+    opens *"I'd like to run an AI/LLM security assessment covering prompt injection,
+    chain-of-thought attacks, and model hallucination for your chatbot."* None of
+    those scope items appears in any offer text that exists.
+
+    **No existing guard could see it.** The offer is free, so the free claim is backed
+    and `_free_claim_is_backed` passes correctly; `ai_llm_assessment` never appears as
+    a slug for the leak guard to match. Measured at 195 of 1064 stored angles, all
+    written by the current build.
+    """
+    from cindraleads.agents.dispatcher import NAMES_ANOTHER_OFFER, angle_withheld_reason
+    from cindraleads.scoring import ScoringConfig
+
+    scoring = ScoringConfig.load()
+    invented = (
+        "You published a mail-authentication policy with gaps in it. I'd like to run an "
+        "AI/LLM security assessment covering prompt injection, chain-of-thought attacks, "
+        "and model hallucination for your chatbot, under a signed RoE. Your first "
+        "external attack-surface and exposed-secrets Snapshot is free as a "
+        "founding-cohort client."
+    )
+    assert (
+        angle_withheld_reason(invented, allow_free=True, offer="snapshot_free", config=scoring)
+        == NAMES_ANOTHER_OFFER
+    )
+
+
+def test_an_angle_reproducing_its_own_offer_is_still_sendable():  # type: ignore[no-untyped-def]
+    """The half that decides whether this guard is shippable at all.
+
+    A paid phrase deliberately names the free first Snapshot, and `snapshot_free`'s
+    own text names a Snapshot too -- so a guard that keys on the shared words would
+    withhold every angle in the corpus. Both directions are asserted here, with the
+    text each offer's own phrase produces.
+    """
+    from cindraleads.agents.dispatcher import angle_withheld_reason
+    from cindraleads.scoring import ScoringConfig
+
+    scoring = ScoringConfig.load()
+
+    free_lead = (
+        "You announced an AI feature five weeks ago. I'd like to run your first external "
+        "attack-surface and exposed-secrets Snapshot free as a founding-cohort client, "
+        "with a verified report, a walkthrough call and a re-check two weeks later."
+    )
+    assert (
+        angle_withheld_reason(free_lead, allow_free=True, offer="snapshot_free", config=scoring)
+        == ""
+    )
+
+    paid_lead = (
+        "You announced an AI feature five weeks ago. I'd like to run a free first "
+        "attack-surface Snapshot, and an AI/LLM security assessment after it covering "
+        "prompt injection, data leakage, agent tool abuse and the MCP tool surface "
+        "($2,000-8,000, 2-5 days)."
+    )
+    assert (
+        angle_withheld_reason(paid_lead, allow_free=True, offer="ai_llm_assessment", config=scoring)
+        == ""
+    ), "the offer text names the free Snapshot on purpose; quoting it is not a defect"
+
+
+def test_every_caller_of_the_angle_guard_names_the_lead_s_own_offer():  # type: ignore[no-untyped-def]
+    """`offer` is keyword-only and has **no default**, and that is the whole guard.
+
+    Give it one and a caller that forgets compares the angle against nothing, which is
+    built-wired-never-connected for the thirteenth time -- the shape that produced
+    `digest_pages`, `extend_lease`, `open_roles`, `discovered_by`, `full_name`, the
+    heartbeat `exiting` flag, `_facts`, `GITHUB_TOKEN`, the `enqueue_stale_scores`
+    limit, `digest_summary` and `already_seen`. Making it required is what found the
+    fourth call site, in `scripts/withheld_angles.py`, the moment the suite ran.
+
+    This asserts the property rather than counting the call sites: a fifth reader is
+    welcome, it just cannot be one that skips the argument.
+    """
+    import ast
+    import inspect
+    from pathlib import Path
+
+    from cindraleads.agents.dispatcher import angle_withheld_reason
+
+    params = inspect.signature(angle_withheld_reason).parameters
+    assert params["offer"].default is inspect.Parameter.empty, (
+        "a default on `offer` lets a caller silently disable the check"
+    )
+
+    root = Path(__file__).resolve().parents[2]
+    seen = 0
+    for path in (*(root / "src").rglob("*.py"), *(root / "scripts").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name != "angle_withheld_reason":
+                continue
+            seen += 1
+            assert "offer" in {kw.arg for kw in node.keywords}, f"{path.name} does not pass offer"
+    assert seen >= 4, f"expected the card, the worklist, the scorer and the report, found {seen}"

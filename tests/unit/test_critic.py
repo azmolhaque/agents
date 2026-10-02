@@ -743,16 +743,15 @@ def test_a_trigger_phrase_word_is_never_an_offer_marker() -> None:
     other offers. Against the old derivation this fails with `ai` and `agent` still in
     `ai_llm_assessment`'s set.
     """
-    from cindraleads.scoring import ScoringConfig
+    from cindraleads.scoring import ScoringConfig, _offer_tokens
 
-    module = _invented_offers_module()
     scoring = ScoringConfig.load()
-    markers = module.distinctive_markers(scoring)
+    markers = scoring.offer_markers
 
     elsewhere: set[str] = set()
     for rule in scoring.triggers.values():
-        elsewhere |= module._tokens(str(getattr(rule, "means", "") or ""))
-    elsewhere |= module._tokens(" ".join(scoring.surface_phrases(tuple(scoring.surfaces))))
+        elsewhere |= _offer_tokens(str(getattr(rule, "means", "") or ""))
+    elsewhere |= _offer_tokens(" ".join(scoring.surface_phrases(tuple(scoring.surfaces))))
 
     for slug, marks in markers.items():
         assert not (marks & elsewhere), (
@@ -769,10 +768,9 @@ def test_an_angle_that_reproduces_its_own_offer_is_not_flagged() -> None:
     assessment. A guard built on that derivation would have withheld a quarter of the
     corpus for saying "AI".
     """
-    from cindraleads.scoring import ScoringConfig
+    from cindraleads.scoring import ScoringConfig, offers_named
 
-    module = _invented_offers_module()
-    markers = module.distinctive_markers(ScoringConfig.load())
+    markers = ScoringConfig.load().offer_markers
 
     faithful = (
         "Matterhaul published a mail-authentication policy with DMARC p=none; you "
@@ -781,7 +779,7 @@ def test_an_angle_that_reproduces_its_own_offer_is_not_flagged() -> None:
         "Snapshot free as a founding-cohort client, with a verified report, a "
         "walkthrough call and a re-check two weeks later."
     )
-    assert module.offers_named(faithful, markers) == ["snapshot_free"], (
+    assert offers_named(faithful, markers) == ["snapshot_free"], (
         "an angle quoting its own offer names only that offer"
     )
 
@@ -791,7 +789,7 @@ def test_an_angle_that_reproduces_its_own_offer_is_not_flagged() -> None:
         "signed RoE. Your first external attack-surface and exposed-secrets Snapshot "
         "is free as a founding-cohort client."
     )
-    assert "ai_llm_assessment" in module.offers_named(invented, markers), (
+    assert "ai_llm_assessment" in offers_named(invented, markers), (
         "the real defect must survive the correction"
     )
 
@@ -805,8 +803,7 @@ def test_an_offer_the_two_phrases_share_is_never_distinctive() -> None:
     """
     from cindraleads.scoring import ScoringConfig
 
-    module = _invented_offers_module()
-    markers = module.distinctive_markers(ScoringConfig.load())
+    markers = ScoringConfig.load().offer_markers
 
     shared = {"snapshot", "surface", "free"}
     for slug, marks in markers.items():
